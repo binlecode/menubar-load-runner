@@ -1,0 +1,222 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+readonly APP_CMD_NAME="menubar-gif/run"
+
+resolve_script_dir() {
+  local source dir
+  # In zsh functions, $0 is the function name; %x is the current script path.
+  source="${(%):-%x}"
+
+  if [[ "$source" != */* ]]; then
+    source="$(command -v -- "$source" || true)"
+    if [[ -z "$source" ]]; then
+      print -u2 "$APP_CMD_NAME: unable to resolve script path"
+      return 1
+    fi
+  fi
+
+  while [[ -h "$source" ]]; do
+    dir="$(cd -P -- "$(dirname -- "$source")" && pwd)"
+    source="$(readlink -- "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+
+  cd -P -- "$(dirname -- "$source")" && pwd
+}
+
+print_help() {
+  cat <<EOF
+Usage:
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|raining|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  MENUBAR_GIF_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+
+Presets:
+  dog-white   Built-in running dog (white)
+  dog-black   Built-in running dog (black)
+  horse-black  Built-in running horse (black)
+  horse   Alias for horse-black
+  horse-white   Built-in running horse (white, default)
+  totoro  Built-in running Totoro
+  totoro-group-white  Built-in Totoro group GIF (white, transparent)
+  totoro-group-black  Built-in Totoro group GIF (black, transparent)
+  totoro-white  Built-in running Totoro (white)
+  totoro-black  Built-in running Totoro (black)
+  raining Built-in raining sticker (transparent)
+
+Options:
+  --width <slots:1..4>       Requested menu bar width in slots (clamped to preset minimum)
+  --speed-multiplier <x>     Fixed speed (e.g. 0.5, 1.0, 1.5, 2.0)
+  --overlay-text <text>      Overlay text (1..12 chars), drawn at runtime
+  --foreground, --no-detach  Run attached to current shell (default is detached)
+  --detach                   Run detached (default)
+  --extra                    Allow launching a new instance even if one is already running
+  -h, --help                 Show this help
+
+Examples:
+  $APP_CMD_NAME
+  $APP_CMD_NAME dog-white
+  $APP_CMD_NAME dog-black
+  $APP_CMD_NAME horse-black
+  $APP_CMD_NAME horse
+  $APP_CMD_NAME horse-white
+  $APP_CMD_NAME totoro
+  $APP_CMD_NAME totoro-group-white
+  $APP_CMD_NAME totoro-group-black
+  $APP_CMD_NAME totoro-white
+  $APP_CMD_NAME totoro-black
+  $APP_CMD_NAME raining
+  $APP_CMD_NAME --width 2
+  $APP_CMD_NAME dog-black --overlay-text CPU
+  $APP_CMD_NAME horse --speed-multiplier 1.2
+  $APP_CMD_NAME --foreground horse-black
+  MENUBAR_GIF_PATH=/tmp/cat.gif $APP_CMD_NAME
+EOF
+}
+
+main() {
+  if ! command -v swift >/dev/null 2>&1; then
+    print -u2 "$APP_CMD_NAME: swift command not found"
+    exit 127
+  fi
+
+  local script_dir swift_module_cache gifs_dir
+  local dog_white_gif dog_black_gif horse_black_gif horse_white_gif
+  local totoro_gif totoro_group_white_gif totoro_group_black_gif
+  local totoro_white_gif totoro_black_gif raining_gif default_gif
+  local launch_detached=1
+  local allow_extra=0
+  local log_file pid
+  local -a passthrough_args swift_cmd
+
+  script_dir="$(resolve_script_dir)"
+  swift_module_cache="${SWIFT_MODULE_CACHE:-/tmp/swift-module-cache}"
+  gifs_dir="$script_dir/gifs"
+  dog_white_gif="$gifs_dir/running-dog-white.gif"
+  dog_black_gif="$gifs_dir/running-dog-black.gif"
+  horse_black_gif="$gifs_dir/running-horse-black.gif"
+  horse_white_gif="$gifs_dir/running-horse-white.gif"
+  totoro_gif="$gifs_dir/totoro.gif"
+  totoro_group_white_gif="$gifs_dir/totoro-group-white.gif"
+  totoro_group_black_gif="$gifs_dir/totoro-group-black.gif"
+  totoro_white_gif="$gifs_dir/totoro-white.gif"
+  totoro_black_gif="$gifs_dir/totoro-black.gif"
+  raining_gif="$gifs_dir/raining.gif"
+  default_gif="$horse_white_gif"
+
+  passthrough_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --foreground|--no-detach)
+        launch_detached=0
+        ;;
+      --detach)
+        launch_detached=1
+        ;;
+      --extra)
+        allow_extra=1
+        ;;
+      *)
+        passthrough_args+=("$1")
+        ;;
+    esac
+    shift
+  done
+  set -- "${passthrough_args[@]}"
+
+  if [[ $# -eq 0 ]]; then
+    set -- "$default_gif"
+  else
+    case "$1" in
+      -h|--help)
+        print_help
+        exit 0
+        ;;
+      dog-white)
+        shift
+        set -- "$dog_white_gif" "$@"
+        ;;
+      dog-black)
+        shift
+        set -- "$dog_black_gif" "$@"
+        ;;
+      horse-black|horse)
+        shift
+        set -- "$horse_black_gif" "$@"
+        ;;
+      horse-white)
+        shift
+        set -- "$horse_white_gif" "$@"
+        ;;
+      totoro)
+        shift
+        set -- "$totoro_gif" "$@"
+        ;;
+      totoro-group-white)
+        shift
+        set -- "$totoro_group_white_gif" "$@"
+        ;;
+      totoro-group-black)
+        shift
+        set -- "$totoro_group_black_gif" "$@"
+        ;;
+      totoro-white)
+        shift
+        set -- "$totoro_white_gif" "$@"
+        ;;
+      totoro-black)
+        shift
+        set -- "$totoro_black_gif" "$@"
+        ;;
+      raining)
+        shift
+        set -- "$raining_gif" "$@"
+        ;;
+      -*)
+        set -- "$default_gif" "$@"
+        ;;
+    esac
+  fi
+
+  local swift_src="$script_dir/MenuBarGif.swift"
+  local swift_bin="$script_dir/MenuBarGif"
+
+  if [[ ! -x "$swift_bin" ]] || [[ "$swift_src" -nt "$swift_bin" ]]; then
+    if swiftc -O "$swift_src" -o "$swift_bin" >/dev/null 2>&1; then
+      swift_cmd=("$swift_bin" "$@")
+    else
+      mkdir -p -- "$swift_module_cache"
+      swift_cmd=(swift -module-cache-path "$swift_module_cache" "$swift_src" "$@")
+    fi
+  else
+    swift_cmd=("$swift_bin" "$@")
+  fi
+
+  # Enforce singleton unless --extra is specified
+  if (( ! allow_extra )); then
+    # find any running MenuBarGif instances (excluding grep and this script process)
+    local existing_pids
+    existing_pids=($(pgrep -f "MenuBarGif.*\.gif" || true))
+    if [[ ${#existing_pids[@]} -gt 0 ]]; then
+      print -u2 "$APP_CMD_NAME: An instance of MenuBarGif is already running (PID: ${existing_pids[*]})."
+      print -u2 "Use --extra to launch multiple instances."
+      exit 1
+    fi
+  fi
+
+  if (( launch_detached )); then
+    log_file="${MENUBAR_GIF_LOG_FILE:-/tmp/menubar-gif.log}"
+    mkdir -p -- "$(dirname -- "$log_file")"
+    MENUBAR_GIF_BIN_NAME="$APP_CMD_NAME" \
+      nohup "${swift_cmd[@]}" >>"$log_file" 2>&1 < /dev/null &
+    pid=$!
+    disown "$pid" 2>/dev/null || true
+    print -- "$APP_CMD_NAME: started in background (pid=$pid, log=$log_file)"
+    exit 0
+  fi
+
+  MENUBAR_GIF_BIN_NAME="$APP_CMD_NAME" \
+    exec "${swift_cmd[@]}"
+}
+
+main "$@"

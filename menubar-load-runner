@@ -215,7 +215,7 @@ main() {
     exit 0
   fi
 
-  MENUBAR_GIF_BIN_NAME="$APP_CMD_NAME" \
+  MENUBAR_LOAD_RUNNER_BIN_NAME="$APP_CMD_NAME" \
     exec "${swift_cmd[@]}"
 }
 

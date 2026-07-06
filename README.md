@@ -6,7 +6,7 @@ Animation speed automatically adapts to current system CPU load.
 ## Files
 
 - `MenuBarLoadRunner.swift`: app source.
-- `run`: launcher script.
+- `menubar-load-runner`: launcher script.
 - `gifs/running-dog-white.gif`: built-in white dog preset (transparent).
 - `gifs/running-dog-black.gif`: built-in black dog preset (transparent).
 - `gifs/running-horse-black.gif`: built-in black horse preset (Pinterest silhouette, transparent).
@@ -18,12 +18,12 @@ Animation speed automatically adapts to current system CPU load.
 - `gifs/totoro-black.gif`: built-in black Totoro preset (transparent).
 - `gifs/raining.gif`: built-in raining sticker preset (transparent, from Giphy).
 
-## Run
+## Run Locally
 
-From the `macos` directory:
+From the repository directory:
 
 ```bash
-menubar-load-runner/menubar-load-runner
+./menubar-load-runner
 ```
 
 This uses the built-in `horse-white` preset and one-slot width by default (`NSStatusItem.squareLength`).
@@ -32,65 +32,72 @@ It launches detached by default, so it keeps running even if the host shell exit
 To run attached to the current shell session:
 
 ```bash
-menubar-load-runner/menubar-load-runner --foreground
+./menubar-load-runner --foreground
 ```
 
-`loadrunner` is a thin wrapper and supports the same flags (`--foreground`, `--no-detach`, `--detach`).
+## Global Command Wrapper
+
+If you are using the companion `env-config` control plane, the launcher wrapper is symlinked directly on your `$PATH` as **`menubar-load-runner`**. This allows you to launch the load runner globally from any folder:
+
+```bash
+menubar-load-runner dog-black
+```
+
+`menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`).
 
 ## Built-in presets
 
 ```bash
 # Default
-menubar-load-runner/menubar-load-runner horse-white
+./menubar-load-runner horse-white
 
 # Black horse preset (Pinterest silhouette, slightly wider slot scaling)
-menubar-load-runner/menubar-load-runner horse-black
+./menubar-load-runner horse-black
 
 # Alias for horse-black
-menubar-load-runner/menubar-load-runner horse
+./menubar-load-runner horse
 
 # Totoro preset
-menubar-load-runner/menubar-load-runner totoro
+./menubar-load-runner totoro
 
 # White Totoro group preset (transparent, defaults to 4 width units)
-menubar-load-runner/menubar-load-runner totoro-group-white
+./menubar-load-runner totoro-group-white
 
 # Black Totoro group preset (transparent, defaults to 4 width units)
-menubar-load-runner/menubar-load-runner totoro-group-black
+./menubar-load-runner totoro-group-black
 
 # White Totoro preset
-menubar-load-runner/menubar-load-runner totoro-white
+./menubar-load-runner totoro-white
 
 # Black Totoro preset
-menubar-load-runner/menubar-load-runner totoro-black
+./menubar-load-runner totoro-black
 
 # White dog preset
-menubar-load-runner/menubar-load-runner dog-white
+./menubar-load-runner dog-white
 
 # Black dog preset
-menubar-load-runner/menubar-load-runner dog-black
+./menubar-load-runner dog-black
 
 # Raining sticker preset
-menubar-load-runner/menubar-load-runner raining
-
+./menubar-load-runner raining
 ```
 
 ## Use a custom GIF
 
 ```bash
-menubar-load-runner/menubar-load-runner /absolute/path/to/your.gif
+./menubar-load-runner /absolute/path/to/your.gif
 ```
 
 Or:
 
 ```bash
-MENUBAR_GIF_PATH=/absolute/path/to/your.gif menubar-load-runner/menubar-load-runner
+MENUBAR_LOAD_RUNNER_PATH=/absolute/path/to/your.gif ./menubar-load-runner
 ```
 
 ## Fixed width override
 
 ```bash
-menubar-load-runner/menubar-load-runner --width 2
+./menubar-load-runner --width 2
 ```
 
 `--width` sets requested menu bar width in slots (`1..4`) and scales the GIF to fill that width.
@@ -99,13 +106,13 @@ The effective width is clamped to each preset's minimum. For example, `totoro-gr
 ## Fixed speed override
 
 ```bash
-menubar-load-runner/menubar-load-runner --speed-multiplier 1.2
+./menubar-load-runner --speed-multiplier 1.2
 ```
 
 ## Runtime text overlay
 
 ```bash
-menubar-load-runner/menubar-load-runner dog-black --overlay-text CPU
+./menubar-load-runner dog-black --overlay-text CPU
 ```
 
 `--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
@@ -122,13 +129,13 @@ Auto speed ranges are preset-dependent:
 ## Help
 
 ```bash
-menubar-load-runner/menubar-load-runner --help
+./menubar-load-runner --help
 ```
 
 ## Stop
 
 ```bash
-pkill -f 'MenuBarLoadRunner.swift'
+pkill -f 'MenuBarLoadRunner'
 ```
 
 ## Menu actions

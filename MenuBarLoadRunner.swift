@@ -124,7 +124,7 @@ private struct Config {
         }
 
         if gifPath == nil {
-            gifPath = ProcessInfo.processInfo.environment["MENUBAR_GIF_PATH"]
+            gifPath = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_PATH"]
         }
 
         guard let path = gifPath, !path.isEmpty else {
@@ -144,10 +144,10 @@ private struct Config {
     }
 
     static func printUsage() {
-        let envBin = ProcessInfo.processInfo.environment["MENUBAR_GIF_BIN_NAME"]
+        let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("Usage: \(bin) <path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
-        print("   or: MENUBAR_GIF_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
         print("Default width: one slot (NSStatusItem.squareLength). With --width, GIF fills the configured slot count.")
         print("Width note: requested slots are clamped to each preset's minimum (e.g. totoro-group requires 4 slots).")
         print("Default speed: auto (preset-dependent; dog-white/dog-black/custom \(Tuning.dogSpeedMin)x..\((Tuning.dogSpeedMax))x, horse \(Tuning.horseSpeedMin)x..\((Tuning.horseSpeedMax))x, totoro \(Tuning.totoroSpeedMin)x..\((Tuning.totoroSpeedMax))x, totoro-group-white/black \(Tuning.totoroGroupSpeedMin)x..\((Tuning.totoroGroupSpeedMax))x, raining \(Tuning.rainingSpeedMin)x..\((Tuning.rainingSpeedMax))x).")
@@ -224,7 +224,7 @@ private final class CPULoadMonitor {
     }
 }
 
-private final class MenuBarGifApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
+private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum PresetKind {
         case dog
         case horse
@@ -474,7 +474,7 @@ private final class MenuBarGifApp: NSObject, NSApplicationDelegate, NSMenuDelega
     @objc
     private func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "About MenuBarGif"
+        alert.messageText = "About MenuBar Load Runner"
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
@@ -511,7 +511,7 @@ private final class MenuBarGifApp: NSObject, NSApplicationDelegate, NSMenuDelega
     private func showStartupErrorAndQuit(_ message: String) {
         fputs(message + "\n", stderr)
         let alert = NSAlert()
-        alert.messageText = "MenuBarGif startup error"
+        alert.messageText = "MenuBar Load Runner startup error"
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
@@ -825,7 +825,7 @@ private final class MenuBarGifApp: NSObject, NSApplicationDelegate, NSMenuDelega
     private func showRuntimeError(_ message: String) {
         NSSound.beep()
         let alert = NSAlert()
-        alert.messageText = "MenuBarGif"
+        alert.messageText = "MenuBar Load Runner"
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
@@ -1218,7 +1218,7 @@ private final class MenuBarGifApp: NSObject, NSApplicationDelegate, NSMenuDelega
 switch Config.parse() {
 case .config(let config):
     let app = NSApplication.shared
-    let delegate = MenuBarGifApp(config: config)
+    let delegate = MenuBarLoadRunnerApp(config: config)
     app.delegate = delegate
     app.run()
 case .help:

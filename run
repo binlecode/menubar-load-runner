@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-readonly APP_CMD_NAME="menubar-gif/run"
+readonly APP_CMD_NAME="menubar-load-runner/run"
 
 resolve_script_dir() {
   local source dir
@@ -29,7 +29,7 @@ print_help() {
   cat <<EOF
 Usage:
   $APP_CMD_NAME [dog-white|dog-black|horse-black|horse|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|raining|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
-  MENUBAR_GIF_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -70,7 +70,7 @@ Examples:
   $APP_CMD_NAME dog-black --overlay-text CPU
   $APP_CMD_NAME horse --speed-multiplier 1.2
   $APP_CMD_NAME --foreground horse-black
-  MENUBAR_GIF_PATH=/tmp/cat.gif $APP_CMD_NAME
+  MENUBAR_LOAD_RUNNER_PATH=/tmp/cat.gif $APP_CMD_NAME
 EOF
 }
 
@@ -178,8 +178,8 @@ main() {
     esac
   fi
 
-  local swift_src="$script_dir/MenuBarGif.swift"
-  local swift_bin="$script_dir/MenuBarGif"
+  local swift_src="$script_dir/MenuBarLoadRunner.swift"
+  local swift_bin="$script_dir/MenuBarLoadRunner"
 
   if [[ ! -x "$swift_bin" ]] || [[ "$swift_src" -nt "$swift_bin" ]]; then
     if swiftc -O "$swift_src" -o "$swift_bin" >/dev/null 2>&1; then
@@ -194,20 +194,20 @@ main() {
 
   # Enforce singleton unless --extra is specified
   if (( ! allow_extra )); then
-    # find any running MenuBarGif instances (excluding grep and this script process)
+    # find any running MenuBarLoadRunner instances (excluding grep and this script process)
     local existing_pids
-    existing_pids=($(pgrep -f "MenuBarGif.*\.gif" || true))
+    existing_pids=($(pgrep -f "MenuBarLoadRunner.*\.gif" || true))
     if [[ ${#existing_pids[@]} -gt 0 ]]; then
-      print -u2 "$APP_CMD_NAME: An instance of MenuBarGif is already running (PID: ${existing_pids[*]})."
+      print -u2 "$APP_CMD_NAME: An instance of MenuBarLoadRunner is already running (PID: ${existing_pids[*]})."
       print -u2 "Use --extra to launch multiple instances."
       exit 1
     fi
   fi
 
   if (( launch_detached )); then
-    log_file="${MENUBAR_GIF_LOG_FILE:-/tmp/menubar-gif.log}"
+    log_file="${MENUBAR_LOAD_RUNNER_LOG_FILE:-/tmp/menubar-load-runner.log}"
     mkdir -p -- "$(dirname -- "$log_file")"
-    MENUBAR_GIF_BIN_NAME="$APP_CMD_NAME" \
+    MENUBAR_LOAD_RUNNER_BIN_NAME="$APP_CMD_NAME" \
       nohup "${swift_cmd[@]}" >>"$log_file" 2>&1 < /dev/null &
     pid=$!
     disown "$pid" 2>/dev/null || true

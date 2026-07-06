@@ -1,11 +1,11 @@
-# MenuBar GIF
+# MenuBar Load Runner
 
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to current system CPU load.
 
 ## Files
 
-- `MenuBarGif.swift`: app source.
+- `MenuBarLoadRunner.swift`: app source.
 - `run`: launcher script.
 - `gifs/running-dog-white.gif`: built-in white dog preset (transparent).
 - `gifs/running-dog-black.gif`: built-in black dog preset (transparent).
@@ -23,7 +23,7 @@ Animation speed automatically adapts to current system CPU load.
 From the `macos` directory:
 
 ```bash
-menubar-gif/run
+menubar-load-runner/run
 ```
 
 This uses the built-in `horse-white` preset and one-slot width by default (`NSStatusItem.squareLength`).
@@ -32,65 +32,65 @@ It launches detached by default, so it keeps running even if the host shell exit
 To run attached to the current shell session:
 
 ```bash
-menubar-gif/run --foreground
+menubar-load-runner/run --foreground
 ```
 
-`rungif` is a thin wrapper and supports the same flags (`--foreground`, `--no-detach`, `--detach`).
+`loadrunner` is a thin wrapper and supports the same flags (`--foreground`, `--no-detach`, `--detach`).
 
 ## Built-in presets
 
 ```bash
 # Default
-menubar-gif/run horse-white
+menubar-load-runner/run horse-white
 
 # Black horse preset (Pinterest silhouette, slightly wider slot scaling)
-menubar-gif/run horse-black
+menubar-load-runner/run horse-black
 
 # Alias for horse-black
-menubar-gif/run horse
+menubar-load-runner/run horse
 
 # Totoro preset
-menubar-gif/run totoro
+menubar-load-runner/run totoro
 
 # White Totoro group preset (transparent, defaults to 4 width units)
-menubar-gif/run totoro-group-white
+menubar-load-runner/run totoro-group-white
 
 # Black Totoro group preset (transparent, defaults to 4 width units)
-menubar-gif/run totoro-group-black
+menubar-load-runner/run totoro-group-black
 
 # White Totoro preset
-menubar-gif/run totoro-white
+menubar-load-runner/run totoro-white
 
 # Black Totoro preset
-menubar-gif/run totoro-black
+menubar-load-runner/run totoro-black
 
 # White dog preset
-menubar-gif/run dog-white
+menubar-load-runner/run dog-white
 
 # Black dog preset
-menubar-gif/run dog-black
+menubar-load-runner/run dog-black
 
 # Raining sticker preset
-menubar-gif/run raining
+menubar-load-runner/run raining
 
 ```
 
 ## Use a custom GIF
 
 ```bash
-menubar-gif/run /absolute/path/to/your.gif
+menubar-load-runner/run /absolute/path/to/your.gif
 ```
 
 Or:
 
 ```bash
-MENUBAR_GIF_PATH=/absolute/path/to/your.gif menubar-gif/run
+MENUBAR_GIF_PATH=/absolute/path/to/your.gif menubar-load-runner/run
 ```
 
 ## Fixed width override
 
 ```bash
-menubar-gif/run --width 2
+menubar-load-runner/run --width 2
 ```
 
 `--width` sets requested menu bar width in slots (`1..4`) and scales the GIF to fill that width.
@@ -99,13 +99,13 @@ The effective width is clamped to each preset's minimum. For example, `totoro-gr
 ## Fixed speed override
 
 ```bash
-menubar-gif/run --speed-multiplier 1.2
+menubar-load-runner/run --speed-multiplier 1.2
 ```
 
 ## Runtime text overlay
 
 ```bash
-menubar-gif/run dog-black --overlay-text CPU
+menubar-load-runner/run dog-black --overlay-text CPU
 ```
 
 `--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
@@ -122,13 +122,13 @@ Auto speed ranges are preset-dependent:
 ## Help
 
 ```bash
-menubar-gif/run --help
+menubar-load-runner/run --help
 ```
 
 ## Stop
 
 ```bash
-pkill -f 'MenuBarGif.swift'
+pkill -f 'MenuBarLoadRunner.swift'
 ```
 
 ## Menu actions

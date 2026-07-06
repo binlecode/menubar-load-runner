@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-readonly APP_CMD_NAME="menubar-load-runner/run"
+readonly APP_CMD_NAME="menubar-load-runner/menubar-load-runner"
 
 resolve_script_dir() {
   local source dir

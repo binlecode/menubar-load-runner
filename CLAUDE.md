@@ -33,16 +33,20 @@ Run from the repository root:
 ```
 
 - The launcher (`menubar-load-runner`, a zsh script) compiles `MenuBarLoadRunner.swift` with
-  `swiftc -O` into the `MenuBarLoadRunner` binary next to it, and only recompiles when the source is newer
-  than the binary. If `swiftc` fails, it falls back to `swift <file>` (interpreted, no cached binary).
+  `swiftc -O -strict-concurrency=complete` into the `MenuBarLoadRunner` binary next to it, and only
+  recompiles when the source is newer than the binary. If `swiftc` fails, it falls back to
+  `swift <file>` (interpreted, no cached binary). The `-strict-concurrency=complete` flag opts into
+  full data-race checking; the two classes are annotated `@MainActor`, so the build is warning-clean.
+  It runs in Swift 5 mode, so any future concurrency violation surfaces as a warning, not a hard build
+  break.
 - There's no separate "build" step — editing `MenuBarLoadRunner.swift` and re-running `./menubar-load-runner`
   is the whole loop. To force a rebuild without relying on the mtime check:
   ```bash
-  swiftc -O MenuBarLoadRunner.swift -o MenuBarLoadRunner
+  swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o MenuBarLoadRunner
   ```
 - To check compile errors quickly without launching the app:
   ```bash
-  swiftc -O MenuBarLoadRunner.swift -o tmp/mblr-check
+  swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o tmp/mblr-check
   ```
 - The launcher enforces a singleton via `pgrep -f "MenuBarLoadRunner.*\.gif"` — only one instance runs unless
   `--extra` is passed. When iterating locally, stop any running instance first:

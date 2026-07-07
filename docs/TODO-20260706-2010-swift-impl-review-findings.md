@@ -92,6 +92,18 @@ before/after.
 
 ## 2. No Swift 6 concurrency posture
 
+**Status: RESOLVED (2026-07-06).** Both `CPULoadMonitor` and `MenuBarLoadRunnerApp` are now
+annotated `@MainActor`, and the launcher (`menubar-load-runner`) builds with
+`swiftc -O -strict-concurrency=complete` (interpreted fallback: `swift -strict-concurrency=complete`),
+verified to be accepted by the interpreter. Chose Swift 5 mode + `-strict-concurrency=complete`
+(not `-swift-version 6`) so future violations surface as warnings, not hard build breaks. Adding
+`@MainActor` took strict-concurrency diagnostics from 120 → 0: the only two residual sites were the
+screen-parameters observer closure (now wrapped in `MainActor.assumeIsolated`, safe because it's
+registered with `queue: .main`) and the overlay focus hack — the latter fixed together with item #7.
+The `@objc`/`Timer(target:selector:)` callbacks produced zero diagnostics, so this did NOT require
+the item #8 closure-based-timer refactor. `CLAUDE.md`'s build commands were updated to include the
+flag.
+
 **Where**: Whole file, especially `MenuBarLoadRunnerApp` (line 227) and `CPULoadMonitor`
 (line 157).
 
@@ -255,6 +267,19 @@ so VoiceOver reflects current load, not just a static name.
 
 ## 7. Overlay-text prompt uses a fragile triple-dispatch focus hack
 
+**Status: RESOLVED (2026-07-06).** Done alongside item #2 (the hack was also a strict-concurrency
+warning site). Focus is now handed to the field via `alert.window.initialFirstResponder = field`
+before `runModal()` (the deterministic mechanism), replacing the three staggered post-presentation
+dispatches. A single `DispatchQueue.main.async` hop remains as belt-and-suspenders — it re-asserts
+`makeFirstResponder(field)` (in case an AppKit version ignores `initialFirstResponder` on an NSAlert
+accessory view) and places the caret at the end of any pre-filled text, which needs the field editor
+that only exists once focused. Closures capture `field`/`alertWindow` weakly.
+
+**Manually verified working (2026-07-06)**: opened the overlay prompt from the real menu bar —
+field has focus on open and accepts text correctly. (Could not be validated headlessly: a
+bash-spawned probe process has no foreground window-server session, so `NSAlert.runModal()`
+short-circuits and returns the default button immediately instead of presenting.)
+
 **Where**: `promptOverlayText()`, lines 747-758:
 ```swift
 let focusField: () -> Void = { ... }
@@ -355,13 +380,15 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
 1. **#5** (fatalError → graceful quit) — trivial, pure safety win, do first.
 2. **#9** (README gaps) — trivial, docs-only, no code risk.
 3. **#6** (accessibility label) — trivial, one line.
-4. **#2** (Swift 6 / `@MainActor`) — low risk, do before any further refactors so subsequent
-   changes are caught by strict concurrency checking as they land.
+4. **#2** (Swift 6 / `@MainActor`) — ✅ done (see status note above). Now that
+   `-strict-concurrency=complete` is on, subsequent changes are caught by strict concurrency
+   checking as they land.
 5. **#1** (preset registry refactor) — ✅ done (see status note above); was the highest-value
    structural fix, and was completed before #3/#4 since both of those touch the game loop /
    speed logic that #1 has already consolidated behind `activePreset`.
-6. **#7** (focus hack) and **#8** (retain cycle style) — low priority, opportunistic — fold
-   into whichever of #3/#4 touches the same functions.
+6. **#7** (focus hack) — ✅ done, folded into #2 (shared strict-concurrency warning site).
+   **#8** (retain cycle style) — still pending; low priority, opportunistic — fold into
+   whichever of #3/#4 touches the same functions.
 7. **#3** (CADisplayLink) and **#4** (thermal/low-power awareness) — do last; both are
    behavior changes to the animation driver and deserve their own testing pass (verify smooth
    playback across all presets and speed multipliers, verify Low Power Mode / thermal

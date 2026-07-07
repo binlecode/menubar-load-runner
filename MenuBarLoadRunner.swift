@@ -18,6 +18,13 @@ private enum Tuning {
     static let cpuSmoothingAlpha: Double = 0.2
     static let loadSampleInterval: TimeInterval = 2.0
     static let speedUpdateHysteresis: Double = 0.08
+    // When the system is under power/thermal pressure (Low Power Mode, or serious/
+    // critical thermal state), THIS APP caps ITS OWN animation speed to this fraction
+    // of the preset's min..max range. This reduces only the app's own CPU use (fewer
+    // frame advances/redraws); it does NOT throttle the system or any other process.
+    // The app is strictly read-only w.r.t. system state. 0.5 = the app never animates
+    // faster than the midpoint of the speed range while under pressure.
+    static let constrainedSpeedCeilingFraction: Double = 0.5
     static let cpuStateLowThreshold: Double = 0.30
     static let cpuStateMediumThreshold: Double = 0.70
     static let dogSpeedMin: Double = 0.5
@@ -303,6 +310,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var requestedOverlayBold = true
     private var cachedLoadAverages: (Double, Double, Double)?
     private var screenObserver: NSObjectProtocol?
+    private var powerStateObserver: NSObjectProtocol?
+    private var thermalStateObserver: NSObjectProtocol?
+    private var occlusionObserver: NSObjectProtocol?
 
     init(config: Config) {
         self.config = config
@@ -459,13 +469,45 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 self?.renderCurrentFrame()
             }
         }
+
+        // Back off under power/thermal pressure the moment it changes, rather than
+        // waiting up to loadSampleInterval for the next CPU sample to notice.
+        powerStateObserver = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reevaluateSpeedForCurrentConditions() }
+        }
+        thermalStateObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reevaluateSpeedForCurrentConditions() }
+        }
+
+        // Pause the whole game loop when the status item's window is fully occluded
+        // (hidden behind the notch / menu-bar overflow, another Space, display off):
+        // there's no point re-rasterizing frames no one can see.
+        if let window = statusItem.button?.window {
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateAnimationForOcclusion() }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         stopGameLoop()
         loadTimer?.invalidate()
-        if let screenObserver {
-            NotificationCenter.default.removeObserver(screenObserver)
+        for observer in [screenObserver, powerStateObserver, thermalStateObserver, occlusionObserver] {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
         }
     }
 
@@ -573,12 +615,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         if config.speedMultiplierOverride == nil {
             let profile = currentSpeedProfile()
+            let constrained = isUnderPowerPressure ? " [throttled: low power/thermal]" : ""
             speedMultiplierItem.title = String(
-                format: "Speed Multiplier (auto %@ %.2fx..%.2fx): %.2fx",
+                format: "Speed Multiplier (auto %@ %.2fx..%.2fx): %.2fx%@",
                 profile.label,
                 profile.min,
                 profile.max,
-                speedMultiplier
+                speedMultiplier,
+                constrained
             )
         } else {
             speedMultiplierItem.title = String(format: "Speed Multiplier (fixed): %.2fx", speedMultiplier)
@@ -808,8 +852,48 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let profile = currentSpeedProfile()
         let clampedUsage = min(max(usage, 0), 1)
         let curvedUsage = pow(clampedUsage, profile.responseExponent)
-        let value = profile.min + ((profile.max - profile.min) * curvedUsage)
+        var value = profile.min + ((profile.max - profile.min) * curvedUsage)
+        if isUnderPowerPressure {
+            let ceiling = profile.min + (profile.max - profile.min) * Tuning.constrainedSpeedCeilingFraction
+            value = min(value, ceiling)
+        }
         return min(max(value, profile.min), profile.max)
+    }
+
+    // Reads system power/thermal state (getters only — never mutates it). True when
+    // the Mac is in Low Power Mode or thermally throttling, i.e. when this app should
+    // reduce its OWN animation work rather than add to the load it's displaying.
+    private var isUnderPowerPressure: Bool {
+        let info = ProcessInfo.processInfo
+        if info.isLowPowerModeEnabled { return true }
+        switch info.thermalState {
+        case .serious, .critical: return true
+        default: return false
+        }
+    }
+
+    // Recompute this app's OWN auto animation speed from the latest smoothed usage
+    // immediately, bypassing the sample-tick hysteresis. Called when power/thermal
+    // state flips so the app's self-imposed speed cap engages (or lifts) without
+    // waiting for the next loadSampleInterval tick. Changes nothing outside this app.
+    private func reevaluateSpeedForCurrentConditions() {
+        guard config.speedMultiplierOverride == nil, loadMonitor.hasSample else { return }
+        speedMultiplier = speedMultiplier(forUsage: loadMonitor.smoothedUsage)
+        refreshMenuMetrics()
+    }
+
+    // Pause the game loop while the status item is fully occluded, resume when it
+    // becomes visible again. On resume startGameLoop() re-syncs timing, so the
+    // animation picks up from the current frame rather than replaying skipped ones.
+    private func updateAnimationForOcclusion() {
+        guard let window = statusItem.button?.window else { return }
+        if window.occlusionState.contains(.visible) {
+            if displayLink == nil, fallbackTimer == nil {
+                startGameLoop()
+            }
+        } else {
+            stopGameLoop()
+        }
     }
 
     // Drives frame advancement off the display's refresh signal via CADisplayLink

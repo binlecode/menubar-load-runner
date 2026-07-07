@@ -362,7 +362,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         button.imagePosition = .imageOnly
-        button.imageScaling = requestedWidthSlots == nil ? .scaleProportionallyUpOrDown : .scaleAxesIndependently
+        // imageScaling is set by applySizing() below (before the first renderCurrentFrame).
         button.toolTip = activeGifPath
         // Base label for VoiceOver; refreshMenuMetrics() enriches it with live CPU load.
         button.setAccessibilityLabel("MenuBar Load Runner")
@@ -525,7 +525,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
-        let speedMode = config.speedMultiplierOverride == nil
+        let speedMode = isAutoSpeed
             ? "Speed adapts to system CPU load."
             : "Fixed speed multiplier: \(String(format: "%.2f", speedMultiplier))x."
         alert.informativeText = "Displays an animated GIF in the macOS menu bar.\n\(speedMode)"
@@ -591,7 +591,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         cachedLoadAverages = readSystemLoadAverages()
 
         if let usage = loadMonitor.sampleUsage() {
-            if config.speedMultiplierOverride == nil {
+            if isAutoSpeed {
                 let candidate = speedMultiplier(forUsage: usage)
                 if abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis {
                     // The driver reads speedMultiplier live via the accumulator, so the
@@ -626,7 +626,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring CPU load")
         }
 
-        if config.speedMultiplierOverride == nil {
+        if isAutoSpeed {
             let profile = currentSpeedProfile()
             let constrained = isUnderPowerPressure ? " [throttled: low power/thermal]" : ""
             speedMultiplierItem.title = String(
@@ -763,10 +763,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         requestedOverlayBold = boldToggle.state == .on
         let input = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else {
-            requestedOverlayText = nil
-            updateRenderedFrames()
-            renderCurrentFrame()
-            refreshOverlaySelectionState()
+            applyOverlayCleared()
             return
         }
 
@@ -783,6 +780,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     @objc
     private func clearOverlayText() {
+        applyOverlayCleared()
+    }
+
+    private func applyOverlayCleared() {
         requestedOverlayText = nil
         updateRenderedFrames()
         renderCurrentFrame()
@@ -890,7 +891,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // state flips so the app's self-imposed speed cap engages (or lifts) without
     // waiting for the next loadSampleInterval tick. Changes nothing outside this app.
     private func reevaluateSpeedForCurrentConditions() {
-        guard config.speedMultiplierOverride == nil, loadMonitor.hasSample else { return }
+        guard isAutoSpeed, loadMonitor.hasSample else { return }
         speedMultiplier = speedMultiplier(forUsage: loadMonitor.smoothedUsage)
         refreshMenuMetrics()
     }
@@ -996,8 +997,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func renderCurrentFrame() {
         guard let button = statusItem.button, !renderedFrames.isEmpty, frameIndex < renderedFrames.count else { return }
-        
-        button.imageScaling = requestedWidthSlots != nil ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
         button.image = renderedFrames[frameIndex]
     }
 
@@ -1074,6 +1073,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func applySizing() {
         guard !frames.isEmpty else { return }
+        // imageScaling depends only on auto vs. fixed width, which changes on a width/preset
+        // selection — never per frame. Set it here (every mode-change path calls applySizing)
+        // rather than in the per-frame renderCurrentFrame hot path.
+        statusItem.button?.imageScaling = requestedWidthSlots != nil ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
         let baseSlotWidth = max(NSStatusBar.system.thickness, Tuning.minBaseSlotWidth)
         if requestedWidthSlots != nil {
             statusItem.length = ceil(baseSlotWidth * CGFloat(effectiveWidthSlots()))
@@ -1102,9 +1105,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         activePreset?.speedProfile ?? Self.customSpeedProfile
     }
 
-    private func currentPresetKind() -> PresetKind {
-        activePreset?.kind ?? .custom
-    }
+    // True when animation speed is CPU-driven (no `--speed-multiplier` override).
+    private var isAutoSpeed: Bool { config.speedMultiplierOverride == nil }
 
     private func loadFrames(from path: String) -> Bool {
         let gifURL = URL(fileURLWithPath: path)

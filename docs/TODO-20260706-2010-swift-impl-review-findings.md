@@ -244,57 +244,49 @@ for `NSStatusItem` is the fiddliest part and may need experimentation.
 
 ---
 
-## 5. Force-unwrapped IUOs and a `fatalError` on the startup hot path
+## 5. `fatalError` on the startup hot path
 
-**Status: PARTIALLY RESOLVED (2026-07-06).** Did the high-value half — the startup
-`fatalError`. The `statusItem.button == nil` guard now calls
+**Status: RESOLVED (2026-07-06).** The `statusItem.button == nil` guard now calls
 `showStartupErrorAndQuit("Unable to create NSStatusItem button.")` + `return`, matching the
 existing graceful path used for GIF-decode failure (no new helper). Verified: builds
 warning-clean under `-strict-concurrency=complete`; launched detached from the real menu bar,
-ran stably with an empty log (success path unchanged). Deliberately left the ~20 IUO menu-item
-properties as-is — the proposed struct-grouping is medium-risk, vaguely specified, and was
-meant to fold into the #1 preset-registry refactor (now complete); it's not worth a standalone
-pass. The IUOs remain guaranteed non-nil after `applicationDidFinishLaunching` and are never
-accessed before then.
+ran stably with an empty log (success path unchanged).
 
-**Where**:
-- IUO properties: `statusItem: NSStatusItem!` (line 256), `infoMenu: NSMenu!` (line 257), and
-  ~20 more `NSMenuItem!` properties (lines 258-279).
-- `fatalError`: `guard let button = statusItem.button else { fatalError("Unable to create
-  NSStatusItem button") }` (lines 320-322).
+The IUO-cleanup half of the original finding (force-unwrapped menu/status-item properties)
+was **split off into #10** — it's an independent stylistic cleanup with no dependency on this
+`fatalError` fix, so it no longer blocks closing this item.
 
-**Issue**: All menu/status-item properties are force-unwrapped optionals initialized only in
-`applicationDidFinishLaunching`, and if `statusItem.button` is ever `nil` (e.g. some future
-macOS behavior change, or running under an unusual session type with no menu bar), the app
-`fatalError`s — a hard crash — rather than degrading. This is inconsistent with the rest of
-the file's error-handling philosophy: GIF-load failures already correctly show an alert and
-quit gracefully via `showStartupErrorAndQuit()` (lines 511-522) instead of crashing.
+**Where**: `guard let button = statusItem.button else { fatalError("Unable to create
+NSStatusItem button") }` (was near line 355).
 
-**Fix proposal**:
-1. Replace the `fatalError` with the same pattern used for GIF failures:
-   ```swift
-   guard let button = statusItem.button else {
-       showStartupErrorAndQuit("Unable to create NSStatusItem button.")
-       return
-   }
-   ```
-2. For the ~20 IUO menu item properties, either:
-   - (Minimal change) Leave them as IUOs but add a comment noting they're guaranteed
-     non-nil after `applicationDidFinishLaunching` completes and are never accessed before
-     then — acceptable given this is a single-init, single-purpose delegate.
-   - (More thorough) Group related items into small structs (e.g. `WidthMenuUI { statusItem,
-     menuItem, autoItem, slotItems }`, `OverlayMenuUI { statusItem, menuItem, setItem,
-     clearItem }`) built once and returned from a `makeWidthMenu() -> WidthMenuUI` factory —
-     this also shrinks the preset-registry refactor in item #1 by giving preset menu items the
-     same treatment.
+**Issue**: If `statusItem.button` is ever `nil` (e.g. some future macOS behavior change, or
+running under an unusual session type with no menu bar), the app `fatalError`s — a hard crash —
+rather than degrading. This is inconsistent with the rest of the file's error-handling
+philosophy: GIF-load failures already correctly show an alert and quit gracefully via
+`showStartupErrorAndQuit()` instead of crashing.
 
-**Risk/cost**: Low for the `fatalError` fix (pure win, no behavior change in the success
-path). Medium for the full IUO cleanup — recommend doing only the `fatalError` fix now and
-folding the menu-item struct grouping into the item #1 refactor rather than as a separate pass.
+**Fix proposal**: Replace the `fatalError` with the same pattern used for GIF failures:
+```swift
+guard let button = statusItem.button else {
+    showStartupErrorAndQuit("Unable to create NSStatusItem button.")
+    return
+}
+```
+
+**Risk/cost**: Low — pure win, no behavior change in the success path.
 
 ---
 
 ## 6. No accessibility label on the status item
+
+**Status: RESOLVED (2026-07-06).** Set a static base label
+`button.setAccessibilityLabel("MenuBar Load Runner")` at launch (right after `button.toolTip`),
+and enriched it with live state inside `refreshMenuMetrics()`: `"MenuBar Load Runner — CPU
+NN%, <state>"` once a sample exists, `"MenuBar Load Runner — measuring CPU load"` while warming
+up. Because `refreshMenuMetrics()` runs on every 2s `sampleSystemLoad()` tick (not just
+`menuWillOpen`), the VoiceOver description tracks current load without the user opening the
+menu. Compiles warning-clean under `-strict-concurrency=complete`. Skipped
+`setAccessibilityHelp` — the enriched label already carries the meaningful description.
 
 **Where**: `applicationDidFinishLaunching`, around line 326 (`button.toolTip =
 activeGifPath`).
@@ -391,6 +383,15 @@ Low-Power-Mode changes for the load timer).
 
 ## 9. README omissions relative to the launcher's actual flag surface
 
+**Status: RESOLVED (2026-07-06).** All four gaps closed in `README.md`, cross-checked against
+the launcher's actual behavior (`--extra` flag, `pgrep -f "MenuBarLoadRunner.*\.gif"` singleton,
+`/tmp/menubar-load-runner.log` + `MENUBAR_LOAD_RUNNER_LOG_FILE` override). Added: (1+4) a "Notes"
+block under "Run Locally" documenting the single-instance check / `--extra` override and the
+detached-log location; (2) `--extra` appended to the "Global Command Wrapper" flag list; (3) a
+log-file pointer in "Stop" for diagnosing a detached launch that won't stop or silently fails.
+Kept it inline rather than adding a separate flags table — matches the README's existing minimal
+style. Docs-only, no code touched.
+
 **Where**: `README.md` (all sections), cross-checked against `menubar-load-runner`
 (`print_help()`) and `CLAUDE.md`.
 
@@ -427,11 +428,51 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
 
 ---
 
+## 10. Force-unwrapped IUO menu/status-item properties
+
+**Status: PENDING.** Split off from #5 (2026-07-06). Was originally the second half of the
+`fatalError` finding; kept separate because it's a pure stylistic/defensive cleanup with no
+latent bug behind it, whereas the `fatalError` was a real crash path (now fixed). Its one-time
+dependency — "fold into the #1 preset-registry refactor so preset menu items get the same
+struct treatment" — is now moot: #1 is complete and already replaced the ~10 preset
+`NSMenuItem!` properties with the `presetMenuItems: [NSMenuItem]` array. What remains is the
+fixed set of dashboard/width/overlay IUOs.
+
+**Where**: `statusItem: NSStatusItem!` (line 281), `infoMenu: NSMenu!` (line 282), and the
+dashboard/width/overlay `NSMenuItem!` properties (lines 283-294):
+`cpuUsageItem`/`loadAverageItem`/`cpuStateItem`/`speedMultiplierItem`,
+`widthStatusItem`/`widthMenuItem`/`widthAutoItem`,
+`overlayStatusItem`/`overlayMenuItem`/`overlaySetItem`/`overlayClearItem`.
+
+**Issue**: These menu/status-item properties are force-unwrapped optionals initialized only in
+`applicationDidFinishLaunching`. There's no *live* bug — they're `@MainActor`-isolated, set
+once at launch, and never accessed before launch completes, so the non-nil promise is actually
+kept. The concern is purely that the `!` gives up compiler-enforced non-nil guarantees for no
+functional gain.
+
+**Fix proposal**: Either —
+- (Minimal) Leave them as IUOs but add a comment noting they're guaranteed non-nil after
+  `applicationDidFinishLaunching` completes and are never accessed before then — acceptable
+  given this is a single-init, single-purpose delegate. This is enough to close the item.
+- (More thorough) Group related items into small structs (e.g. `WidthMenuUI { statusItem,
+  menuItem, autoItem, slotItems }`, `OverlayMenuUI { statusItem, menuItem, setItem, clearItem }`)
+  built once and returned from `makeWidthMenu()`/`makeOverlayMenu()` factories, wired into the
+  existing `refresh*SelectionState()` functions.
+
+**Risk/cost**: Trivial for the minimal comment option; Medium for the struct-grouping option
+(touches `applicationDidFinishLaunching` menu construction + every refresh function, zero
+behavior change). Lowest priority of the pending items — no bug, no warning, builds clean.
+Best done opportunistically if `applicationDidFinishLaunching` / menu construction is being
+touched for another reason; otherwise the minimal comment option is the honest way to close it.
+
+---
+
 ## Suggested execution order
 
 1. **#5** (fatalError → graceful quit) — trivial, pure safety win, do first.
-2. **#9** (README gaps) — trivial, docs-only, no code risk.
-3. **#6** (accessibility label) — trivial, one line.
+2. **#9** (README gaps) — ✅ done (see status note above); Notes block, `--extra`, log pointer.
+3. **#6** (accessibility label) — ✅ done (see status note above); static label at launch +
+   live CPU-load enrichment in `refreshMenuMetrics()`.
 4. **#2** (Swift 6 / `@MainActor`) — ✅ done (see status note above). Now that
    `-strict-concurrency=complete` is on, subsequent changes are caught by strict concurrency
    checking as they land.
@@ -446,3 +487,10 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
    now moot for the loop driver — the `CADisplayLink`/`Timer` are held directly and torn down in
    `stopGameLoop()`; the `Timer(target:selector:)` retain-cycle note only still applies to
    `loadTimer` in `startLoadMonitoring()`.
+8. **#8** (retain cycle style) and **#10** (IUO menu-item cleanup) — both still pending, both
+   lowest-priority and opportunistic, do last. Neither has a blocking dependency now (#10's
+   former dependency on #1 is satisfied). Fold each into whatever unrelated change next touches
+   the same code: #8 into anything editing `startLoadMonitoring()`'s `loadTimer`; #10 into
+   anything editing `applicationDidFinishLaunching`'s menu construction. If neither gets touched,
+   #10 can be closed cheaply with the minimal-comment option; #8 can be left as-is (harmless
+   given the delegate's process-long lifetime).

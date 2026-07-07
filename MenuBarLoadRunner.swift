@@ -360,6 +360,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         button.imagePosition = .imageOnly
         button.imageScaling = requestedWidthSlots == nil ? .scaleProportionallyUpOrDown : .scaleAxesIndependently
         button.toolTip = activeGifPath
+        // Base label for VoiceOver; refreshMenuMetrics() enriches it with live CPU load.
+        button.setAccessibilityLabel("MenuBar Load Runner")
 
         infoMenu = NSMenu()
         infoMenu.delegate = self
@@ -609,9 +611,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if loadMonitor.hasSample {
             cpuUsageItem.title = String(format: "CPU Usage (smoothed): %.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
             cpuStateItem.title = "CPU State: \(cpuStateText(for: loadMonitor.smoothedUsage))"
+            statusItem.button?.setAccessibilityLabel(String(
+                format: "MenuBar Load Runner — CPU %.0f%%, %@",
+                loadMonitor.smoothedUsage * Tuning.percentScale,
+                cpuStateText(for: loadMonitor.smoothedUsage)
+            ))
         } else {
             cpuUsageItem.title = "CPU Usage (smoothed): warming up..."
             cpuStateItem.title = "CPU State: warming up..."
+            statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring CPU load")
         }
 
         if config.speedMultiplierOverride == nil {

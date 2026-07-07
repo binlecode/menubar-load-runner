@@ -181,12 +181,15 @@ main() {
   local swift_src="$script_dir/MenuBarLoadRunner.swift"
   local swift_bin="$script_dir/MenuBarLoadRunner"
 
+  # -strict-concurrency=complete opts into full data-race checking (Swift 5 mode, so
+  # violations surface as warnings rather than breaking the build). The source is annotated
+  # @MainActor to satisfy it; see docs for the concurrency posture.
   if [[ ! -x "$swift_bin" ]] || [[ "$swift_src" -nt "$swift_bin" ]]; then
-    if swiftc -O "$swift_src" -o "$swift_bin" >/dev/null 2>&1; then
+    if swiftc -O -strict-concurrency=complete "$swift_src" -o "$swift_bin" >/dev/null 2>&1; then
       swift_cmd=("$swift_bin" "$@")
     else
       mkdir -p -- "$swift_module_cache"
-      swift_cmd=(swift -module-cache-path "$swift_module_cache" "$swift_src" "$@")
+      swift_cmd=(swift -strict-concurrency=complete -module-cache-path "$swift_module_cache" "$swift_src" "$@")
     fi
   else
     swift_cmd=("$swift_bin" "$@")

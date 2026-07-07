@@ -246,6 +246,17 @@ for `NSStatusItem` is the fiddliest part and may need experimentation.
 
 ## 5. Force-unwrapped IUOs and a `fatalError` on the startup hot path
 
+**Status: PARTIALLY RESOLVED (2026-07-06).** Did the high-value half — the startup
+`fatalError`. The `statusItem.button == nil` guard now calls
+`showStartupErrorAndQuit("Unable to create NSStatusItem button.")` + `return`, matching the
+existing graceful path used for GIF-decode failure (no new helper). Verified: builds
+warning-clean under `-strict-concurrency=complete`; launched detached from the real menu bar,
+ran stably with an empty log (success path unchanged). Deliberately left the ~20 IUO menu-item
+properties as-is — the proposed struct-grouping is medium-risk, vaguely specified, and was
+meant to fold into the #1 preset-registry refactor (now complete); it's not worth a standalone
+pass. The IUOs remain guaranteed non-nil after `applicationDidFinishLaunching` and are never
+accessed before then.
+
 **Where**:
 - IUO properties: `statusItem: NSStatusItem!` (line 256), `infoMenu: NSMenu!` (line 257), and
   ~20 more `NSMenuItem!` properties (lines 258-279).

@@ -13,8 +13,9 @@ volatile line positions that rot on every edit.
 
 This document is a structural map of the code as it exists, for resync whenever either source file
 changes; the body carries only the minimal rationale needed to make a behavior legible. Review-style
-observations (modularity / DRY / API boundaries) are **not** kept here — they live in
-`docs/TODO-20260706-2303-antipatterns-from-design-review.md` (see Appendix B).
+observations (modularity / DRY / API boundaries) are **not** kept in the body — the one such review
+pass to date has been closed out, with per-item outcomes and the rationale for what was declined
+recorded in Appendix B.
 
 It reflects the current implemented state including: the `@MainActor`/`-strict-concurrency=complete`
 concurrency posture (§4); self-throttling of the app's own animation under power/thermal pressure
@@ -1049,19 +1050,40 @@ Grounded characterization of the code's *shape*, derived from the diagrams in §
   pipeline (`loadFrames` → `frames`/`frameAspects`/`baseDurations`) and the render pipeline
   (`updateRenderedFrames` → `renderedFrames`), as documented in §13–§14.
 
-## Appendix B — Structural observations → tracked separately
+## Appendix B — Structural observations (resolved)
 
 The duplication / dead-code / modularity observations surfaced while verifying this document
-(preset table defined twice across launcher + Swift, the 4× `speedMultiplierOverride == nil` test,
-the byte-identical overlay-clear paths, dead `currentPresetKind()`, per-frame `imageScaling`
-re-assignment, un-memoized `updateRenderedFrames()`, and the ~985-line hub shape) are **not
-recommendations for this structural map** and have been moved to an actionable TODO with
-implementation-ready detail:
+were tracked in a since-deleted TODO (`TODO-20260706-2303-antipatterns-from-design-review.md`)
+and closed out on 2026-07-07. Outcomes, recorded here so the rationale survives:
 
-> `docs/TODO-20260706-2303-antipatterns-from-design-review.md`
+**Applied** (the sections above already reflect these):
+- **#1 — dead `currentPresetKind()`**: deleted (zero callers); `enum PresetKind` retained.
+- **#2 — `isAutoSpeed`**: extracted the 4× `config.speedMultiplierOverride == nil` predicate
+  into one computed property.
+- **#3 — overlay-clear dedup**: `clearOverlayText` and `promptOverlayText`'s empty-input branch
+  now share `applyOverlayCleared()`.
+- **#4 — per-frame `imageScaling`**: moved off the `renderCurrentFrame` hot path into
+  `applySizing()` (§14); it depends only on auto-vs-fixed width, which changes on selection, not
+  per frame.
+- **#6 — cross-language preset duplication**: Swift now owns keyword→path resolution
+  (`allPresets` + `Config.defaultPreset`); the launcher's parallel path table and keyword switch
+  were deleted (§3.3, §6, §8.1, §9.1, §18). This is the largest structural win here.
 
-Each item there is ranked by value × effort and grounded in the same symbols this document maps.
-As of 2026-07-07 the quick wins (#1 dead `currentPresetKind()`, #2 `isAutoSpeed`, #3 overlay-clear
-dedup, #4 per-frame `imageScaling`) and #6 (the cross-language preset duplication — this document's
-launcher/`Config`/`init` sections above reflect the resolved single-language design) are DONE;
-#5 (memoize `updateRenderedFrames()`) and #7 (extract clusters from the hub) remain open by choice.
+**Evaluated and deliberately declined** (leaving them documented so they aren't re-proposed):
+- **#5 — memoize `updateRenderedFrames()`**: declined. It is *not* on the animation hot path
+  (the game loop reads precomputed `renderedFrames`, §14), so the only waste it removes is
+  re-rasterizing all frames on an occasional `didChangeScreenParametersNotification` that doesn't
+  actually change menu-bar thickness. A frame-count-based cache key risks showing stale art when
+  switching between two GIFs of equal frame count, which outweighs the rare-event gain. If ever
+  worth it, the safer form is to guard the screen-parameters observer to re-render only when
+  `NSStatusBar.system.thickness` actually changed — no per-frame cache key, no stale-art risk.
+- **#7 — extract cohesive clusters (`GifDecoder`/`FrameRenderer`/`SpeedController`) out of the
+  `MenuBarLoadRunnerApp` hub**: declined. The single-file shape is an intentional choice for an
+  app this size (per `CLAUDE.md`); extraction is tidiness with no behavior or ROI win. `GifDecoder`
+  (pure, no `@MainActor` state) is the cleanest starting point should this ever be revisited.
+
+**Noted but not scheduled** (inherent to the design, not defects): help/preset text partly
+duplicated across the launcher's `print_help` and Swift `Config.printUsage()` (launcher-only flags
+must be documented launcher-side); and the three `refresh*SelectionState()` methods sharing a shape
+(they mutate different menu items with genuinely different logic — a forced abstraction would
+obscure more than it saves).

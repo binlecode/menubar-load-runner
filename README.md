@@ -1,12 +1,15 @@
 # MenuBar Load Runner
 
 Small macOS menu bar app that renders an animated GIF in the status bar.
-Animation speed automatically adapts to current system CPU load.
+Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, or disk — see Load source below).
+
+Current version: **1.0.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 ## Files
 
 - `MenuBarLoadRunner.swift`: app source.
 - `menubar-load-runner`: launcher script.
+- `CHANGELOG.md`: release history (Keep a Changelog + semver).
 - `gifs/running-dog-white.gif`: built-in white dog preset (transparent).
 - `gifs/running-dog-black.gif`: built-in black dog preset (transparent).
 - `gifs/running-horse-black.gif`: built-in black horse preset (Pinterest silhouette, transparent).
@@ -16,7 +19,9 @@ Animation speed automatically adapts to current system CPU load.
 - `gifs/totoro-group-black.gif`: built-in black Totoro group preset (transparent).
 - `gifs/totoro-white.gif`: built-in white Totoro preset (transparent).
 - `gifs/totoro-black.gif`: built-in black Totoro preset (transparent).
-- `gifs/raining.gif`: built-in raining sticker preset (transparent, from Giphy).
+- `gifs/presets.json`: preset manifest — the single source of truth for each built-in preset's keyword,
+  menu title, GIF file, slot width, and auto speed range (and the default preset). Edit this to add or
+  tweak presets; no Swift change needed.
 
 ## Run Locally
 
@@ -37,7 +42,7 @@ To run attached to the current shell session:
 
 Notes:
 
-- **Single instance.** Only one instance runs at a time (enforced by a `pgrep -f "MenuBarLoadRunner.*\.gif"` check). Running any command below a second time does nothing unless you pass `--extra` to allow an additional instance.
+- **Single instance.** Only one instance runs at a time. Running any command below a second time does nothing unless you pass `--extra` to allow an additional instance.
 - **Detached logs.** A detached launch writes output to `/tmp/menubar-load-runner.log` (override with the `MENUBAR_LOAD_RUNNER_LOG_FILE` environment variable). Use `--foreground` to send output straight to your terminal instead.
 
 ## Global Command Wrapper
@@ -79,9 +84,6 @@ menubar-load-runner dog-black
 
 # Black dog preset
 ./menubar-load-runner dog-black
-
-# Raining sticker preset
-./menubar-load-runner raining
 ```
 
 ## Use a custom GIF
@@ -120,13 +122,32 @@ The effective width is clamped to each preset's minimum. For example, `totoro-gr
 `--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
 Overlay text is limited to 12 characters.
 
-Without `--speed-multiplier`, animation speed adapts to system CPU load.
-Auto speed ranges are preset-dependent:
-- `dog-white` / `dog-black` / custom GIF: `0.50x..2.50x`
-- `horse` / `horse-black` / `horse-white`: `0.45x..2.30x`
-- `totoro` / `totoro-white` / `totoro-black`: `0.50x..2.60x` (linear, proportional to CPU load)
-- `totoro-group-white` / `totoro-group-black`: `0.20x..2.00x` (linear, proportional to CPU load)
-- `raining`: `0.15x..4.25x` with eased ramp (much calmer at low CPU, stormier at high CPU)
+## Load source (what drives the animation)
+
+```bash
+./menubar-load-runner --load-source gpu
+MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network ./menubar-load-runner
+```
+
+`--load-source` (or the `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` env var) selects which system reader
+drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, or `disk`. Unknown values —
+or a source with no readable hardware on this machine — fall back to `cpu` (unavailable sources are
+disabled in the menu). It can also be switched live from the `Load Source` menu. All readers are
+unprivileged (no `sudo`); the app only ever *reads* load.
+
+- **cpu** (default): CPU usage across all cores.
+- **memory**: memory in use, combined with swap activity.
+- **gpu**: GPU utilization.
+- **network**: total interface throughput (rx+tx, loopback excluded).
+- **disk**: total block-device throughput (read+write across all drives).
+
+Without `--speed-multiplier`, animation speed adapts to the selected load source. Per-preset speed
+ranges are defined in `gifs/presets.json`; edit that file to change a range or add a preset (the app
+loads it at startup). Switching source changes *which* load value is mapped, not the preset's range.
+
+> How each source is measured and normalized — EMA smoothing, the memory + swap composite,
+> btop-style adaptive auto-scaling for the throughput (bytes/sec) sources, and self-throttling under
+> power/thermal/memory pressure — is documented in `docs/DESIGN-system.md` (§7, §12).
 
 ## Help
 
@@ -146,13 +167,13 @@ If a detached instance won't stop or a launch silently fails, check `/tmp/menuba
 
 Click the menu bar item to open:
 
-- `CPU Usage (smoothed)`
+- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`
 - `Load Avg (1/5/15m)`
-- `CPU State`
-- `Speed Multiplier` (shows mode and active range when auto)
+- `Speed Multiplier` (shows the active load source, mode, and active range when auto)
+- `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` status and `Width Options` (`auto`, `1`, `2`, `3`, `4` slots; preset minimum clamp applies)
 - `Overlay Text` (`Set Text...` with max 12 chars + bold toggle, `Clear`)
-- `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)` / `Raining`
+- `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `About`
 - `Exit`
 

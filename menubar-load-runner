@@ -28,14 +28,13 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|raining|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|raining|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
   MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
   dog-black   Built-in running dog (black)
   horse-black  Built-in running horse (black)
-  horse   Alias for horse-black
   horse-white   Built-in running horse (white, default)
   totoro  Built-in running Totoro
   totoro-group-white  Built-in Totoro group GIF (white, transparent)
@@ -58,7 +57,6 @@ Examples:
   $APP_CMD_NAME dog-white
   $APP_CMD_NAME dog-black
   $APP_CMD_NAME horse-black
-  $APP_CMD_NAME horse
   $APP_CMD_NAME horse-white
   $APP_CMD_NAME totoro
   $APP_CMD_NAME totoro-group-white
@@ -68,7 +66,7 @@ Examples:
   $APP_CMD_NAME raining
   $APP_CMD_NAME --width 2
   $APP_CMD_NAME dog-black --overlay-text CPU
-  $APP_CMD_NAME horse --speed-multiplier 1.2
+  $APP_CMD_NAME horse-black --speed-multiplier 1.2
   $APP_CMD_NAME --foreground horse-black
   MENUBAR_LOAD_RUNNER_PATH=/tmp/cat.gif $APP_CMD_NAME
 EOF
@@ -80,10 +78,7 @@ main() {
     exit 127
   fi
 
-  local script_dir swift_module_cache gifs_dir
-  local dog_white_gif dog_black_gif horse_black_gif horse_white_gif
-  local totoro_gif totoro_group_white_gif totoro_group_black_gif
-  local totoro_white_gif totoro_black_gif raining_gif default_gif
+  local script_dir swift_module_cache
   local launch_detached=1
   local allow_extra=0
   local log_file pid
@@ -91,18 +86,6 @@ main() {
 
   script_dir="$(resolve_script_dir)"
   swift_module_cache="${SWIFT_MODULE_CACHE:-/tmp/swift-module-cache}"
-  gifs_dir="$script_dir/gifs"
-  dog_white_gif="$gifs_dir/running-dog-white.gif"
-  dog_black_gif="$gifs_dir/running-dog-black.gif"
-  horse_black_gif="$gifs_dir/running-horse-black.gif"
-  horse_white_gif="$gifs_dir/running-horse-white.gif"
-  totoro_gif="$gifs_dir/totoro.gif"
-  totoro_group_white_gif="$gifs_dir/totoro-group-white.gif"
-  totoro_group_black_gif="$gifs_dir/totoro-group-black.gif"
-  totoro_white_gif="$gifs_dir/totoro-white.gif"
-  totoro_black_gif="$gifs_dir/totoro-black.gif"
-  raining_gif="$gifs_dir/raining.gif"
-  default_gif="$horse_white_gif"
 
   passthrough_args=()
   while [[ $# -gt 0 ]]; do
@@ -124,56 +107,14 @@ main() {
   done
   set -- "${passthrough_args[@]}"
 
-  if [[ $# -eq 0 ]]; then
-    set -- "$default_gif"
-  else
+  # Preset keyword → GIF path resolution and the default preset now live in Swift
+  # (MenuBarLoadRunnerApp.init / Config.defaultPreset), so the launcher forwards the
+  # positional arg unchanged and only intercepts its own --help.
+  if [[ $# -gt 0 ]]; then
     case "$1" in
       -h|--help)
         print_help
         exit 0
-        ;;
-      dog-white)
-        shift
-        set -- "$dog_white_gif" "$@"
-        ;;
-      dog-black)
-        shift
-        set -- "$dog_black_gif" "$@"
-        ;;
-      horse-black|horse)
-        shift
-        set -- "$horse_black_gif" "$@"
-        ;;
-      horse-white)
-        shift
-        set -- "$horse_white_gif" "$@"
-        ;;
-      totoro)
-        shift
-        set -- "$totoro_gif" "$@"
-        ;;
-      totoro-group-white)
-        shift
-        set -- "$totoro_group_white_gif" "$@"
-        ;;
-      totoro-group-black)
-        shift
-        set -- "$totoro_group_black_gif" "$@"
-        ;;
-      totoro-white)
-        shift
-        set -- "$totoro_white_gif" "$@"
-        ;;
-      totoro-black)
-        shift
-        set -- "$totoro_black_gif" "$@"
-        ;;
-      raining)
-        shift
-        set -- "$raining_gif" "$@"
-        ;;
-      -*)
-        set -- "$default_gif" "$@"
         ;;
     esac
   fi
@@ -197,9 +138,16 @@ main() {
 
   # Enforce singleton unless --extra is specified
   if (( ! allow_extra )); then
-    # find any running MenuBarLoadRunner instances (excluding grep and this script process)
+    # Match the compiled binary by its path — `/MenuBarLoadRunner` followed by a space
+    # (it has args) or end-of-line (env-var mode, no positional). Args no longer carry a
+    # `.gif` path now that Swift resolves preset keywords, so the old `.*\.gif` pattern
+    # would miss keyword launches. The trailing `( |$)` keeps this from matching an editor
+    # holding `MenuBarLoadRunner.swift` open, or a `swiftc`/`swift` build of the source.
+    # (The interpreted `swift …/MenuBarLoadRunner.swift` fallback, used only when swiftc
+    # fails, is intentionally not singleton-guarded.) pgrep -f excludes its own process;
+    # the lowercase launcher path `menubar-load-runner` never matches this pattern.
     local existing_pids
-    existing_pids=($(pgrep -f "MenuBarLoadRunner.*\.gif" || true))
+    existing_pids=($(pgrep -f "/MenuBarLoadRunner( |$)" || true))
     if [[ ${#existing_pids[@]} -gt 0 ]]; then
       print -u2 "$APP_CMD_NAME: An instance of MenuBarLoadRunner is already running (PID: ${existing_pids[*]})."
       print -u2 "Use --extra to launch multiple instances."

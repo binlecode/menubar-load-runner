@@ -162,8 +162,19 @@ after items 1–4.
 
 ## 6. Collapse the cross-language preset duplication
 
-**Status: PENDING.** Highest structural value; medium effort. This is the root cause of CLAUDE.md's
-"touch all of these together" preset checklist.
+**Status: DONE (2026-07-07) — Option A.** Swift now owns keyword resolution: `Config` captures the
+positional arg verbatim as `presetOrPath` (defaulting to `Config.defaultPreset = "horse-white"` when
+absent) and `MenuBarLoadRunnerApp.init` resolves it against `allPresets` by `key`, then falls back to
+matching by `path` for raw GIF paths. The launcher lost its 10 path vars, the keyword `case` switch, and
+its default injection — it now forwards the positional arg unchanged. The singleton `pgrep` moved from
+`"MenuBarLoadRunner.*\.gif"` to `"/MenuBarLoadRunner( |$)"` (matches the compiled binary path, not args;
+excludes editors/`swiftc`/the interpreted fallback). **Simplification vs. the original plan:** the
+`horse`→`horse-black` alias was dropped rather than reimplemented in Swift (per user direction — use
+canonical names). Smoke-tested: every preset keyword, a raw path, no-arg default, unknown keyword,
+singleton rejection, and `--extra` bypass. CLAUDE.md checklist + README updated.
+
+Was the root cause of CLAUDE.md's "touch all of these together" preset checklist; adding a preset is now
+a single-language (Swift `allPresets`) change plus docs.
 
 **Where**: launcher path table + keyword→path `case` switch (`menubar-load-runner`, path vars
 `~95-104`, switch `~135-174`); Swift `allPresets` `PresetDescriptor` registry (built in `init`,

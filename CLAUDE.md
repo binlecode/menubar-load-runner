@@ -48,8 +48,10 @@ Run from the repository root:
   ```bash
   swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o tmp/mblr-check
   ```
-- The launcher enforces a singleton via `pgrep -f "MenuBarLoadRunner.*\.gif"` — only one instance runs unless
-  `--extra` is passed. When iterating locally, stop any running instance first:
+- The launcher enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` — only one instance runs unless
+  `--extra` is passed. (The pattern matches the compiled binary path, not the process args, since args no
+  longer carry a `.gif` path now that Swift resolves preset keywords.) When iterating locally, stop any
+  running instance first:
   ```bash
   pkill -f 'MenuBarLoadRunner'
   ```
@@ -64,10 +66,11 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
 - **`Tuning`** — every magic number (speed ranges per preset, slot-width scaling, overlay font sizing, alpha
   trim threshold, hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than
   inlining new literals.
-- **`Config`** — CLI arg / env var parsing (`--width`, `--speed-multiplier`, `--overlay-text`, positional GIF
-  path or preset name, `MENUBAR_LOAD_RUNNER_PATH` fallback). Preset-name-to-path resolution happens in the
-  `menubar-load-runner` shell launcher, *not* here — by the time Swift sees `arg`, it's already an absolute
-  GIF path.
+- **`Config`** — CLI arg / env var parsing (`--width`, `--speed-multiplier`, `--overlay-text`, positional
+  preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
+  `presetOrPath` and defaults to `Config.defaultPreset` (`horse-white`) when absent; keyword→path resolution
+  happens in `MenuBarLoadRunnerApp.init` (matching `allPresets` by `key`, then by `path`), *not* in the shell
+  launcher, which now forwards the arg unchanged.
 - **`CPULoadMonitor`** — reads `host_processor_info`/`PROCESSOR_CPU_LOAD_INFO` via Mach APIs and exposes an
   EMA-smoothed CPU usage fraction (`Tuning.cpuSmoothingAlpha`). Requires two samples to produce a delta, so
   usage is nil until the second `sampleSystemLoad` tick.
@@ -125,10 +128,12 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
 
 Touch all of these together, or the preset will be inconsistent across the CLI, menu, and README:
 1. Add the GIF to `gifs/`.
-2. `menubar-load-runner` — add a `*_gif` path var, a `case` in the preset-name switch, and a line in
-   `print_help`'s preset list.
-3. `MenuBarLoadRunner.swift` — add one `PresetDescriptor` entry to the `allPresets` array literal in
+2. `MenuBarLoadRunner.swift` — add one `PresetDescriptor` entry to the `allPresets` array literal in
    `init(config:)` (reuse an existing `PresetKind` case, or add a new one, plus a `Tuning` min/max pair and a
-   `SpeedProfile` if it needs its own speed range). The menu item, `@objc` action, and every selection-state
-   check derive automatically from `allPresets` — no other call site needs touching.
+   `SpeedProfile` if it needs its own speed range). This is the single source of the preset's `key`, path, menu
+   title, and speed profile — the CLI keyword, menu item, `@objc` action, and every selection-state check all
+   derive automatically from it. No other Swift call site needs touching, and the launcher needs no change (it
+   forwards the keyword to Swift unchanged).
+3. `menubar-load-runner` — add a line to `print_help`'s preset list and usage string (docs only; the launcher
+   no longer maps keywords to paths).
 4. `README.md` — add it to the file list, the built-in presets command list, and the auto speed ranges table.

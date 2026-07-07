@@ -35,6 +35,11 @@ To run attached to the current shell session:
 ./menubar-load-runner --foreground
 ```
 
+Notes:
+
+- **Single instance.** Only one instance runs at a time (enforced by a `pgrep -f "MenuBarLoadRunner.*\.gif"` check). Running any command below a second time does nothing unless you pass `--extra` to allow an additional instance.
+- **Detached logs.** A detached launch writes output to `/tmp/menubar-load-runner.log` (override with the `MENUBAR_LOAD_RUNNER_LOG_FILE` environment variable). Use `--foreground` to send output straight to your terminal instead.
+
 ## Global Command Wrapper
 
 If you are using the companion `env-config` control plane, the launcher wrapper is symlinked directly on your `$PATH` as **`menubar-load-runner`**. This allows you to launch the load runner globally from any folder:
@@ -43,7 +48,7 @@ If you are using the companion `env-config` control plane, the launcher wrapper 
 menubar-load-runner dog-black
 ```
 
-`menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`).
+`menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`, `--extra`).
 
 ## Built-in presets
 
@@ -137,6 +142,8 @@ Auto speed ranges are preset-dependent:
 ```bash
 pkill -f 'MenuBarLoadRunner'
 ```
+
+If a detached instance won't stop or a launch silently fails, check `/tmp/menubar-load-runner.log` (or `$MENUBAR_LOAD_RUNNER_LOG_FILE` if set) first.
 
 ## Menu actions
 

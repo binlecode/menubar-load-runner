@@ -1,9 +1,10 @@
 # OS reader best practices — cross-review vs. `actop`
 
 Cross-review of `~/workspace_fullstack/actop` (a sudoless Apple Silicon performance monitor,
-Python + ctypes) against this repo's `CPULoadMonitor` (`MenuBarLoadRunner.swift:157-225`),
+Python + ctypes) against this repo's `CPULoadMonitor` (`MenuBarLoadRunner.swift:177-245`),
 to extract transferable best practices for reading OS/hardware metrics. Documentation only —
-no code changes made as part of this review. Date: 2026-07-06.
+no code changes made as part of this review. Date: 2026-07-06. Re-verified against source on
+2026-07-07 (line references refreshed; power/thermal readers section updated — see below).
 
 `actop` is an unrelated, independently-authored project; this document only extracts general
 patterns from its reader layer, not project-specific code to copy verbatim (Python/ctypes vs.
@@ -60,19 +61,19 @@ Key patterns observed, each with its rationale as documented in actop's own code
 
 ## How `CPULoadMonitor` compares today
 
-`CPULoadMonitor` (`MenuBarLoadRunner.swift:157-225`) reads total CPU utilization via Mach's
+`CPULoadMonitor` (`MenuBarLoadRunner.swift:177-245`) reads total CPU utilization via Mach's
 `host_processor_info(PROCESSOR_CPU_LOAD_INFO)`, and `MenuBarLoadRunnerApp` separately reads
-`getloadavg()` for the 1/5/15m averages (`readSystemLoadAverages()`, lines 837-848).
+`getloadavg()` for the 1/5/15m averages (`readSystemLoadAverages()`, lines 855-866).
 
 | Pattern | actop | `CPULoadMonitor` | Assessment |
 |---|---|---|---|
 | Unprivileged API | Yes (IOReport subscription, not `powermetrics`) | Yes (`host_processor_info` is a standard unprivileged Mach call) | Already aligned — no sudo dependency in either. |
 | Cache expensive setup once | Yes (subscription created once) | N/A — `host_processor_info` has no setup/subscription step to cache; each call is already cheap and self-contained | No gap; the pattern doesn't apply here since there's nothing to cache. |
 | Real elapsed-time delta | Yes (`time.monotonic()` between samples) | Partial — deltas the *tick counts* between two `host_processor_info` calls (a counter, correct), but never measures the *wall-clock* time between those two calls. Since the CPU tick counters and the 2-second `loadTimer` interval are decoupled, this works out numerically the same either way (it's a ratio of ticks, not ticks/second), so this isn't a bug — but it does mean the code has no explicit record of "how much real time this sample actually covers," which actop's model treats as necessary for correctness under a jittery timer. | Low-priority gap — current math is correct for a ratio-based CPU fraction; would only matter if the sampling interval became irregular and something needed to normalize *to* real time rather than just a fraction. |
-| Unavailable vs. zero | Partial — `sampleUsage()`/`currentUsage()` correctly return `nil` (not `0.0`) when there's no prior sample yet or the Mach call fails (`MenuBarLoadRunner.swift:166,189,216-218,222`), and `refreshMenuMetrics()` shows "warming up..." rather than a fake `0%` (`:566-572`). `readSystemLoadAverages()` does the same — `nil` on failure, "unavailable" shown in the menu (`:589-591`). | **Already follows this pattern correctly for both readers in the file.** |
+| Unavailable vs. zero | Partial — `sampleUsage()`/`currentUsage()` correctly return `nil` (not `0.0`) when there's no prior sample yet or the Mach call fails (`MenuBarLoadRunner.swift:186,209,237,242`), and `refreshMenuMetrics()` shows "warming up..." rather than a fake `0%` (`:637-638`). `readSystemLoadAverages()` does the same — `nil` on failure (`:860`), "unavailable" shown in the menu (`:660`). | **Already follows this pattern correctly for both readers in the file.** |
 | Asymmetric error handling | Yes | Not really applicable at this scale — there's only one subsystem (CPU), so there's no "one sensor missing, rest still fine" case to design for yet. If this expands to multiple independent readers (see below), the asymmetric-degradation pattern becomes directly relevant. | No current gap; becomes relevant only if/when more readers are added. |
-| Explicit resource cleanup | Yes (open/close, try/finally around releases) | N/A today — `host_processor_info`'s only resource is the `cpuInfo` buffer, already released via a `defer { vm_deallocate(...) }` immediately after use (`:191-194`), which is the correct Swift-native equivalent of actop's try/finally-around-CFRelease pattern. | **Already follows this pattern.** |
-| No EMA in reader layer | actop avoids it entirely | `CPULoadMonitor` applies EMA smoothing (`Tuning.cpuSmoothingAlpha = 0.2`, `:173`) | Divergence, not a gap — the Swift app's EMA is a deliberate design choice for a *visual* animation speed signal where jitter is undesirable, whereas actop's readers feed a numeric dashboard/profiler where raw values (or plain averaging) are more useful for analysis. Neither is "more correct" in the abstract; they're serving different consumers. No change indicated. |
+| Explicit resource cleanup | Yes (open/close, try/finally around releases) | N/A today — `host_processor_info`'s only resource is the `cpuInfo` buffer, already released via a `defer { vm_deallocate(...) }` immediately after use (`:211-214`), which is the correct Swift-native equivalent of actop's try/finally-around-CFRelease pattern. | **Already follows this pattern.** |
+| No EMA in reader layer | actop avoids it entirely | `CPULoadMonitor` applies EMA smoothing (`Tuning.cpuSmoothingAlpha = 0.2`, `:182`/`:193`) | Divergence, not a gap — the Swift app's EMA is a deliberate design choice for a *visual* animation speed signal where jitter is undesirable, whereas actop's readers feed a numeric dashboard/profiler where raw values (or plain averaging) are more useful for analysis. Neither is "more correct" in the abstract; they're serving different consumers. No change indicated. |
 
 **Bottom line**: `CPULoadMonitor` already independently arrived at several of actop's core
 correctness patterns (unprivileged API, `nil`-for-unavailable rather than fabricated zero,
@@ -84,16 +85,24 @@ it. There is no current deficiency worth a TODO item on its own.
 
 ## Where the patterns would matter: extending to other system-load readers
 
-Not scoped for implementation now (see below), but the patterns above map directly onto any
-future reader this app might add, roughly in order of how directly they'd port to Swift:
+The patterns above map directly onto any additional reader this app might add, roughly in
+order of how directly they'd port to Swift. The two lowest-effort ones have since been added:
 
-- **Thermal pressure** (`ProcessInfo.processInfo.thermalState`): a public Swift/Foundation
-  API, mirrors actop's `NSProcessInfo.thermalState` read (`native_sys.py:208-221`) almost
-  exactly — no ctypes/private-API bridging needed at all, same unprivileged-public-API
-  pattern actop follows. Lowest-effort, most directly transferable.
-- **Low Power Mode** (`ProcessInfo.processInfo.isLowPowerModeEnabled`): same category — public,
-  synchronous, no subscription/cleanup lifecycle needed.
-- **GPU / ANE / package power**: would require the same private, undocumented
+- **Thermal pressure** (`ProcessInfo.processInfo.thermalState`) — **implemented** (added in
+  `afc3b81`, after this doc's initial commit). Read in `isUnderPowerPressure`
+  (`MenuBarLoadRunner.swift:893-900`) and observed live via
+  `ProcessInfo.thermalStateDidChangeNotification` (`:502-508`). It mirrors actop's
+  `NSProcessInfo.thermalState` read (`native_sys.py:208-221`) almost exactly — a public
+  Swift/Foundation API, no ctypes/private-API bridging, exactly the unprivileged-public-API
+  pattern actop follows. This validated the "lowest-effort, most directly transferable"
+  prediction: the actop pattern ported with zero bridging.
+- **Low Power Mode** (`ProcessInfo.processInfo.isLowPowerModeEnabled`) — **implemented** (same
+  commit). Also read in `isUnderPowerPressure` (`:895`) and observed via
+  `.NSProcessInfoPowerStateDidChange` (`:495-501`). Same category — public, synchronous, no
+  subscription/cleanup lifecycle needed. Note both feed the app's *self-throttling* decision
+  (capping its own animation speed), not a displayed metric, but the acquisition pattern is
+  identical.
+- **GPU / ANE / package power**: still future — would require the same private, undocumented
   `libIOReport.dylib` subscription dance actop performs via ctypes
   (`IOReportCopyChannelsInGroup` → `IOReportCreateSubscription` →
   `IOReportCreateSamples(Delta)`) — reachable from Swift via a C shim or `dlopen`/`dlsym`,
@@ -109,6 +118,8 @@ future reader this app might add, roughly in order of how directly they'd port t
   pattern of *discovering* available sensor keys once at startup and caching that key list
   rather than re-discovering every read.
 
-None of these are being added now — this section exists so that if/when one is, the acquisition
-design (privilege model, caching, unavailable-vs-zero, cleanup lifecycle) has a concrete
-precedent to follow rather than being designed from scratch.
+The two remaining readers (GPU/ANE/power, die-temp/fans) are not being added now — this
+section exists so that if/when one is, the acquisition design (privilege model, caching,
+unavailable-vs-zero, cleanup lifecycle) has a concrete precedent to follow rather than being
+designed from scratch. The thermal/low-power readers above are worked examples of the
+public-API tier of that precedent.

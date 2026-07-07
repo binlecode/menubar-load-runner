@@ -154,6 +154,7 @@ private struct Config {
     }
 }
 
+@MainActor
 private final class CPULoadMonitor {
     private var lastTotalTicks: UInt64?
     private var lastIdleTicks: UInt64?
@@ -224,6 +225,7 @@ private final class CPULoadMonitor {
     }
 }
 
+@MainActor
 private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private enum PresetKind {
         case dog
@@ -441,8 +443,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.applySizing()
-            self?.renderCurrentFrame()
+            // Registered with `queue: .main`, so this always fires on the main thread;
+            // assert that to the compiler to reach the @MainActor-isolated methods.
+            MainActor.assumeIsolated {
+                self?.applySizing()
+                self?.renderCurrentFrame()
+            }
         }
     }
 
@@ -670,18 +676,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
 
-        let focusField: () -> Void = {
-            let window = field.window ?? alert.window
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(field)
+        // Focus the text field. `initialFirstResponder` is the deterministic mechanism —
+        // NSAlert makes its window key during runModal() and honors it — and replaces the
+        // old three staggered post-presentation focus retries. One post-present hop remains
+        // as a belt-and-suspenders (some AppKit versions have ignored initialFirstResponder
+        // on NSAlert accessory views) and to place the caret at the end of any pre-filled
+        // text, which needs the field editor that only exists once the field is focused.
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = field
+        DispatchQueue.main.async { [weak field, weak alertWindow] in
+            guard let field, let alertWindow else { return }
+            alertWindow.makeFirstResponder(field)
             field.selectText(nil)
             if let editor = field.currentEditor() {
                 editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
             }
         }
-        DispatchQueue.main.async(execute: focusField)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: focusField)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: focusField)
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 

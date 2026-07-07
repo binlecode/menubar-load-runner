@@ -171,9 +171,9 @@ Resolves the script's own real directory by following symlinks (`readlink` loop,
 `command -v` if invoked by bare name without a `/` in it (lines 11-17).
 
 ### 3.2 `print_help()` (lines 28-73)
-Static text block (docs only — the launcher no longer maps keywords to paths). Lists the 10
+Static text block (docs only — the launcher no longer maps keywords to paths). Lists the 9
 preset keywords (`dog-white`, `dog-black`, `horse-black`, `horse-white`, `totoro`,
-`totoro-group-white`, `totoro-group-black`, `totoro-white`, `totoro-black`, `raining`) and 7
+`totoro-group-white`, `totoro-group-black`, `totoro-white`, `totoro-black`) and 7
 flags (`--width`, `--speed-multiplier`, `--overlay-text`, `--foreground`/`--no-detach`,
 `--detach`, `--extra`, `-h`/`--help`). The former `horse`→`horse-black` alias was removed;
 callers use canonical names. These keywords are documentation of what the Swift side
@@ -283,9 +283,7 @@ comments dividing them):
 - `horseSpeedMin/Max: Double = 0.45 / 2.3`
 - `totoroSpeedMin/Max: Double = 0.5 / 2.6`
 - `totoroGroupSpeedMin/Max: Double = 0.2 / 2.0`
-- `rainingSpeedMin/Max: Double = 0.15 / 4.25`
 - `linearSpeedCurveExponent: Double = 1.0`
-- `rainingSpeedCurveExponent: Double = 2.6`
 - `speedOverrideMin/Max: Double = 0.1 / 5.0`
 - `initialSpeedMultiplier: Double = 1.0`
 - `percentScale: Double = 100.0`
@@ -299,7 +297,6 @@ comments dividing them):
 - `horseSlotScale: CGFloat = 1.2`
 - `totoroSlotScale: CGFloat = 1.25`
 - `totoroGroupSlotScale: CGFloat = 4.0`
-- `rainingSlotScale: CGFloat = 1.15`
 - `dogSlotScale: CGFloat = 1.0`
 
 **System/format constants**
@@ -417,6 +414,324 @@ Only called from `MenuBarLoadRunnerApp.sampleSystemLoad()` (line 543:
 `loadMonitor.sampleUsage()`), which runs on `Tuning.loadSampleInterval` (2s) via
 `loadTimer`.
 
+The remaining subsections below (7.5-7.14) cover the memory/GPU/network/disk readers, the
+shared adaptive-scaling and load-source-selector machinery, and the durable design principles
+those readers were built against — all of which landed after §7.1-7.4 above were written and are
+documented here for the first time. Every line number below was re-verified against the current
+1256+-line source with `grep -n`/`Read`, independent of the "approximate, may have drifted"
+caveat in the doc header that applies to the older §1-§18 numbers.
+
+### 7.5 `MemoryLoadMonitor` — memory + swap module (lines 402-504)
+
+A *mixed-domain* sibling of `CPULoadMonitor`: one reader exposing both an **instantaneous**
+percentage and a **counter-delta** rate, composited into a single driver value.
+
+- **State** (lines 403-420): `currentUsedFraction`/`hasSample` (instantaneous), `swapUsedBytes`/
+  `swapTotalBytes`/`hasSwapSample` (instantaneous, display-only), `currentSwapRateBytesPerSec`/
+  `hasSwapRateSample` (counter-delta), `currentMemoryLoad` (the composite driver value),
+  `lastSwapEvents: UInt64?` (previous-tick baseline for the delta), and its own
+  `swapScaler = ThroughputScaler(floor: Tuning.swapFloorBytesPerSec)` (§7.9).
+- **`sampleUsage(elapsed:) -> Double?`** (lines 427-436): calls `readVMSample()`; returns `nil`
+  only if that instantaneous read fails (a failed swap read degrades just the swap
+  display/rate, never the fraction — see §7.12 principle 4). On success: sets
+  `currentUsedFraction`/`hasSample`, calls `readSwapUsage()` (swap capacity, display-only),
+  calls `updateSwapRate(swapEvents:elapsed:)`, then computes
+  `currentMemoryLoad = max(sample.usedFraction, swapLoad)` where `swapLoad` is
+  `swapScaler.normalize(speed: currentSwapRateBytesPerSec)` gated on `hasSwapRateSample` (else
+  `0`) — the composite formula named in the class comment (lines 394-400).
+- **`updateSwapRate(swapEvents:elapsed:)`** (lines 441-452): a textbook counter-delta — `defer`s
+  storing `lastSwapEvents = swapEvents` unconditionally; if `elapsed` is `nil` (first tick, or a
+  source-switch re-sample per §7.10) or there is no `lastSwapEvents` baseline yet, reports no
+  rate (`hasSwapRateSample = false`) rather than dividing by a stale/nominal interval. Otherwise
+  `currentSwapRateBytesPerSec = deltaBytes / elapsed` (real wall-clock seconds, §7.11).
+- **`readVMSample()`** (lines 463-490): one `host_statistics64(HOST_VM_INFO64)` call yields both
+  values used here — `used = 1 - (free + purgeable + external) * pageSize / physicalMemory` (a
+  documented approximation, not Activity Monitor's exact algorithm, per the comment at lines
+  454-462) and the cumulative `swapins + swapouts` page count (in bytes) returned as
+  `swapEvents` — i.e. the swap-rate counter costs zero extra syscalls, it's a second field off
+  the same read. Page size comes from `host_page_size`, not the mutable `vm_kernel_page_size`
+  global, to stay `-strict-concurrency=complete`-clean. Returns `nil` on non-`KERN_SUCCESS` or a
+  zero `physicalMemory`/page-size read.
+- **`readSwapUsage()`** (lines 493-503): `sysctlbyname("vm.swapusage")`, unprivileged,
+  instantaneous, no lifecycle; sets `swapUsedBytes`/`swapTotalBytes`/`hasSwapSample`, or leaves
+  `hasSwapSample = false` on failure without touching the other fields.
+
+**Memory-pressure tri-state** (a separate mechanism, owned by `MenuBarLoadRunnerApp`, not
+`MemoryLoadMonitor`, but feeding the same self-throttle path as memory load):
+- `memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal` (line 781) and
+  `memoryPressureSource: DispatchSourceMemoryPressure?` (line 782) — cached because, unlike
+  `thermalState`/`isLowPowerModeEnabled`, memory pressure has **no synchronous getter**; it is
+  event-only.
+- Constructed in `applicationDidFinishLaunching` (lines 1003-1016):
+  `DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue:
+  .main)` — the mask **must** include `.normal`, or the cached level can never fall back out of
+  `.warning`/`.critical` once raised. Its event handler updates `memoryPressureLevel`, then calls
+  `reevaluateSpeedForCurrentConditions()` and `refreshMenuMetrics()` immediately (bypassing the
+  2s tick, same as the power/thermal observers, §12.2). `pressureSource.resume()` (line 1016)
+  starts delivery — dispatch sources start suspended. It is torn down in
+  `applicationWillTerminate` via `memoryPressureSource?.cancel()` (lines 1049-1051), **not**
+  `NotificationCenter.removeObserver` — a distinct lifecycle from the four notification observers
+  torn down just above it.
+- Read by `isUnderPowerPressure` (lines 1629-1642): `true` if Low Power Mode is on, or
+  `thermalState` is `.serious`/`.critical`, **or** `memoryPressureLevel.contains(.warning)` /
+  `.contains(.critical)` — memory pressure is the third input into the same self-throttle
+  computed property documented in §12.2, joining low-power/thermal rather than replacing them.
+  `memoryPressureText()` (lines 1305-1309) renders it as `"Normal"`/`"Warning"`/`"Critical"` for
+  the menu's `Memory Pressure:` state line (§7.10).
+
+### 7.6 `GPULoadMonitor` — GPU utilization module (lines 512-572)
+
+Unprivileged-tier, instantaneous, point-read — the simplest of the four new readers.
+
+- `isAvailable` (lines 519-525): probes once (`readUtilization() != nil`) and caches the result
+  (`availabilityChecked`/`available`) — this is the "cache expensive setup" principle (§7.12 #6)
+  applied to a probe rather than a subscription, since there's nothing else here to cache.
+- `sampleUsage() -> Double?` (lines 527-535): no `elapsed:` parameter — this is a pure point
+  read, unlike the counter-delta readers below. Sets `hasSample = false` and returns `nil` on
+  failure (never a fabricated `0`).
+- `readUtilization()` (lines 540-545) tries `IOServiceMatching("IOAccelerator")` first, then
+  falls back to `"AGXAccelerator"` (the Apple Silicon-specific IOClass) since the accelerator's
+  concrete class is hardware-specific. `readUtilization(matching:)` (lines 547-571) iterates every
+  matched `io_service_t`, reads its `"PerformanceStatistics"` registry property, and takes the
+  max `"Device Utilization %"` (0…100) across matches, scaled by `Tuning.percentScale` (÷100) and
+  clamped to `0...1`. Because the value is natively bounded 0…1 after that division, it is
+  **not** run through `ThroughputScaler` (§7.9) — bounded percentage signals map straight
+  through, per §7.12 principle 3. GPU *power/energy* is a different, unimplemented tier — see
+  §7.14.
+
+### 7.7 `NetworkLoadMonitor` — network throughput module (lines 579-628)
+
+- `isAvailable` (line 588): hardcoded `true` — `getifaddrs` is always present on macOS, unlike
+  the IORegistry-probed GPU/disk sources.
+- `sampleUsage(elapsed:) -> Double?` (lines 590-608): counter-delta over cumulative interface
+  byte counters. `defer`s storing `lastBytes = total` unconditionally (mirroring
+  `MemoryLoadMonitor.updateSwapRate`'s pattern); if `elapsed` is `nil` or there's no `lastBytes`
+  baseline, reports no sample (first tick / source-switch re-sample warm-up, §7.10/§7.11).
+  Otherwise `currentThroughputBytesPerSec = deltaBytes / elapsed`, then normalizes through its
+  own `scaler = ThroughputScaler(floor: Tuning.networkFloorBytesPerSec)` (§7.9) into `currentLoad`
+  — the value actually returned and used to drive speed.
+- `readTotalBytes()` (lines 610-627): `getifaddrs` → walks the linked list, keeping only entries
+  where `ifa_addr.sa_family == AF_LINK` (only those carry a populated `if_data`) and skipping
+  `"lo0"` (loopback) so local traffic doesn't inflate the reading; sums `ifi_ibytes + ifi_obytes`
+  across the remaining interfaces.
+
+### 7.8 `DiskLoadMonitor` — disk I/O throughput module (lines 634-696)
+
+Structurally a twin of `NetworkLoadMonitor` (§7.7) over a different IORegistry class.
+
+- `isAvailable` (lines 643-649): probed once and cached (`readTotalBytes() != nil`), like
+  `GPULoadMonitor.isAvailable` — a machine with no readable `IOBlockStorageDriver` disables the
+  source.
+- `sampleUsage(elapsed:) -> Double?` (lines 651-667): same counter-delta shape as
+  `NetworkLoadMonitor.sampleUsage(elapsed:)` — `defer`-stores `lastBytes`, requires `elapsed` and
+  a prior baseline, divides the byte delta by `elapsed`, normalizes through
+  `scaler = ThroughputScaler(floor: Tuning.diskFloorBytesPerSec)` into `currentLoad`.
+- `readTotalBytes()` (lines 669-695): `IOServiceMatching("IOBlockStorageDriver")` → for every
+  matched entry, reads its `"Statistics"` registry dictionary's `"Bytes (Read)"` and
+  `"Bytes (Write)"` keys (defaulting a missing key to `0`, not failing the whole read) and sums
+  across all drivers found; returns `nil` (via `found` staying `false`) only if zero drivers
+  matched at all.
+
+### 7.9 `ThroughputScaler` — shared adaptive-scaling value type (lines 268-321)
+
+A `private struct` (a pure value type, not `@MainActor` — it has no shared mutable global state,
+just per-owner instance state), ported from btop's `Net::collect` auto-scale (`Tuning` comment,
+lines 45-51). Three unbounded rate signals share this same normalization: `MemoryLoadMonitor`'s
+swap rate (§7.5), `NetworkLoadMonitor`'s throughput (§7.7), and `DiskLoadMonitor`'s throughput
+(§7.8) — each owns its own scaler instance seeded with a different `floor` (`Tuning.
+swapFloorBytesPerSec`/`networkFloorBytesPerSec`/`diskFloorBytesPerSec`, 1/1/4 MiB/s, lines 58-60).
+
+- **State** (lines 269-274): `floor` (fixed at init), `ceiling` (the adaptive normalization
+  denominator, seeded to `floor`), `seeded`, a `recent: [Double]` ring of the last
+  `Tuning.scalerWindow` (5) samples, and `overCount`/`underCount` hysteresis counters.
+- **`normalize(speed:) -> Double`** (lines 282-315):
+  1. First call only: seeds `ceiling = max(speed * Tuning.scalerHeadroomUp, floor)` so the very
+     first sample doesn't peg at `1.0` against a bare `floor` (comment, lines 283-284).
+  2. Appends `speed` to `recent`, trimming to `Tuning.scalerWindow` (5) entries.
+  3. Hysteresis: increments `overCount` (and decays `underCount`) when `speed > ceiling`;
+     increments `underCount` (and decays `overCount`) when `speed < ceiling / 10` — a single
+     spike or dip can't move the scale; only `Tuning.scalerRescaleCount` (5) *consecutive*
+     out-of-band samples on one side triggers a rescale.
+  4. On an over-rescale: `ceiling = max(average(recent) * Tuning.scalerHeadroomUp, floor)`
+     (headroom `1.3`×, tight — scaling up commits fast). On an under-rescale:
+     `ceiling = max(average(recent) * Tuning.scalerHeadroomDown, floor)` (headroom `3.0`×, loose
+     — scaling back down is deliberately slow so it doesn't immediately re-trigger an
+     over-rescale). Both branches reset both counters.
+  5. Returns `min(speed / ceiling, 1)`.
+- **Never applied to a bounded signal.** CPU%, memory-used%, and GPU% map straight through
+  (§7.5, §7.6) — running a bounded 0…1 signal through an adaptive ceiling would let its
+  historical average distort its absolute meaning (e.g. "50% CPU" would stop meaning the same
+  thing over time), which is exactly what this type exists to avoid for *unbounded* signals. See
+  §7.12 principle 3.
+
+### 7.10 `LoadSource` — selector registry and speed-path wiring
+
+The mechanism that decides *which* reader drives the animation, orthogonal to which preset (i.e.
+which `SpeedProfile`, §16) is active: selecting a source changes which 0…1 value is mapped
+through the active preset's min/max/exponent, never the range itself. There is no per-source
+`SpeedProfile`.
+
+- **`LoadSource` enum** (lines 93-124): `Int, CaseIterable`, cases `.cpu`/`.memory`/`.gpu`/
+  `.network`/`.disk` (raw values `0...4`, doubling as menu-item `tag`s), each with a `key`
+  (CLI/env string) and `menuTitle`. `LoadSource.from(key:)` (lines 120-123) is a
+  case-insensitive lookup used by both the CLI parser and the env fallback. A single registry —
+  same pattern as `PresetDescriptor` (§8.1) — so the CLI keyword, env var, menu item, and
+  selection-state check all derive from one source of truth.
+- **CLI/env wiring in `Config`**: `let loadSource: LoadSource` field (line 145); `--load-source`
+  parsed at lines 196-202 (stores the raw string, deferring resolution); falls back to
+  `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` (line 222) when no flag was given; resolves via
+  `LoadSource.from(key:) ?? .cpu` (line 225) — unknown/absent values fall back to `.cpu` with a
+  logged warning (lines 226-228), never a launch failure (§7.12 principle 2/4). `printUsage()`
+  documents the flag and lists all known keys (lines 251-253).
+- **`activeLoadSource: LoadSource`** (line 777, mutable): initialized from `config.loadSource`
+  in `init` (line 797); mutated only by `selectLoadSource(_:)` (below).
+- **The three speed-path helpers — the only read sites for "what drives the animation"**:
+  - `sampleActiveSource(elapsed:) -> Double?` (lines 1161-1169): a `switch` dispatching to
+    exactly one reader's `sampleUsage()`/`sampleUsage(elapsed:)`, called once per tick from
+    `sampleSystemLoad()` (line 1145) — this is what makes sampling **active-only**: the four
+    inactive monitors are never polled while another source drives.
+  - `activeSourceHasSample: Bool` (lines 1172-1180): mirrors the switch, reading each monitor's
+    `hasSample`.
+  - `activeSourceCurrentUsage: Double` (lines 1185-1193): mirrors the switch again, reading each
+    monitor's last driving value without re-sampling (`loadMonitor.smoothedUsage`,
+    `memoryMonitor.currentMemoryLoad`, `gpuMonitor.currentUtilization`,
+    `networkMonitor.currentLoad`, `diskMonitor.currentLoad`) — used by
+    `reevaluateSpeedForCurrentConditions()` (§12.2) to recompute speed immediately without
+    waiting for the next tick's sample.
+- **Source-conditional `refreshMenuMetrics()`** (lines 1203-1279, superseding the single-source
+  description in §10.3): a `switch activeLoadSource` with one case per source, each setting
+  `usageItem.title`/`stateItem.title`/the accessibility label from *only* that source's monitor
+  (e.g. `.memory` shows `"Memory Pressure: ..."` from `memoryPressureText()` plus
+  `memoryUsageLineText()`/swap rate, lines 1222-1236; `.network`/`.disk` show a human MB/s figure
+  via `networkUsageLineText()`/`diskUsageLineText()`, lines 1334-1340, rather than the
+  scaler-normalized 0…1 value that actually drives speed). The inactive sources' lines are never
+  shown, matching active-only sampling. `speedMultiplierItem.title` additionally names
+  `activeLoadSource.menuTitle` (lines 1284-1293) so the dashboard always states *what* is
+  driving the animation.
+- **`Load Source` radio submenu**: built in `applicationDidFinishLaunching` (lines 869-879) — one
+  `NSMenuItem` per `LoadSource.allCases`, `tag = source.rawValue`, action
+  `selectLoadSource(_:)`, appended to `loadSourceMenuItems`. Selection state is refreshed by
+  `refreshLoadSourceSelectionState()` (lines 1353-1360): `.state = .on` iff
+  `item.tag == activeLoadSource.rawValue`; `.isEnabled = isSourceAvailable(source)` — the same
+  radio-group + enablement shape as the width/preset menus (§10.4/§10.5).
+- **`selectLoadSource(_:)`** (lines 1427-1441, `@objc`): no-ops if the tapped source is already
+  active; otherwise sets `activeLoadSource`, immediately calls `sampleActiveSource(elapsed: nil)`
+  to seed the new monitor (an on-demand resample has no meaningful interval, so counter-delta
+  readers just store a baseline here), resets `lastSampleUptime = nil` (§7.11) so the next tick
+  doesn't divide by a stale gap, calls `reevaluateSpeedForCurrentConditions()` to re-derive speed
+  immediately (bypassing the 2s hysteresis, mirroring preset switches), then refreshes both the
+  load-source selection state and the menu metrics.
+- **`isSourceAvailable(_:)`** (lines 1367-1377): `.cpu`/`.memory` are always `true` (core
+  Mach/sysctl, never absent); `.gpu`/`.network`/`.disk` defer to each monitor's own `isAvailable`
+  probe. Also checks a debug-only `forcedUnavailableSources` env override
+  (`MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`, lines 1379-1385) so QA can exercise the
+  disabled-menu-item and fallback path on hardware where every reader actually works.
+  **Launch-time fallback** (lines 881-887, right after the submenu is built): if the
+  configured `activeLoadSource` isn't available, logs a warning to stderr and forces `.cpu` —
+  the one enforcement point where an unavailable *requested* source is corrected, versus the
+  per-tick case where a reader going dark just yields `nil` for that tick and the animation holds
+  its last speed (§7.12 principle 4).
+
+### 7.11 Shared elapsed-time plumbing — `lastSampleUptime` / `elapsed:`
+
+The mechanism that makes every counter-delta *rate* reader (as opposed to CPU's counter-delta
+*ratio*, which needs no wall-clock division at all — see the distinction below) divide by real
+time rather than the nominal 2s tick interval.
+
+- `lastSampleUptime: Double?` (lines 770-771, comment explicitly calls out
+  `ProcessInfo.systemUptime` over `Date` for immunity to wall-clock changes).
+- Captured once per tick in `sampleSystemLoad()` (lines 1136-1141): `now =
+  ProcessInfo.processInfo.systemUptime`; `elapsed = lastSampleUptime.map { now - $0 }` (`nil` on
+  the very first tick); `lastSampleUptime = now`. This single `elapsed` value is threaded into
+  `sampleActiveSource(elapsed:)` (line 1145, §7.10), which forwards it to whichever reader's
+  `sampleUsage(elapsed:)` needs it that tick.
+- **Consumers**: `MemoryLoadMonitor.updateSwapRate` (§7.5), `NetworkLoadMonitor.sampleUsage`
+  (§7.7), `DiskLoadMonitor.sampleUsage` (§7.8) — each divides its byte delta by `elapsed`
+  directly, and each treats `elapsed == nil` (or `<= 0`) the same way: store the new baseline,
+  report no rate this tick.
+- **Not a consumer: `CPULoadMonitor.sampleUsage()`** (§7.2) takes no `elapsed:` parameter at all
+  — its delta is `(deltaTotal - deltaIdle) / deltaTotal`, a ratio of *tick counts* over the same
+  window, not a bytes-per-second rate, so there is nothing to normalize against wall-clock time.
+  This is the "instantaneous vs. counter-delta, bounded vs. unbounded" distinction (§7.12
+  principle 3) in concrete form: CPU is counter-delta but bounded (a ratio); memory swap/network/
+  disk are counter-delta *and* unbounded (a rate), which is what actually requires `elapsed:`.
+- **Reset on source switch**: `selectLoadSource(_:)` (§7.10, line 1437) sets
+  `lastSampleUptime = nil` so the newly-active reader's first real sample after a switch is
+  correctly treated as a warm-up tick (`elapsed = nil`) instead of dividing by however long the
+  *previous* source had been active.
+
+### 7.12 Design principles for OS readers
+
+Six principles distilled from cross-reviewing this repo's readers against a sibling
+sudoless-monitor project; they bind every reader above (§7.5-§7.11) *and* the pre-existing
+`CPULoadMonitor` (§7.1-§7.4) equally — they are forward-looking guidance for reader #N, not
+retroactive fixes.
+
+1. **Unprivileged sibling API only.** Every implemented reader is a plain Mach
+   (`host_processor_info`, `host_statistics64`) / sysctl (`sysctlbyname("vm.swapusage")`) /
+   IORegistry (`IOServiceMatching`, `getifaddrs`) read — no `sudo`, no shelling to
+   `powermetrics`. The one deferred tier (§7.14) is deferred precisely because it needs a
+   private, unheadered API and would break this rule.
+2. **`nil`, never a fabricated `0`.** Every `sampleUsage()`/`sampleUsage(elapsed:)` above returns
+   `Double?`; a non-`KERN_SUCCESS` result, a missing registry key, or no prior baseline yet all
+   return `nil`, and the menu shows "warming up…"/the item disables — "0%" is reserved for an
+   actually-idle reading.
+3. **Instantaneous vs. counter-delta, and bounded vs. unbounded, are orthogonal axes.**
+   Instantaneous = a point read valid on the first tick (memory used-fraction, swap capacity,
+   GPU utilization). Counter-delta = needs two samples (CPU ticks; memory swap events; network/
+   disk bytes). Separately: bounded 0…1 signals (CPU%, memory-used%, GPU%) map straight through;
+   unbounded rate signals (network/disk/swap bytes-per-sec) have no natural ceiling and go
+   through `ThroughputScaler` (§7.9). Never adaptive-scale a bounded signal.
+4. **Asymmetric error handling.** One reader going dark degrades only its own menu line
+   (`hasSample = false` for that tick) and, if it's the *requested* source at launch, falls back
+   to `.cpu` (§7.10) — it never takes down the animation or the app. No reader here is
+   fatal-at-startup.
+5. **No EMA in a reader unless it's a deliberate, documented choice.** `CPULoadMonitor` is the
+   one exception (`Tuning.cpuSmoothingAlpha`, §7.2) and says so in its own comment; every other
+   reader above reports the raw instantaneous/counter-delta value with no smoothing.
+   `ThroughputScaler`'s window-averaging is a *scaling* choice on an already-unbounded rate, not
+   an EMA on the reported value.
+6. **Cache expensive setup once.** Only relevant to the private-API tier today (§7.14) — a
+   subscription/connection would need to be created once and torn down explicitly. Every
+   Mach/sysctl/IORegistry reader above has nothing expensive to cache except an availability
+   probe, which `GPULoadMonitor`/`DiskLoadMonitor` already memoize (`isAvailable`, §7.6/§7.8).
+
+### 7.13 Checklist: adding a new load source
+
+Adding reader #6 (or beyond) is a fixed checklist against real call sites, not a design
+exercise — the selector plumbing (§7.10) already exists:
+
+1. **`LoadSource`** — add a `case` with its `key`/`menuTitle` (lines 93-124). CLI, env, menu
+   item, and `@objc selectLoadSource`/`refreshLoadSourceSelectionState` pick it up automatically.
+2. **Reader** — a `sampleUsage()`/`sampleUsage(elapsed:) -> Double?` returning a normalized
+   0…1 value (`nil` = unavailable/warming up), on a peer `@MainActor` monitor class (§7.5-§7.8).
+3. **Wire into the three helpers** — add a branch each to `sampleActiveSource(elapsed:)`,
+   `activeSourceHasSample`, `activeSourceCurrentUsage` (lines 1161-1193, §7.10). These are the
+   *only* speed-path read sites.
+4. **Menu line** — add a source-conditional branch to `refreshMenuMetrics()` (lines 1203-1279).
+5. **Availability** — expose `isAvailable` on the reader (probed once and cached, like
+   `GPULoadMonitor`/`DiskLoadMonitor`) and add a case to `isSourceAvailable(_:)`
+   (lines 1367-1377); the disabled-menu-item and launch-fallback behavior follow automatically.
+6. **`elapsed:` threading** — if the reader is a counter-delta *rate* (not CPU's tick-ratio
+   shape, §7.11), accept `elapsed: Double?` and divide the byte/event delta by it, never by the
+   nominal `Tuning.loadSampleInterval`.
+7. **Docs** — `--help` (`Config.printUsage()`), the README load-source list, and a
+   `RUNBOOK-qa-release.md` launch row + reader check.
+
+### 7.14 Deferred: GPU power/ANE and die-temp/fan sensors (not implemented)
+
+**Not present in the source at all** — flagged here so it isn't mistaken for an oversight in
+§7.6's GPU coverage. GPU power/ANE/package power would need the private, unheadered
+`libIOReport.dylib` (`IOReportCopyChannelsInGroup` → `IOReportCreateSubscription` →
+`IOReportCreateSamples`); die temperature and fan speed would need SMC access via
+`IOServiceOpen`/`IOConnectCallStructMethod` with sensor keys discovered ad hoc. Both break
+§7.12 principle 1 (unprivileged sibling API only) — the private-API tier is the sole reason this
+is deferred, not any technical blocker in the existing readers. It would also be the first
+reader here to need principle 6's cache-once/explicit-teardown lifecycle for real (a
+subscription/connection, not just a probe) and a decision on fatal-at-startup vs.
+degrade-one-feature if that subscription can't be created. No timeline; own design pass if ever
+picked up.
+
 ---
 
 ## 8. `MenuBarLoadRunnerApp` — state inventory (~lines 244-319)
@@ -426,7 +741,7 @@ instance created once at the bottom of the file.
 
 **Nested types**
 ```swift
-private enum PresetKind { case dog, horse, totoro, totoroGroup, raining, custom }          // lines 228-235
+private enum PresetKind { case dog, horse, totoro, totoroGroup, custom }                  // lines 228-234
 private struct SpeedProfile { let label: String; let min, max, responseExponent: Double }  // lines 237-242
 private struct PresetDescriptor {                                                          // lines 244-251
     let key: String            // internal id, e.g. "dog-white" — not CLI-facing
@@ -512,7 +827,6 @@ path constants plus parallel if-chains in multiple functions. Order = menu order
 | 6 | `totoro-group-black` | Totoro (Group, Black) | `.totoroGroup` | 4.0 | totoro-group, 0.2, 2.0, 1.0 |
 | 7 | `totoro-white` | Totoro (White) | `.totoro` | 1.25 | totoro, 0.5, 2.6, 1.0 |
 | 8 | `totoro-black` | Totoro (Black) | `.totoro` | 1.25 | totoro, 0.5, 2.6, 1.0 |
-| 9 | `raining` | Raining | `.raining` | 1.15 | raining, 0.15, 4.25, 2.6 (only non-linear curve) |
 
 A custom/user-supplied GIF whose path matches none of these leaves `activePreset == nil`;
 every accessor (§15, §16) falls back to `.custom`/`Tuning.dogSlotScale`/`Self.customSpeedProfile`
@@ -755,9 +1069,8 @@ if isUnderPowerPressure {                                            // see §12
 return min(max(value, profile.min), profile.max)   // final clamp; redundant given the formula above, but present in source
 ```
 `value` is declared `var` (not `let`) precisely because the `isUnderPowerPressure` branch may
-reassign it. `profile.responseExponent` is `1.0` (linear) for every preset except `raining`, which
-uses `2.6` (`Tuning.rainingSpeedCurveExponent`) — i.e. `raining`'s speed stays near `min` for most
-of the CPU range and only accelerates sharply near `usage = 1.0`. The `isUnderPowerPressure` cap
+reassign it. `profile.responseExponent` is `1.0` (linear) for every preset — speed scales
+proportionally with load across the whole range. The `isUnderPowerPressure` cap
 holds `value` at `profile.min + (profile.max - profile.min) * Tuning.constrainedSpeedCeilingFraction`
 (0.5, the midpoint of the preset's range) — see §12.2.
 
@@ -961,8 +1274,8 @@ present. Final value is floored at `Tuning.minGifFrameDelay` (0.02) via `max(val
 `activePreset?.slotScale ?? Tuning.dogSlotScale` — a direct read of the descriptor resolved
 once by `switchToGif`/`init` (§8.1), rather than re-deriving identity from a path comparison
 on every call. Values are the same as before: `Tuning.horseSlotScale` (1.2),
-`totoroGroupSlotScale` (4.0), `totoroSlotScale` (1.25), `rainingSlotScale` (1.15), or
-`dogSlotScale` (1.0) for dog/custom (`activePreset == nil`).
+`totoroGroupSlotScale` (4.0), `totoroSlotScale` (1.25), or `dogSlotScale` (1.0) for dog/custom
+(`activePreset == nil`).
 
 ### 15.2 `minimumSlotsForCurrentPreset() -> Int` (lines 928-931)
 `clamp(Int(ceil(currentPresetScale())), Tuning.minWidthSlots, Tuning.maxWidthSlots)` — e.g.

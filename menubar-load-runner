@@ -28,8 +28,8 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|raining|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -41,11 +41,12 @@ Presets:
   totoro-group-black  Built-in Totoro group GIF (black, transparent)
   totoro-white  Built-in running Totoro (white)
   totoro-black  Built-in running Totoro (black)
-  raining Built-in raining sticker (transparent)
 
 Options:
   --width <slots:1..4>       Requested menu bar width in slots (clamped to preset minimum)
   --speed-multiplier <x>     Fixed speed (e.g. 0.5, 1.0, 1.5, 2.0)
+  --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk
+                             (also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown/unavailable -> cpu)
   --overlay-text <text>      Overlay text (1..12 chars), drawn at runtime
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)
@@ -63,8 +64,8 @@ Examples:
   $APP_CMD_NAME totoro-group-black
   $APP_CMD_NAME totoro-white
   $APP_CMD_NAME totoro-black
-  $APP_CMD_NAME raining
   $APP_CMD_NAME --width 2
+  $APP_CMD_NAME --load-source gpu
   $APP_CMD_NAME dog-black --overlay-text CPU
   $APP_CMD_NAME horse-black --speed-multiplier 1.2
   $APP_CMD_NAME --foreground horse-black
@@ -107,8 +108,8 @@ main() {
   done
   set -- "${passthrough_args[@]}"
 
-  # Preset keyword → GIF path resolution and the default preset now live in Swift
-  # (MenuBarLoadRunnerApp.init / Config.defaultPreset), so the launcher forwards the
+  # Preset keyword → GIF path resolution lives in Swift (MenuBarLoadRunnerApp.init), and the
+  # preset profiles + default preset now live in gifs/presets.json, so the launcher forwards the
   # positional arg unchanged and only intercepts its own --help.
   if [[ $# -gt 0 ]]; then
     case "$1" in

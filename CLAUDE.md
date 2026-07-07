@@ -8,6 +8,19 @@ A single-file native macOS menu bar app (Swift + AppKit, no Xcode project/SwiftP
 animated GIF in the status bar. Animation speed adapts automatically to system CPU load. There is no test suite
 and no build system beyond `swiftc`/`swift` invoked directly.
 
+## Documentation
+
+`docs/` holds SDLC documents — design specs, architecture write-ups, and TODO/issue-tracking
+files. This `CLAUDE.md` stays focused on build/run commands and architecture guidance for
+Claude Code; longer-form design and task tracking documents belong in `docs/` instead of the
+repo root.
+
+TODO files are named `TODO-<YYYYMMDD-HHMM>-<slug>.md` (e.g.
+`docs/TODO-20260706-2010-swift-impl-review-findings.md`) — the timestamp is when the file was
+created, so filenames sort chronologically and make ordering/timing explicit without needing
+a separate changelog. Other `docs/` files (design specs, etc.) don't need the timestamp
+prefix, e.g. `docs/DESIGN-system.md`.
+
 ## Commands
 
 Run from the repository root:

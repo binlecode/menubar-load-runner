@@ -353,7 +353,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else {
-            fatalError("Unable to create NSStatusItem button")
+            showStartupErrorAndQuit("Unable to create NSStatusItem button.")
+            return
         }
 
         button.imagePosition = .imageOnly

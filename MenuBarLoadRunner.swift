@@ -241,17 +241,25 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let responseExponent: Double
     }
 
+    private struct PresetDescriptor {
+        let key: String
+        let menuTitle: String
+        let path: String
+        let kind: PresetKind
+        let slotScale: CGFloat
+        let speedProfile: SpeedProfile
+    }
+
+    private static let customSpeedProfile = SpeedProfile(
+        label: "custom",
+        min: Tuning.dogSpeedMin,
+        max: Tuning.dogSpeedMax,
+        responseExponent: Tuning.linearSpeedCurveExponent
+    )
+
     private let config: Config
-    private let builtInDogWhitePath: String
-    private let builtInDogBlackPath: String
-    private let builtInHorseBlackPath: String
-    private let builtInHorseWhitePath: String
-    private let builtInTotoroPath: String
-    private let builtInTotoroGroupWhitePath: String
-    private let builtInTotoroGroupBlackPath: String
-    private let builtInTotoroWhitePath: String
-    private let builtInTotoroBlackPath: String
-    private let builtInRainingPath: String
+    private let allPresets: [PresetDescriptor]
+    private var activePreset: PresetDescriptor?
     private var activeGifPath: String
     private var statusItem: NSStatusItem!
     private var infoMenu: NSMenu!
@@ -267,16 +275,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var overlayMenuItem: NSMenuItem!
     private var overlaySetItem: NSMenuItem!
     private var overlayClearItem: NSMenuItem!
-    private var dogWhitePresetItem: NSMenuItem!
-    private var dogBlackPresetItem: NSMenuItem!
-    private var horseBlackPresetItem: NSMenuItem!
-    private var horseWhitePresetItem: NSMenuItem!
-    private var totoroPresetItem: NSMenuItem!
-    private var totoroGroupWhitePresetItem: NSMenuItem!
-    private var totoroGroupBlackPresetItem: NSMenuItem!
-    private var totoroWhitePresetItem: NSMenuItem!
-    private var totoroBlackPresetItem: NSMenuItem!
-    private var rainingPresetItem: NSMenuItem!
+    private var presetMenuItems: [NSMenuItem] = []
     private var frames: [NSImage] = []
     private var frameAspects: [CGFloat] = []
     private var baseDurations: [TimeInterval] = []
@@ -296,21 +295,36 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     init(config: Config) {
         self.config = config
-        self.activeGifPath = config.gifPath
         self.requestedWidthSlots = config.widthSlots
         self.requestedOverlayText = config.overlayText
 
         let scriptDirURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        self.builtInDogWhitePath = scriptDirURL.appendingPathComponent("gifs/running-dog-white.gif").path
-        self.builtInDogBlackPath = scriptDirURL.appendingPathComponent("gifs/running-dog-black.gif").path
-        self.builtInHorseBlackPath = scriptDirURL.appendingPathComponent("gifs/running-horse-black.gif").path
-        self.builtInHorseWhitePath = scriptDirURL.appendingPathComponent("gifs/running-horse-white.gif").path
-        self.builtInTotoroPath = scriptDirURL.appendingPathComponent("gifs/totoro.gif").path
-        self.builtInTotoroGroupWhitePath = scriptDirURL.appendingPathComponent("gifs/totoro-group-white.gif").path
-        self.builtInTotoroGroupBlackPath = scriptDirURL.appendingPathComponent("gifs/totoro-group-black.gif").path
-        self.builtInTotoroWhitePath = scriptDirURL.appendingPathComponent("gifs/totoro-white.gif").path
-        self.builtInTotoroBlackPath = scriptDirURL.appendingPathComponent("gifs/totoro-black.gif").path
-        self.builtInRainingPath = scriptDirURL.appendingPathComponent("gifs/raining.gif").path
+        func resolvedPath(_ relative: String) -> String {
+            scriptDirURL.appendingPathComponent(relative).path
+        }
+
+        let dogProfile = SpeedProfile(label: "dog", min: Tuning.dogSpeedMin, max: Tuning.dogSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
+        let horseProfile = SpeedProfile(label: "horse", min: Tuning.horseSpeedMin, max: Tuning.horseSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
+        let totoroProfile = SpeedProfile(label: "totoro", min: Tuning.totoroSpeedMin, max: Tuning.totoroSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
+        let totoroGroupProfile = SpeedProfile(label: "totoro-group", min: Tuning.totoroGroupSpeedMin, max: Tuning.totoroGroupSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
+        let rainingProfile = SpeedProfile(label: "raining", min: Tuning.rainingSpeedMin, max: Tuning.rainingSpeedMax, responseExponent: Tuning.rainingSpeedCurveExponent)
+
+        let presets: [PresetDescriptor] = [
+            PresetDescriptor(key: "dog-white", menuTitle: "Dog (White)", path: resolvedPath("gifs/running-dog-white.gif"), kind: .dog, slotScale: Tuning.dogSlotScale, speedProfile: dogProfile),
+            PresetDescriptor(key: "dog-black", menuTitle: "Dog (Black)", path: resolvedPath("gifs/running-dog-black.gif"), kind: .dog, slotScale: Tuning.dogSlotScale, speedProfile: dogProfile),
+            PresetDescriptor(key: "horse-black", menuTitle: "Horse (Black)", path: resolvedPath("gifs/running-horse-black.gif"), kind: .horse, slotScale: Tuning.horseSlotScale, speedProfile: horseProfile),
+            PresetDescriptor(key: "horse-white", menuTitle: "Horse (White)", path: resolvedPath("gifs/running-horse-white.gif"), kind: .horse, slotScale: Tuning.horseSlotScale, speedProfile: horseProfile),
+            PresetDescriptor(key: "totoro", menuTitle: "Totoro", path: resolvedPath("gifs/totoro.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
+            PresetDescriptor(key: "totoro-group-white", menuTitle: "Totoro (Group, White)", path: resolvedPath("gifs/totoro-group-white.gif"), kind: .totoroGroup, slotScale: Tuning.totoroGroupSlotScale, speedProfile: totoroGroupProfile),
+            PresetDescriptor(key: "totoro-group-black", menuTitle: "Totoro (Group, Black)", path: resolvedPath("gifs/totoro-group-black.gif"), kind: .totoroGroup, slotScale: Tuning.totoroGroupSlotScale, speedProfile: totoroGroupProfile),
+            PresetDescriptor(key: "totoro-white", menuTitle: "Totoro (White)", path: resolvedPath("gifs/totoro-white.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
+            PresetDescriptor(key: "totoro-black", menuTitle: "Totoro (Black)", path: resolvedPath("gifs/totoro-black.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
+            PresetDescriptor(key: "raining", menuTitle: "Raining", path: resolvedPath("gifs/raining.gif"), kind: .raining, slotScale: Tuning.rainingSlotScale, speedProfile: rainingProfile),
+        ]
+
+        self.allPresets = presets
+        self.activeGifPath = config.gifPath
+        self.activePreset = presets.first { $0.path == config.gifPath }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -387,53 +401,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(overlayMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        infoMenu.addItem(NSMenuItem(title: "Presets", action: nil, keyEquivalent: ""))
+        let presetsHeaderItem = NSMenuItem(title: "Presets", action: nil, keyEquivalent: "")
+        infoMenu.addItem(presetsHeaderItem)
 
-        dogWhitePresetItem = NSMenuItem(title: "Dog (White)", action: #selector(selectDogWhitePreset), keyEquivalent: "")
-        dogWhitePresetItem.target = self
-        infoMenu.addItem(dogWhitePresetItem)
-
-        dogBlackPresetItem = NSMenuItem(title: "Dog (Black)", action: #selector(selectDogBlackPreset), keyEquivalent: "")
-        dogBlackPresetItem.target = self
-        infoMenu.addItem(dogBlackPresetItem)
-
-        horseBlackPresetItem = NSMenuItem(title: "Horse (Black)", action: #selector(selectHorseBlackPreset), keyEquivalent: "")
-        horseBlackPresetItem.target = self
-        infoMenu.addItem(horseBlackPresetItem)
-
-        horseWhitePresetItem = NSMenuItem(title: "Horse (White)", action: #selector(selectHorseWhitePreset), keyEquivalent: "")
-        horseWhitePresetItem.target = self
-        infoMenu.addItem(horseWhitePresetItem)
-
-        totoroPresetItem = NSMenuItem(title: "Totoro", action: #selector(selectTotoroPreset), keyEquivalent: "")
-        totoroPresetItem.target = self
-        infoMenu.addItem(totoroPresetItem)
-
-        totoroGroupWhitePresetItem = NSMenuItem(title: "Totoro (Group, White)", action: #selector(selectTotoroGroupWhitePreset), keyEquivalent: "")
-        totoroGroupWhitePresetItem.target = self
-        infoMenu.addItem(totoroGroupWhitePresetItem)
-
-        totoroGroupBlackPresetItem = NSMenuItem(title: "Totoro (Group, Black)", action: #selector(selectTotoroGroupBlackPreset), keyEquivalent: "")
-        totoroGroupBlackPresetItem.target = self
-        infoMenu.addItem(totoroGroupBlackPresetItem)
-
-        totoroWhitePresetItem = NSMenuItem(title: "Totoro (White)", action: #selector(selectTotoroWhitePreset), keyEquivalent: "")
-        totoroWhitePresetItem.target = self
-        infoMenu.addItem(totoroWhitePresetItem)
-
-        totoroBlackPresetItem = NSMenuItem(title: "Totoro (Black)", action: #selector(selectTotoroBlackPreset), keyEquivalent: "")
-        totoroBlackPresetItem.target = self
-        infoMenu.addItem(totoroBlackPresetItem)
-
-        rainingPresetItem = NSMenuItem(title: "Raining", action: #selector(selectRainingPreset), keyEquivalent: "")
-        rainingPresetItem.target = self
-        infoMenu.addItem(rainingPresetItem)
+        for (index, preset) in allPresets.enumerated() {
+            let item = NSMenuItem(title: preset.menuTitle, action: #selector(selectPreset(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            infoMenu.addItem(item)
+            presetMenuItems.append(item)
+        }
 
         infoMenu.addItem(NSMenuItem.separator())
         infoMenu.addItem(NSMenuItem(title: "About", action: #selector(showAbout), keyEquivalent: ""))
         infoMenu.addItem(NSMenuItem(title: "Exit", action: #selector(exitApp), keyEquivalent: "q"))
         infoMenu.items.forEach { $0.target = self }
-        infoMenu.item(withTitle: "Presets")?.isEnabled = false
+        presetsHeaderItem.isEnabled = false
         statusItem.menu = infoMenu
         refreshPresetSelectionState()
         refreshWidthSelectionState()
@@ -492,7 +475,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func makeMenuAlertIcon() -> NSImage? {
-        guard let source = NSImage(contentsOfFile: builtInHorseBlackPath) else {
+        guard
+            let iconPath = allPresets.first(where: { $0.key == "horse-black" })?.path,
+            let source = NSImage(contentsOfFile: iconPath)
+        else {
             return nil
         }
         let iconSize = NSSize(width: 48, height: 48)
@@ -593,27 +579,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func refreshPresetSelectionState() {
         let fileManager = FileManager.default
-        dogWhitePresetItem.isEnabled = fileManager.fileExists(atPath: builtInDogWhitePath)
-        dogBlackPresetItem.isEnabled = fileManager.fileExists(atPath: builtInDogBlackPath)
-        horseBlackPresetItem.isEnabled = fileManager.fileExists(atPath: builtInHorseBlackPath)
-        horseWhitePresetItem.isEnabled = fileManager.fileExists(atPath: builtInHorseWhitePath)
-        totoroPresetItem.isEnabled = fileManager.fileExists(atPath: builtInTotoroPath)
-        totoroGroupWhitePresetItem.isEnabled = fileManager.fileExists(atPath: builtInTotoroGroupWhitePath)
-        totoroGroupBlackPresetItem.isEnabled = fileManager.fileExists(atPath: builtInTotoroGroupBlackPath)
-        totoroWhitePresetItem.isEnabled = fileManager.fileExists(atPath: builtInTotoroWhitePath)
-        totoroBlackPresetItem.isEnabled = fileManager.fileExists(atPath: builtInTotoroBlackPath)
-        rainingPresetItem.isEnabled = fileManager.fileExists(atPath: builtInRainingPath)
-
-        dogWhitePresetItem.state = activeGifPath == builtInDogWhitePath ? .on : .off
-        dogBlackPresetItem.state = activeGifPath == builtInDogBlackPath ? .on : .off
-        horseBlackPresetItem.state = activeGifPath == builtInHorseBlackPath ? .on : .off
-        horseWhitePresetItem.state = activeGifPath == builtInHorseWhitePath ? .on : .off
-        totoroPresetItem.state = activeGifPath == builtInTotoroPath ? .on : .off
-        totoroGroupWhitePresetItem.state = activeGifPath == builtInTotoroGroupWhitePath ? .on : .off
-        totoroGroupBlackPresetItem.state = activeGifPath == builtInTotoroGroupBlackPath ? .on : .off
-        totoroWhitePresetItem.state = activeGifPath == builtInTotoroWhitePath ? .on : .off
-        totoroBlackPresetItem.state = activeGifPath == builtInTotoroBlackPath ? .on : .off
-        rainingPresetItem.state = activeGifPath == builtInRainingPath ? .on : .off
+        for (item, preset) in zip(presetMenuItems, allPresets) {
+            item.isEnabled = fileManager.fileExists(atPath: preset.path)
+            item.state = (activePreset?.key == preset.key) ? .on : .off
+        }
     }
 
     private func refreshWidthSelectionState() {
@@ -649,53 +618,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     @objc
-    private func selectDogWhitePreset() {
-        switchToGif(at: builtInDogWhitePath)
-    }
-
-    @objc
-    private func selectDogBlackPreset() {
-        switchToGif(at: builtInDogBlackPath)
-    }
-
-    @objc
-    private func selectHorseBlackPreset() {
-        switchToGif(at: builtInHorseBlackPath)
-    }
-
-    @objc
-    private func selectHorseWhitePreset() {
-        switchToGif(at: builtInHorseWhitePath)
-    }
-
-    @objc
-    private func selectTotoroPreset() {
-        switchToGif(at: builtInTotoroPath)
-    }
-
-    @objc
-    private func selectTotoroGroupWhitePreset() {
-        switchToGif(at: builtInTotoroGroupWhitePath)
-    }
-
-    @objc
-    private func selectTotoroGroupBlackPreset() {
-        switchToGif(at: builtInTotoroGroupBlackPath)
-    }
-
-    @objc
-    private func selectTotoroWhitePreset() {
-        switchToGif(at: builtInTotoroWhitePath)
-    }
-
-    @objc
-    private func selectTotoroBlackPreset() {
-        switchToGif(at: builtInTotoroBlackPath)
-    }
-
-    @objc
-    private func selectRainingPreset() {
-        switchToGif(at: builtInRainingPath)
+    private func selectPreset(_ sender: NSMenuItem) {
+        guard allPresets.indices.contains(sender.tag) else { return }
+        let preset = allPresets[sender.tag]
+        switchToGif(to: preset.path, descriptor: preset)
     }
 
     @objc
@@ -788,17 +714,19 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshOverlaySelectionState()
     }
 
-    private func switchToGif(at path: String) {
+    private func switchToGif(to path: String, descriptor: PresetDescriptor?) {
         let expanded = NSString(string: path).expandingTildeInPath
         guard expanded != activeGifPath else { return }
 
         let previousPath = activeGifPath
+        let previousPreset = activePreset
         let previousFrames = frames
         let previousDurations = baseDurations
         let previousFrameIndex = frameIndex
 
         guard loadFrames(from: expanded) else {
             activeGifPath = previousPath
+            activePreset = previousPreset
             frames = previousFrames
             baseDurations = previousDurations
             frameIndex = previousFrameIndex
@@ -808,6 +736,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         activeGifPath = expanded
+        activePreset = descriptor
         frameIndex = 0
         statusItem.button?.toolTip = activeGifPath
 
@@ -1002,95 +931,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func currentPresetScale() -> CGFloat {
-        if activeGifPath == builtInHorseBlackPath || activeGifPath == builtInHorseWhitePath {
-            return Tuning.horseSlotScale
-        }
-        if activeGifPath == builtInTotoroGroupWhitePath || activeGifPath == builtInTotoroGroupBlackPath {
-            return Tuning.totoroGroupSlotScale
-        }
-        if activeGifPath == builtInTotoroPath
-            || activeGifPath == builtInTotoroWhitePath
-            || activeGifPath == builtInTotoroBlackPath
-        {
-            return Tuning.totoroSlotScale
-        }
-        if activeGifPath == builtInRainingPath {
-            return Tuning.rainingSlotScale
-        }
-        return Tuning.dogSlotScale
+        activePreset?.slotScale ?? Tuning.dogSlotScale
     }
 
     private func currentSpeedProfile() -> SpeedProfile {
-        speedProfile(for: currentPresetKind())
+        activePreset?.speedProfile ?? Self.customSpeedProfile
     }
 
     private func currentPresetKind() -> PresetKind {
-        if activeGifPath == builtInHorseBlackPath || activeGifPath == builtInHorseWhitePath {
-            return .horse
-        }
-        if activeGifPath == builtInTotoroGroupWhitePath || activeGifPath == builtInTotoroGroupBlackPath {
-            return .totoroGroup
-        }
-        if activeGifPath == builtInTotoroPath
-            || activeGifPath == builtInTotoroWhitePath
-            || activeGifPath == builtInTotoroBlackPath
-        {
-            return .totoro
-        }
-        if activeGifPath == builtInRainingPath {
-            return .raining
-        }
-        if activeGifPath == builtInDogWhitePath || activeGifPath == builtInDogBlackPath {
-            return .dog
-        }
-        return .custom
-    }
-
-    private func speedProfile(for preset: PresetKind) -> SpeedProfile {
-        switch preset {
-        case .dog:
-            return SpeedProfile(
-                label: "dog",
-                min: Tuning.dogSpeedMin,
-                max: Tuning.dogSpeedMax,
-                responseExponent: Tuning.linearSpeedCurveExponent
-            )
-        case .horse:
-            return SpeedProfile(
-                label: "horse",
-                min: Tuning.horseSpeedMin,
-                max: Tuning.horseSpeedMax,
-                responseExponent: Tuning.linearSpeedCurveExponent
-            )
-        case .totoro:
-            return SpeedProfile(
-                label: "totoro",
-                min: Tuning.totoroSpeedMin,
-                max: Tuning.totoroSpeedMax,
-                responseExponent: Tuning.linearSpeedCurveExponent
-            )
-        case .totoroGroup:
-            return SpeedProfile(
-                label: "totoro-group",
-                min: Tuning.totoroGroupSpeedMin,
-                max: Tuning.totoroGroupSpeedMax,
-                responseExponent: Tuning.linearSpeedCurveExponent
-            )
-        case .raining:
-            return SpeedProfile(
-                label: "raining",
-                min: Tuning.rainingSpeedMin,
-                max: Tuning.rainingSpeedMax,
-                responseExponent: Tuning.rainingSpeedCurveExponent
-            )
-        case .custom:
-            return SpeedProfile(
-                label: "custom",
-                min: Tuning.dogSpeedMin,
-                max: Tuning.dogSpeedMax,
-                responseExponent: Tuning.linearSpeedCurveExponent
-            )
-        }
+        activePreset?.kind ?? .custom
     }
 
     private func loadFrames(from path: String) -> Bool {

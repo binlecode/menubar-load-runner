@@ -78,14 +78,21 @@ private struct Config {
         case help
     }
 
-    let gifPath: String
+    // The built-in preset used when no positional arg / env override is supplied.
+    // Single source of the default; the launcher no longer injects one.
+    static let defaultPreset = "horse-white"
+
+    // A built-in preset keyword (e.g. "horse-white") or an absolute/tilde GIF path.
+    // Keyword→path resolution happens in MenuBarLoadRunnerApp.init against `allPresets`,
+    // so the shell launcher forwards this arg unchanged.
+    let presetOrPath: String
     let widthSlots: Int?
     let speedMultiplierOverride: Double?
     let overlayText: String?
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
-        var gifPath: String?
+        var presetOrPath: String?
         var widthSlots: Int?
         var speedMultiplierOverride: Double?
         var overlayText: String?
@@ -128,8 +135,8 @@ private struct Config {
                 }
                 overlayText = text
             default:
-                if gifPath == nil {
-                    gifPath = arg
+                if presetOrPath == nil {
+                    presetOrPath = arg
                 } else {
                     fputs("Unexpected argument: \(arg)\n", stderr)
                     printUsage()
@@ -138,19 +145,16 @@ private struct Config {
             }
         }
 
-        if gifPath == nil {
-            gifPath = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_PATH"]
+        if presetOrPath == nil {
+            presetOrPath = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_PATH"]
         }
 
-        guard let path = gifPath, !path.isEmpty else {
-            fputs("Missing GIF path.\n", stderr)
-            printUsage()
-            return nil
-        }
+        // No positional arg and no env override → fall back to the default preset.
+        let value = (presetOrPath?.isEmpty == false) ? presetOrPath! : Config.defaultPreset
 
         return .config(
             Config(
-                gifPath: NSString(string: path).expandingTildeInPath,
+                presetOrPath: NSString(string: value).expandingTildeInPath,
                 widthSlots: widthSlots,
                 speedMultiplierOverride: speedMultiplierOverride,
                 overlayText: overlayText
@@ -161,7 +165,7 @@ private struct Config {
     static func printUsage() {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
-        print("Usage: \(bin) <path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
         print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
         print("Default width: one slot (NSStatusItem.squareLength). With --width, GIF fills the configured slot count.")
         print("Width note: requested slots are clamped to each preset's minimum (e.g. totoro-group requires 4 slots).")
@@ -348,8 +352,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         ]
 
         self.allPresets = presets
-        self.activeGifPath = config.gifPath
-        self.activePreset = presets.first { $0.path == config.gifPath }
+        // Resolve the positional arg (a preset keyword or a GIF path). The shell launcher
+        // forwards it verbatim; this is the single place keywords become paths.
+        if let matched = presets.first(where: { $0.key == config.presetOrPath }) {
+            self.activeGifPath = matched.path
+            self.activePreset = matched
+        } else {
+            // Not a known keyword — treat it as a (custom) GIF path. Still match by path so a
+            // raw path pointing at a built-in GIF adopts that preset's profile.
+            self.activeGifPath = config.presetOrPath
+            self.activePreset = presets.first { $0.path == config.presetOrPath }
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

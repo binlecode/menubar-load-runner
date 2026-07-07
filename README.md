@@ -59,9 +59,6 @@ menubar-load-runner dog-black
 # Black horse preset (Pinterest silhouette, slightly wider slot scaling)
 ./menubar-load-runner horse-black
 
-# Alias for horse-black
-./menubar-load-runner horse
-
 # Totoro preset
 ./menubar-load-runner totoro
 

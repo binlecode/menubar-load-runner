@@ -99,6 +99,19 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     an eased curve for `raining`), and only applies the new value if the change exceeds
     `Tuning.speedUpdateHysteresis`, to avoid visible jitter. Disabled entirely when `--speed-multiplier` is
     passed.
+  - **Self-throttling under pressure** (the app throttles *its own* animation, never the system —
+    it only ever *reads* system state): the indicator reduces its own CPU use so it doesn't add to
+    the load it visualizes. `speedMultiplier(forUsage:)` caps *this app's* auto animation speed at the
+    midpoint of the preset's range (`Tuning.constrainedSpeedCeilingFraction`) when `isUnderPowerPressure`
+    (Low Power Mode on, or `thermalState` `.serious`/`.critical`). Fewer frame advances/redraws = less
+    CPU spent by the app; nothing about the system or other processes is changed. It subscribes to `.NSProcessInfoPowerStateDidChange` /
+    `ProcessInfo.thermalStateDidChangeNotification` and calls `reevaluateSpeedForCurrentConditions()`
+    (recomputes immediately, bypassing hysteresis) so the cap engages/lifts without waiting for the next
+    2s tick. Separately, `updateAnimationForOcclusion()` (driven by
+    `NSWindow.didChangeOcclusionStateNotification` on the status button's window) stops the game loop
+    entirely when the item is fully occluded (notch/overflow, another Space, display off) and restarts
+    it when visible — no re-rasterizing frames no one can see. It only ever pauses in response to a
+    positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthSelectionState`, `refreshOverlaySelectionState`) rather than pushed reactively. When adding

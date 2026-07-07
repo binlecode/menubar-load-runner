@@ -183,6 +183,31 @@ approach should stay (document why, and skip this item).
 
 ## 4. The load-indicator doesn't economize its own resource usage
 
+**Status: RESOLVED (2026-07-06).** Implemented the two high-value paths from the fix proposal;
+left point 3 (the 2s synchronous Mach call) as-is since it's cheap and moving it off-main would
+be over-engineering.
+Scope note: "back off"/"self-throttle" here means the app reduces **its own** animation work
+(frame advances + redraws). The app only ever *reads* `isLowPowerModeEnabled`/`thermalState` — it
+never mutates system state and cannot throttle the system or any other process. It is strictly
+read-only w.r.t. the machine.
+- **Power/thermal back-off**: `speedMultiplier(forUsage:)` now caps *the app's own* auto animation
+  speed at `profile.min + (profile.max - profile.min) * Tuning.constrainedSpeedCeilingFraction` (0.5,
+  i.e. the midpoint of the range) whenever `isUnderPowerPressure` is true — Low Power Mode on, or
+  `thermalState` at `.serious`/`.critical`. The app subscribes to
+  `.NSProcessInfoPowerStateDidChange` and `ProcessInfo.thermalStateDidChangeNotification` and calls
+  `reevaluateSpeedForCurrentConditions()` on either, which recomputes speed from the latest smoothed
+  usage immediately (bypassing the sample-tick hysteresis) so the cap engages/lifts without waiting
+  up to 2s. The menu's Speed Multiplier line appends `[throttled: low power/thermal]` while capped.
+- **Occlusion pause**: subscribes to `NSWindow.didChangeOcclusionStateNotification` on the status
+  item button's window; `updateAnimationForOcclusion()` calls `stopGameLoop()` when the window is
+  not `.visible` (behind the notch / menu-bar overflow, another Space, display off) and
+  `startGameLoop()` when it becomes visible again — no re-rasterizing frames no one can see. Chosen
+  to only ever pause in response to a positive occlusion-changed event, so if the notification never
+  fires the behavior is unchanged (always animating) — no risk of freezing a visible icon.
+- All three new observers (`powerStateObserver`/`thermalStateObserver`/`occlusionObserver`) are torn
+  down in `applicationWillTerminate`. Builds warning-clean under `-strict-concurrency=complete`;
+  launched from the real menu bar and ran stably for ~14s (empty log, no freeze in the visible case).
+
 **Where**: `startGameLoop()`/`gameLoopTick()` (lines 868-902), `updateRenderedFrames()`
 (lines 917-980), `sampleSystemLoad()` (lines 539-556).
 
@@ -406,9 +431,7 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
    **#8** (retain cycle style) — still pending; low priority, opportunistic — fold into
    whichever of #3/#4 touches the same functions.
 7. **#3** (CADisplayLink) — ✅ done (see status note above). **#4** (thermal/low-power
-   awareness) — still pending; a behavior change to the animation driver that deserves its own
-   testing pass (verify Low Power Mode / thermal throttling actually engages using
-   `pmset`/Terminal simulation or a real thermal event). #8's game-loop retain-cycle concern is
+   awareness + occlusion pause) — ✅ done (see status note above). #8's game-loop retain-cycle concern is
    now moot for the loop driver — the `CADisplayLink`/`Timer` are held directly and torn down in
    `stopGameLoop()`; the `Timer(target:selector:)` retain-cycle note only still applies to
    `loadTimer` in `startLoadMonitoring()`.

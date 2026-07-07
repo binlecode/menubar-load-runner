@@ -2,10 +2,18 @@ import AppKit
 import CoreGraphics
 import Darwin
 import ImageIO
+import QuartzCore
 
 private enum Tuning {
     static let defaultGifFrameDelay: TimeInterval = 0.1
     static let minGifFrameDelay: TimeInterval = 0.02
+    // Fallback game-loop tick rate used only on macOS < 14, where CADisplayLink
+    // (NSView.displayLink) is unavailable and a plain 60 Hz Timer drives the loop.
+    static let gameLoopFallbackInterval: TimeInterval = 1.0 / 60.0
+    // Any inter-tick gap larger than this (display sleep, app occlusion, clock jump)
+    // is treated as a resync rather than replayed frame-by-frame, so the loop never
+    // spins through thousands of catch-up frames on resume.
+    static let maxFrameAdvanceDelta: TimeInterval = 1.0
 
     static let cpuSmoothingAlpha: Double = 0.2
     static let loadSampleInterval: TimeInterval = 2.0
@@ -282,7 +290,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var frameAspects: [CGFloat] = []
     private var baseDurations: [TimeInterval] = []
     private var frameIndex = 0
-    private var displayLinkTimer: Timer?
+    private var displayLink: CADisplayLink?
+    private var fallbackTimer: Timer?
     private var lastTickTime: TimeInterval = 0
     private var accumulatedFrameTime: TimeInterval = 0
     private var renderedFrames: [NSImage] = []
@@ -453,7 +462,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        displayLinkTimer?.invalidate()
+        stopGameLoop()
         loadTimer?.invalidate()
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
@@ -536,10 +545,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             if config.speedMultiplierOverride == nil {
                 let candidate = speedMultiplier(forUsage: usage)
                 if abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis {
+                    // The driver reads speedMultiplier live via the accumulator, so the
+                    // new speed takes effect on the next tick — no need to restart it.
                     speedMultiplier = candidate
-                    displayLinkTimer?.invalidate()
-                    displayLinkTimer = nil
-                    startGameLoop()
                 }
             }
         }
@@ -755,9 +763,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshWidthSelectionState()
         refreshOverlaySelectionState()
 
-        displayLinkTimer?.invalidate()
-        displayLinkTimer = nil
-        startGameLoop()
+        // New frame source: re-sync timing on the running driver rather than tearing it
+        // down (the link's button/screen is unchanged, only the frames/durations differ).
+        resetGameLoopTiming()
         refreshPresetSelectionState()
     }
 
@@ -804,21 +812,70 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return min(max(value, profile.min), profile.max)
     }
 
+    // Drives frame advancement off the display's refresh signal via CADisplayLink
+    // (macOS 14+), so ticks are vsync-aligned and follow the status item's screen
+    // (including its refresh rate on ProMotion). Falls back to a 60 Hz Timer on older
+    // systems. The link/timer reads `speedMultiplier` live through the accumulator, so a
+    // speed change never needs the driver to be recreated — only a frame-source or
+    // driver (re)start resets timing.
     private func startGameLoop() {
-        displayLinkTimer?.invalidate()
-        lastTickTime = ProcessInfo.processInfo.systemUptime
-        accumulatedFrameTime = 0
+        stopGameLoop()
+        resetGameLoopTiming()
 
-        let timer = Timer(timeInterval: 1.0 / 60.0, target: self, selector: #selector(gameLoopTick), userInfo: nil, repeats: true)
-        displayLinkTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        if #available(macOS 14.0, *), let button = statusItem.button {
+            let link = button.displayLink(target: self, selector: #selector(displayLinkTick(_:)))
+            displayLink = link
+            link.add(to: .main, forMode: .common)
+        } else {
+            let timer = Timer(
+                timeInterval: Tuning.gameLoopFallbackInterval,
+                target: self,
+                selector: #selector(fallbackTimerTick),
+                userInfo: nil,
+                repeats: true
+            )
+            fallbackTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
     }
 
-    @objc private func gameLoopTick() {
+    private func stopGameLoop() {
+        displayLink?.invalidate()
+        displayLink = nil
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
+    }
+
+    // Re-syncs the clock on the next tick (0 sentinel) and clears accumulated time.
+    // Used when the driver (re)starts or the frame source changes under a live driver.
+    private func resetGameLoopTiming() {
+        lastTickTime = 0
+        accumulatedFrameTime = 0
+    }
+
+    @available(macOS 14.0, *)
+    @objc private func displayLinkTick(_ link: CADisplayLink) {
+        advanceFrames(now: link.timestamp)
+    }
+
+    @objc private func fallbackTimerTick() {
+        advanceFrames(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func advanceFrames(now: TimeInterval) {
         guard !baseDurations.isEmpty, !renderedFrames.isEmpty else { return }
-        let now = ProcessInfo.processInfo.systemUptime
+
+        // First tick after a (re)start: just latch the clock, don't advance.
+        if lastTickTime == 0 {
+            lastTickTime = now
+            return
+        }
+
         let delta = now - lastTickTime
         lastTickTime = now
+        // Ignore backwards jumps and large gaps (sleep/occlusion) instead of replaying
+        // every skipped frame; the next tick resumes cleanly from the current frame.
+        guard delta > 0, delta <= Tuning.maxFrameAdvanceDelta else { return }
 
         accumulatedFrameTime += delta
         var advanced = false

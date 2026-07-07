@@ -86,10 +86,14 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     item length and with the overlay text (if any) baked in, produced by `updateRenderedFrames()`. Any change
     to width, overlay text, or overlay bold state must call `updateRenderedFrames()` (usually via
     `applySizing()`) before `renderCurrentFrame()` picks up the new images.
-  - **Game loop**: a 60 Hz `Timer` (`gameLoopTick`) accumulates real elapsed time and advances `frameIndex`
-    based on each frame's GIF delay divided by the current `speedMultiplier`, looping (possibly multiple
-    frames per tick) until under budget. Speed changes take effect immediately since the timer reads
-    `speedMultiplier` live; a new `startGameLoop()` call is only used to reset `lastTickTime`/accumulated time.
+  - **Game loop**: a `CADisplayLink` (macOS 14+, via `NSView.displayLink` on the status item button; a 60 Hz
+    `Timer` fallback on older systems) drives `advanceFrames(now:)`, which accumulates real elapsed time
+    (`link.timestamp`) and advances `frameIndex` based on each frame's GIF delay divided by the current
+    `speedMultiplier`, looping (possibly multiple frames per tick) until under budget. Ticks are vsync-aligned
+    and follow the screen's refresh rate. Speed changes take effect immediately since the driver reads
+    `speedMultiplier` live — `sampleSystemLoad` no longer restarts the driver on a speed change. `startGameLoop`
+    (re)creates the driver; `resetGameLoopTiming` re-syncs the clock (used on frame-source switch). Gaps larger
+    than `Tuning.maxFrameAdvanceDelta` (sleep/occlusion/clock jump) resync instead of replaying every frame.
   - **Auto speed**: on each `loadSampleInterval` (2s) tick, `speedMultiplier(forUsage:)` maps smoothed CPU
     usage through the current preset's `SpeedProfile` (min/max/response exponent — linear for most presets,
     an eased curve for `raining`), and only applies the new value if the change exceeds

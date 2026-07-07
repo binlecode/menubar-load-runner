@@ -69,10 +69,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
   usage is nil until the second `sampleSystemLoad` tick.
 - **`MenuBarLoadRunnerApp`** (`NSApplicationDelegate`/`NSMenuDelegate`) — the entire app. Key internal
   concepts to know before changing behavior:
-  - **Preset identity is by file path.** `currentPresetKind()` / `currentPresetScale()` compare
-    `activeGifPath` against the `builtIn*Path` constants (resolved relative to `#filePath`'s directory at
-    init) to decide slot-width scale and speed profile. A custom/user-supplied GIF always falls through to
-    the `.custom` case (dog's speed range, `dogSlotScale` width).
+  - **Preset identity is a single registry.** `allPresets: [PresetDescriptor]` (built once in `init(config:)`,
+    paths resolved relative to `#filePath`'s directory) is the source of truth for every built-in preset's
+    menu title, path, `PresetKind`, slot scale, and `SpeedProfile`. Selecting a preset resolves `activePreset`
+    once (in `switchToGif(to:descriptor:)`); `currentPresetKind()`/`currentPresetScale()`/
+    `currentSpeedProfile()` are trivial reads of `activePreset`. A custom/user-supplied GIF that doesn't match
+    any entry in `allPresets` leaves `activePreset` `nil`, falling through to `.custom` (dog's speed range,
+    `dogSlotScale` width, via `Self.customSpeedProfile`).
   - **Two decoupled pipelines**: `frames`/`frameAspects`/`baseDurations` hold the raw decoded GIF (from
     `loadFrames`, which also trims transparent padding via `trimTransparentPadding` so preset art isn't
     padded to a square). `renderedFrames` holds the actual per-frame `NSImage`s sized for the current status
@@ -103,8 +106,8 @@ Touch all of these together, or the preset will be inconsistent across the CLI, 
 1. Add the GIF to `gifs/`.
 2. `menubar-load-runner` — add a `*_gif` path var, a `case` in the preset-name switch, and a line in
    `print_help`'s preset list.
-3. `MenuBarLoadRunner.swift` — add a `builtIn*Path` constant, a `PresetKind` case (or reuse an existing one),
-   entries in `refreshPresetSelectionState`/`currentPresetScale`/`currentPresetKind`, a menu item + `@objc`
-   selector + wiring in `applicationDidFinishLaunching`, and (if it needs its own speed range) a
-   `Tuning` min/max pair plus a `SpeedProfile` case in `speedProfile(for:)`.
+3. `MenuBarLoadRunner.swift` — add one `PresetDescriptor` entry to the `allPresets` array literal in
+   `init(config:)` (reuse an existing `PresetKind` case, or add a new one, plus a `Tuning` min/max pair and a
+   `SpeedProfile` if it needs its own speed range). The menu item, `@objc` action, and every selection-state
+   check derive automatically from `allPresets` — no other call site needs touching.
 4. `README.md` — add it to the file list, the built-in presets command list, and the auto speed ranges table.

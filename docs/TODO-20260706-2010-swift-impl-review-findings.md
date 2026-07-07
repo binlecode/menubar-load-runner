@@ -11,6 +11,20 @@ load via a menu bar animation.
 
 ## 1. Preset identity is stringly-typed and duplicated across 6+ call sites
 
+**Status: RESOLVED (2026-07-06).** Implemented substantially as proposed below: a single
+`PresetDescriptor` struct + `allPresets: [PresetDescriptor]` array (built once in `init`) is
+now the source of truth for preset key/menu title/path/kind/slot scale/speed profile. The 10
+`builtIn*Path` constants, 10 `NSMenuItem!` properties, 10 `@objc selectXPreset()` methods, and
+the `speedProfile(for:)` switch are gone; `currentPresetScale()`/`currentPresetKind()`/
+`currentSpeedProfile()` are now one-line reads of `activePreset`, resolved once per selection
+in `switchToGif(to:descriptor:)` rather than re-derived from a path string on every call.
+`refreshPresetSelectionState()` and the menu-construction block in
+`applicationDidFinishLaunching` are now loops over `allPresets`/`presetMenuItems`. See
+`docs/DESIGN-system.md` §8.1, §9, §10.4, §11.2, §15, §16 for the current ground-truth
+structure. `CLAUDE.md`'s "Adding a new built-in preset" checklist was updated to match (step 3
+collapses to "add one `PresetDescriptor` entry"). Out of scope (unchanged): the shell
+launcher's own independent preset-name-to-path map.
+
 **Where**: `MenuBarLoadRunner.swift`
 - Path constants: `builtInDogWhitePath` ... `builtInRainingPath` (lines 245-254)
 - Menu item properties + wiring: lines 270-279, 392-430
@@ -343,9 +357,9 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
 3. **#6** (accessibility label) — trivial, one line.
 4. **#2** (Swift 6 / `@MainActor`) — low risk, do before any further refactors so subsequent
    changes are caught by strict concurrency checking as they land.
-5. **#1** (preset registry refactor) — the highest-value structural fix; do this before #3/#4
-   since both of those touch the game loop / speed logic that #1 will have already
-   consolidated behind `activePreset`.
+5. **#1** (preset registry refactor) — ✅ done (see status note above); was the highest-value
+   structural fix, and was completed before #3/#4 since both of those touch the game loop /
+   speed logic that #1 has already consolidated behind `activePreset`.
 6. **#7** (focus hack) and **#8** (retain cycle style) — low priority, opportunistic — fold
    into whichever of #3/#4 touches the same functions.
 7. **#3** (CADisplayLink) and **#4** (thermal/low-power awareness) — do last; both are

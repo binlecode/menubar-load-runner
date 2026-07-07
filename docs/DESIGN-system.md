@@ -153,6 +153,10 @@ comments dividing them):
 **Frame timing**
 - `defaultGifFrameDelay: TimeInterval = 0.1`
 - `minGifFrameDelay: TimeInterval = 0.02`
+- `gameLoopFallbackInterval: TimeInterval = 1.0 / 60.0` — tick period for the 60 Hz `Timer`
+  game-loop fallback used only on macOS < 14 (CADisplayLink is the primary driver; see §13.1a)
+- `maxFrameAdvanceDelta: TimeInterval = 1.0` — inter-tick gaps larger than this (display sleep,
+  app occlusion, clock jump) resync instead of replaying every skipped frame (see §13.2 step 3)
 
 **CPU sampling / speed mapping**
 - `cpuSmoothingAlpha: Double = 0.2`
@@ -346,8 +350,9 @@ var frames: [NSImage] = []                        // raw decoded GIF frames; rep
 var frameAspects: [CGFloat] = []                  // per-frame width/height ratio; replaced by loadFrames(from:)
 var baseDurations: [TimeInterval] = []            // per-frame GIF delay (unscaled by speed); replaced by loadFrames(from:)
 var frameIndex = 0                                // current playback position into frames/renderedFrames
-var displayLinkTimer: Timer?                      // 60Hz game loop driver
-var lastTickTime: TimeInterval = 0                // systemUptime at last gameLoopTick
+var displayLink: CADisplayLink?                   // vsync-aligned game loop driver (macOS 14+, via NSView.displayLink on the status button)
+var fallbackTimer: Timer?                          // 60Hz Timer game loop driver, used only on macOS < 14
+var lastTickTime: TimeInterval = 0                // clock at last advanceFrames tick (link.timestamp, or systemUptime on fallback); 0 = resync sentinel
 var accumulatedFrameTime: TimeInterval = 0        // carry-over time not yet consumed by a frame advance
 var renderedFrames: [NSImage] = []                // frames pre-composited to current size + overlay; replaced by updateRenderedFrames()
 var loadTimer: Timer?                             // 2s CPU-sampling driver
@@ -437,8 +442,8 @@ match any built-in preset (custom GIF case). No AppKit objects are touched here.
     `renderCurrentFrame()` on `.main` queue (lines 439-446).
 
 ### 9.3 `applicationWillTerminate(_:)` (lines 449-455)
-Invalidates `displayLinkTimer` and `loadTimer`; removes `screenObserver` from
-`NotificationCenter.default` if set.
+Calls `stopGameLoop()` (tears down whichever of `displayLink`/`fallbackTimer` is live) and
+invalidates `loadTimer`; removes `screenObserver` from `NotificationCenter.default` if set.
 
 ---
 
@@ -502,7 +507,7 @@ If `requestedOverlayText` is set: `overlayStatusItem.title = "Overlay Text: <tex
 | `showAbout` | 457-470 | modal `NSAlert` with static text + live speed-mode line |
 | `exitApp` | 472-475 | `NSApp.terminate(nil)` |
 | `sampleSystemLoad` | 525-542 | see §12 |
-| `gameLoopTick` | 807-831 | see §13 |
+| `displayLinkTick(_:)` / `fallbackTimerTick` → `advanceFrames(now:)` | 857-898 | see §13 |
 
 ### 11.1 `promptOverlayText()` (lines 643-707)
 1. Builds an `NSAlert` with a custom `accessoryView` containing: a label (`"Overlay text"`),
@@ -542,9 +547,9 @@ currently exercised by any call site).
    `statusItem.button?.toolTip = activeGifPath` (lines 738-741).
 5. `applySizing()`, `renderCurrentFrame()`, `refreshWidthSelectionState()`,
    `refreshOverlaySelectionState()` (lines 743-746).
-6. Invalidates and discards `displayLinkTimer`, then `startGameLoop()` (lines 748-750) — the
-   game loop is fully restarted (resetting `lastTickTime`/`accumulatedFrameTime`) on every
-   preset/GIF switch.
+6. Calls `resetGameLoopTiming()` (§13.1c) — re-syncs the **running** driver's clock rather than
+   tearing it down and recreating it, since the frame source changed but the display link's
+   button/screen has not. (Previously this invalidated and recreated the driver on every switch.)
 7. `refreshPresetSelectionState()` (line 751).
 
 ---
@@ -559,13 +564,12 @@ Invoked every `Tuning.loadSampleInterval` (2.0s) by `loadTimer` (started in
 2. `loadMonitor.sampleUsage()` — if it returns a non-`nil` `usage`:
    - Only if `config.speedMultiplierOverride == nil` (line 530):
      - `candidate = speedMultiplier(forUsage: usage)` (line 531, see §12.1).
-     - If `abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis` (0.08, line
-       532): `speedMultiplier = candidate`; invalidate `displayLinkTimer` and set it to
-       `nil`; call `startGameLoop()` (lines 533-537) — i.e. every hysteresis-crossing speed
-       change fully restarts the 60Hz timer (resets `lastTickTime`,
-       `accumulatedFrameTime = 0`), it does not just update a live-read variable in place
-       (even though `gameLoopTick` already reads `speedMultiplier` live and would not
-       strictly need a timer restart to pick up the new value).
+     - If `abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis` (0.08): assigns
+       `speedMultiplier = candidate` and nothing else. The game-loop driver reads
+       `speedMultiplier` live through the accumulator (§13.2 step 5), so the new speed takes
+       effect on the next tick with no driver restart. (Previously this invalidated and
+       recreated the driver on every hysteresis-crossing change — an unnecessary teardown that
+       also reset `lastTickTime`/`accumulatedFrameTime`; removed with the CADisplayLink migration.)
    - If `speedMultiplierOverride` is set, `speedMultiplier` is never touched here.
    - If `usage` is `nil` (not enough samples yet), nothing in this block runs.
 3. `refreshMenuMetrics()` (line 541) — always called, regardless of whether step 2 changed
@@ -592,25 +596,60 @@ call returns fewer than 3 samples; otherwise returns the tuple indexed by
 
 ## 13. Rendering / game-loop sequence
 
-### 13.1 `startGameLoop()` (lines 797-805)
-Invalidates any existing `displayLinkTimer`; resets `lastTickTime =
-ProcessInfo.processInfo.systemUptime`, `accumulatedFrameTime = 0`; creates a new
-`Timer(timeInterval: 1.0/60.0, target: self, selector: #selector(gameLoopTick), repeats:
-true)`, added to `RunLoop.main` in `.common` mode.
+The engine is a **display-synchronized game loop**: a `CADisplayLink` (macOS 14+) fires a
+callback aligned to the refresh of whichever screen the status item is on (including ProMotion's
+variable rate), and the callback advances GIF frames by accumulating real elapsed wall time —
+decoupling animation *timing* (fixed by each frame's GIF delay ÷ `speedMultiplier`) from the
+*driver's* callback cadence (the display's refresh). This is the layer to touch when changing how
+playback is clocked; leave frame *content* to §14 (`updateRenderedFrames`).
 
-### 13.2 `gameLoopTick()` (lines 807-831)
-1. No-ops if `baseDurations` or `renderedFrames` is empty (line 808).
-2. `delta = now - lastTickTime`; `lastTickTime = now`; `accumulatedFrameTime += delta`
-   (lines 809-813).
-3. Loop: while `accumulatedFrameTime >= requiredDelay` (where `requiredDelay =
+The driver is created once per (re)start and read live: `speedMultiplier` is consulted inside the
+accumulator on every tick, so a speed change takes effect on the next callback with **no driver
+restart** (see §12 — the old invalidate/recreate dance was removed). A single driver instance
+persists across preset switches; only its timing is re-synced (§13.1c).
+
+### 13.1a `startGameLoop()` (lines 821-840)
+Calls `stopGameLoop()` then `resetGameLoopTiming()`, then installs the driver:
+- **macOS 14+ and `statusItem.button` non-nil**: `button.displayLink(target: self, selector:
+  #selector(displayLinkTick(_:)))` → stored in `displayLink`, added to `RunLoop.main` in `.common`
+  mode. The button is view-backed and lives in the status-bar window, so the link attaches and
+  follows the button's screen automatically.
+- **otherwise (fallback)**: `Timer(timeInterval: Tuning.gameLoopFallbackInterval /* 1/60s */,
+  target: self, selector: #selector(fallbackTimerTick), repeats: true)` → stored in
+  `fallbackTimer`, added to `RunLoop.main` in `.common`.
+
+### 13.1b `stopGameLoop()` (lines 842-847)
+Invalidates and nils **both** `displayLink` and `fallbackTimer` (only one is ever live, but
+teardown is unconditional). Called by `startGameLoop()` and `applicationWillTerminate` (§11.2).
+
+### 13.1c `resetGameLoopTiming()` (lines 851-855)
+Sets `lastTickTime = 0` (resync sentinel — see §13.2 step 2) and `accumulatedFrameTime = 0`.
+Called by `startGameLoop()` and by `switchToGif` on a frame-source change (§12.1) — the latter
+re-syncs the *running* driver instead of tearing it down, since the link's button/screen is
+unchanged and only the frames/durations differ (§11.2 step 6).
+
+### 13.2 `displayLinkTick(_:)` / `fallbackTimerTick()` → `advanceFrames(now:)` (lines 857-898)
+Two thin `@objc` shims select the clock source and call the shared core:
+- `displayLinkTick(_ link:)` (macOS 14+) passes `link.timestamp`.
+- `fallbackTimerTick()` passes `ProcessInfo.processInfo.systemUptime`.
+
+`advanceFrames(now:)`:
+1. No-ops if `baseDurations` or `renderedFrames` is empty (line 866).
+2. **Resync sentinel**: if `lastTickTime == 0`, latch `lastTickTime = now` and return without
+   advancing (first tick after any (re)start or `resetGameLoopTiming()`).
+3. `delta = now - lastTickTime`; `lastTickTime = now`. Guard: if `delta <= 0` (backwards clock) or
+   `delta > Tuning.maxFrameAdvanceDelta` (1.0s — display sleep, app occlusion, clock jump), return
+   without advancing. This prevents replaying thousands of catch-up frames on resume; the next tick
+   resumes cleanly from the current frame.
+4. `accumulatedFrameTime += delta`.
+5. Loop: while `accumulatedFrameTime >= requiredDelay` (where `requiredDelay =
    max(baseDurations[frameIndex] / speedMultiplier, Tuning.minGifFrameDelay)`):
    subtract `requiredDelay` from `accumulatedFrameTime`, advance
-   `frameIndex = (frameIndex + 1) % baseDurations.count`, set `advanced = true`
-   (lines 816-826) — this loop can advance multiple frames in a single 1/60s tick if the
-   speed multiplier is high enough that several frame durations fit inside one accumulated
-   delta.
-4. If any advance happened, call `renderCurrentFrame()` (lines 828-830) — a tick with no
-   advance does not touch the displayed image at all.
+   `frameIndex = (frameIndex + 1) % baseDurations.count`, set `advanced = true` — this loop can
+   advance multiple frames in a single tick if the speed multiplier is high enough that several
+   frame durations fit inside one accumulated delta.
+6. If any advance happened, call `renderCurrentFrame()` — a tick with no advance does not touch the
+   displayed image at all.
 
 ### 13.3 `renderCurrentFrame()` (lines 833-838)
 No-ops if `statusItem.button` is `nil`, `renderedFrames` is empty, or `frameIndex` is out of

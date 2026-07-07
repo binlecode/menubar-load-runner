@@ -132,6 +132,22 @@ few diagnostics given current code is already single-threaded in practice.
 
 ## 3. Animation driven by a polling `Timer`, not `CADisplayLink`
 
+**Status: RESOLVED (2026-07-06).** Migrated the game loop to `CADisplayLink` via
+`NSView.displayLink(target:selector:)` on the status item button (macOS 14+), with a 60 Hz
+`Timer` fallback under `#available` for older systems. `displayLinkTimer: Timer?` →
+`displayLink: CADisplayLink?` + `fallbackTimer: Timer?`; the old `gameLoopTick()` split into
+`displayLinkTick(_:)`/`fallbackTimerTick()` thin shims over a shared `advanceFrames(now:)` core
+that uses `link.timestamp` for elapsed-time accumulation. Verified: the button is view-backed and
+lives in the status-bar window, so the display link attaches cleanly (app launched from the real
+menu bar, ran stably, empty log). Ticks are now vsync-aligned and follow the screen's refresh rate
+(ProMotion). Bonus cleanups folded in: (a) the `invalidate()`/recreate dance in `sampleSystemLoad()`
+on every hysteresis-triggered speed change is gone — the driver reads `speedMultiplier` live, so a
+speed change needs no driver restart; (b) `switchToGif` now calls `resetGameLoopTiming()` instead of
+tearing down/recreating the driver (the link's button/screen is unchanged); (c) inter-tick gaps
+larger than `Tuning.maxFrameAdvanceDelta` (sleep/occlusion/clock jump) resync instead of replaying
+every skipped frame. `stopGameLoop()` centralizes teardown. Builds warning-clean under
+`-strict-concurrency=complete`. `CLAUDE.md`'s game-loop architecture bullet was updated.
+
 **Where**: `startGameLoop()` (lines 868-876), `gameLoopTick()` (lines 878-902).
 
 **Issue**: The "game loop" is a manually-ticked 60 Hz `Timer` that accumulates elapsed wall
@@ -389,7 +405,10 @@ that's entirely and appropriately in `CLAUDE.md`), but even within its own scope
 6. **#7** (focus hack) — ✅ done, folded into #2 (shared strict-concurrency warning site).
    **#8** (retain cycle style) — still pending; low priority, opportunistic — fold into
    whichever of #3/#4 touches the same functions.
-7. **#3** (CADisplayLink) and **#4** (thermal/low-power awareness) — do last; both are
-   behavior changes to the animation driver and deserve their own testing pass (verify smooth
-   playback across all presets and speed multipliers, verify Low Power Mode / thermal
-   throttling actually engages using `pmset`/Terminal simulation or a real thermal event).
+7. **#3** (CADisplayLink) — ✅ done (see status note above). **#4** (thermal/low-power
+   awareness) — still pending; a behavior change to the animation driver that deserves its own
+   testing pass (verify Low Power Mode / thermal throttling actually engages using
+   `pmset`/Terminal simulation or a real thermal event). #8's game-loop retain-cycle concern is
+   now moot for the loop driver — the `CADisplayLink`/`Timer` are held directly and torn down in
+   `stopGameLoop()`; the `Timer(target:selector:)` retain-cycle note only still applies to
+   `loadTimer` in `startLoadMonitoring()`.

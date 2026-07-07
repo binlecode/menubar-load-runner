@@ -2,7 +2,14 @@ import AppKit
 import CoreGraphics
 import Darwin
 import ImageIO
+import IOKit
 import QuartzCore
+
+// Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
+// CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
+private enum AppInfo {
+    static let version = "1.0.0"
+}
 
 private enum Tuning {
     static let defaultGifFrameDelay: TimeInterval = 0.1
@@ -27,33 +34,38 @@ private enum Tuning {
     static let constrainedSpeedCeilingFraction: Double = 0.5
     static let cpuStateLowThreshold: Double = 0.30
     static let cpuStateMediumThreshold: Double = 0.70
-    static let dogSpeedMin: Double = 0.5
-    static let dogSpeedMax: Double = 2.5
-    static let horseSpeedMin: Double = 0.45
-    static let horseSpeedMax: Double = 2.3
-    static let totoroSpeedMin: Double = 0.5
-    static let totoroSpeedMax: Double = 2.6
-    static let totoroGroupSpeedMin: Double = 0.2
-    static let totoroGroupSpeedMax: Double = 2.0
-    static let rainingSpeedMin: Double = 0.15
-    static let rainingSpeedMax: Double = 4.25
-    static let linearSpeedCurveExponent: Double = 1.0
-    static let rainingSpeedCurveExponent: Double = 2.6
+    // Per-preset speed ranges and slot scales now live in gifs/presets.json (see PresetManifest),
+    // not here — the manifest is the single source of truth for preset profiles.
     static let speedOverrideMin: Double = 0.1
     static let speedOverrideMax: Double = 5.0
     static let initialSpeedMultiplier: Double = 1.0
     static let percentScale: Double = 100.0
+
+    // Adaptive throughput scaling (borrowed from btop's Net::collect auto-scale). Unbounded rate
+    // signals (network bytes/sec, disk bytes/sec, memory swap bytes/sec) have no natural 0..1 range,
+    // so each `ThroughputScaler` tracks an evolving ceiling and normalizes speed as
+    // min(speed / ceiling, 1). The ceiling = max(avg(last `scalerWindow` speeds) * headroom, floor),
+    // recomputed only after `scalerRescaleCount` consecutive out-of-band samples (hysteresis: a lone
+    // spike or dip can't move the scale). Headroom is asymmetric — tight when scaling up, generous
+    // when scaling down so it doesn't immediately re-trigger. See btop src/osx/btop_collect.cpp.
+    static let scalerWindow: Int = 5
+    static let scalerRescaleCount: Int = 5
+    static let scalerHeadroomUp: Double = 1.3
+    static let scalerHeadroomDown: Double = 3.0
+    // Per-source ceiling floors. btop uses 10 KiB/s; we raise them so idle background chatter
+    // (keepalive packets, housekeeping I/O, lazy swap) doesn't peg a menu-bar toy at full speed.
+    static let networkFloorBytesPerSec: Double = 1 * 1_048_576
+    static let diskFloorBytesPerSec: Double = 4 * 1_048_576
+    static let swapFloorBytesPerSec: Double = 1 * 1_048_576
 
     static let renderVerticalInset: CGFloat = 4
     static let minIconDimension: CGFloat = 12
     static let renderHorizontalInset: CGFloat = 2
     static let minAspect: CGFloat = 0.01
     static let minBaseSlotWidth: CGFloat = 18
-    static let horseSlotScale: CGFloat = 1.2
-    static let totoroSlotScale: CGFloat = 1.25
-    static let totoroGroupSlotScale: CGFloat = 4.0
-    static let rainingSlotScale: CGFloat = 1.15
-    static let dogSlotScale: CGFloat = 1.0
+    // Neutral slot-scale / aspect fallback used when there is no active preset (custom GIF) or a
+    // frame's real aspect is unavailable. Preset slot scales live in gifs/presets.json.
+    static let fallbackSlotScale: CGFloat = 1.0
 
     static let loadAverageSampleCount = 3
     static let loadAverage1mIndex = 0
@@ -72,23 +84,63 @@ private enum Tuning {
     static let overlayMaxChars = 12
 }
 
+// Which system reader drives the animation speed. A single registry (key + menu title) so the
+// CLI keyword, env fallback, menu item, and selection checks all derive from one source of truth,
+// mirroring PresetDescriptor.
+private enum LoadSource: Int, CaseIterable {
+    case cpu = 0
+    case memory = 1
+    case gpu = 2
+    case network = 3
+    case disk = 4
+
+    var key: String {
+        switch self {
+        case .cpu: return "cpu"
+        case .memory: return "memory"
+        case .gpu: return "gpu"
+        case .network: return "network"
+        case .disk: return "disk"
+        }
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .cpu: return "CPU"
+        case .memory: return "Memory"
+        case .gpu: return "GPU"
+        case .network: return "Network"
+        case .disk: return "Disk"
+        }
+    }
+
+    static func from(key: String?) -> LoadSource? {
+        guard let key = key?.lowercased(), !key.isEmpty else { return nil }
+        return allCases.first { $0.key == key }
+    }
+}
+
 private struct Config {
     enum ParseResult {
         case config(Config)
         case help
     }
 
-    // The built-in preset used when no positional arg / env override is supplied.
-    // Single source of the default; the launcher no longer injects one.
-    static let defaultPreset = "horse-white"
-
-    // A built-in preset keyword (e.g. "horse-white") or an absolute/tilde GIF path.
+    // A built-in preset keyword (e.g. "horse-white") or an absolute/tilde GIF path. Empty means
+    // "no arg given" → the app falls back to the manifest's defaultPreset.
     // Keyword→path resolution happens in MenuBarLoadRunnerApp.init against `allPresets`,
     // so the shell launcher forwards this arg unchanged.
     let presetOrPath: String
     let widthSlots: Int?
     let speedMultiplierOverride: Double?
     let overlayText: String?
+    // Which reader drives the animation. Resolved from --load-source / env here (unknown →
+    // .cpu, never a launch failure), so the app receives a concrete source, not a raw string.
+    let loadSource: LoadSource
+    // Debug/test hook: if MENUBAR_LOAD_RUNNER_EXIT_AFTER=<seconds> (>0) is set, the app
+    // self-terminates after that many seconds. Lets a smoke test exit 0 on its own instead of
+    // an external kill/timeout against the blocking AppKit run loop. nil = run until quit.
+    let exitAfterSeconds: TimeInterval?
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
@@ -96,6 +148,7 @@ private struct Config {
         var widthSlots: Int?
         var speedMultiplierOverride: Double?
         var overlayText: String?
+        var loadSourceArg: String?
 
         var iterator = args.makeIterator()
         while let arg = iterator.next() {
@@ -134,6 +187,13 @@ private struct Config {
                     return nil
                 }
                 overlayText = text
+            case "--load-source":
+                guard let value = iterator.next() else {
+                    fputs("Invalid value for --load-source. Expected one of: \(LoadSource.allCases.map(\.key).joined(separator: ", ")).\n", stderr)
+                    printUsage()
+                    return nil
+                }
+                loadSourceArg = value
             default:
                 if presetOrPath == nil {
                     presetOrPath = arg
@@ -149,15 +209,32 @@ private struct Config {
             presetOrPath = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_PATH"]
         }
 
-        // No positional arg and no env override → fall back to the default preset.
-        let value = (presetOrPath?.isEmpty == false) ? presetOrPath! : Config.defaultPreset
+        // No positional arg and no env override → empty, so the app resolves the manifest default.
+        let value = (presetOrPath?.isEmpty == false) ? presetOrPath! : ""
+
+        if loadSourceArg == nil {
+            loadSourceArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOAD_SOURCE"]
+        }
+        // Unknown/absent → .cpu (today's behavior). Never a launch failure, per spec.
+        let loadSource = LoadSource.from(key: loadSourceArg) ?? .cpu
+        if let requested = loadSourceArg, LoadSource.from(key: requested) == nil, !requested.isEmpty {
+            fputs("Unknown --load-source \"\(requested)\"; falling back to cpu. Known: \(LoadSource.allCases.map(\.key).joined(separator: ", ")).\n", stderr)
+        }
+
+        var exitAfterSeconds: TimeInterval?
+        if let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_EXIT_AFTER"],
+           let parsed = Double(raw), parsed > 0 {
+            exitAfterSeconds = parsed
+        }
 
         return .config(
             Config(
                 presetOrPath: NSString(string: value).expandingTildeInPath,
                 widthSlots: widthSlots,
                 speedMultiplierOverride: speedMultiplierOverride,
-                overlayText: overlayText
+                overlayText: overlayText,
+                loadSource: loadSource,
+                exitAfterSeconds: exitAfterSeconds
             )
         )
     }
@@ -165,11 +242,76 @@ private struct Config {
     static func printUsage() {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
-        print("Usage: \(bin) <preset-name|path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>]")
+        print("MenuBar Load Runner \(AppInfo.version)")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
+        print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
         print("Default width: one slot (NSStatusItem.squareLength). With --width, GIF fills the configured slot count.")
         print("Width note: requested slots are clamped to each preset's minimum (e.g. totoro-group requires 4 slots).")
-        print("Default speed: auto (preset-dependent; dog-white/dog-black/custom \(Tuning.dogSpeedMin)x..\((Tuning.dogSpeedMax))x, horse \(Tuning.horseSpeedMin)x..\((Tuning.horseSpeedMax))x, totoro \(Tuning.totoroSpeedMin)x..\((Tuning.totoroSpeedMax))x, totoro-group-white/black \(Tuning.totoroGroupSpeedMin)x..\((Tuning.totoroGroupSpeedMax))x, raining \(Tuning.rainingSpeedMin)x..\((Tuning.rainingSpeedMax))x).")
+        print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
+    }
+}
+
+// Adaptive normalizer for unbounded throughput rates (network/disk/swap bytes-per-sec), ported from
+// btop's Net::collect auto-scale. It maps a raw bytes/sec `speed` to 0…1 against a `ceiling` that
+// tracks the recent workload instead of a fixed reference: full animation speed means "as busy as this
+// machine has recently been," not a hardcoded MB/s. Hysteresis (rescale only after
+// `scalerRescaleCount` consecutive out-of-band samples) keeps a lone spike from blowing the scale, and
+// asymmetric headroom (tighter up, looser down) stops it re-triggering right after a rescale. The
+// ceiling seeds from the first observed speed so a fresh source doesn't peg at 1.0 for a tick.
+// A value type mutated in place by its owning @MainActor monitor.
+private struct ThroughputScaler {
+    private let floor: Double
+    private var ceiling: Double
+    private var seeded = false
+    private var recent: [Double] = []
+    private var overCount = 0
+    private var underCount = 0
+
+    init(floor: Double) {
+        self.floor = floor
+        self.ceiling = floor
+    }
+
+    // Feed one bytes/sec sample, get back its normalized 0…1 load against the current ceiling.
+    mutating func normalize(speed: Double) -> Double {
+        // Seed the ceiling from the first real sample so the first normalized value is ~sane rather
+        // than speed/floor (which would peg at 1.0 whenever the first sample exceeds the floor).
+        if !seeded {
+            seeded = true
+            ceiling = max(speed * Tuning.scalerHeadroomUp, floor)
+        }
+
+        recent.append(speed)
+        if recent.count > Tuning.scalerWindow { recent.removeFirst(recent.count - Tuning.scalerWindow) }
+
+        // btop hysteresis: count consecutive samples that sit above the ceiling or below a tenth of
+        // it; the opposite counter decays so only a sustained trend triggers a rescale.
+        if speed > ceiling {
+            overCount += 1
+            if underCount > 0 { underCount -= 1 }
+        } else if ceiling > floor, speed < ceiling / 10 {
+            underCount += 1
+            if overCount > 0 { overCount -= 1 }
+        }
+
+        if overCount >= Tuning.scalerRescaleCount {
+            ceiling = max(average() * Tuning.scalerHeadroomUp, floor)
+            overCount = 0
+            underCount = 0
+        } else if underCount >= Tuning.scalerRescaleCount {
+            ceiling = max(average() * Tuning.scalerHeadroomDown, floor)
+            overCount = 0
+            underCount = 0
+        }
+
+        guard ceiling > 0 else { return 0 }
+        return min(speed / ceiling, 1)
+    }
+
+    private func average() -> Double {
+        guard !recent.isEmpty else { return 0 }
+        return recent.reduce(0, +) / Double(recent.count)
     }
 }
 
@@ -244,17 +386,312 @@ private final class CPULoadMonitor {
     }
 }
 
+// Reads memory pressure as a composite 0…1 load plus swap capacity. Same unprivileged Mach/sysctl
+// tier as CPULoadMonitor — no private API, no subscription lifecycle. This is a *mixed domain*: the
+// used-fraction is instantaneous (a point read, valid on the first tick, no EMA), while the swap
+// *rate* is counter-delta (swapins+swapouts differenced over real elapsed wall-clock time, so it
+// warms up one tick like the CPU reader). The driver value combines them, `currentMemoryLoad`; the
+// menu still shows the raw used-fraction. No EMA on either — smoothing stays a conscious choice, not
+// a default. "Unavailable" is nil, never a fabricated 0.
 @MainActor
-private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private enum PresetKind {
-        case dog
-        case horse
-        case totoro
-        case totoroGroup
-        case raining
-        case custom
+private final class MemoryLoadMonitor {
+    private(set) var currentUsedFraction: Double = 0
+    private(set) var hasSample = false
+    private(set) var swapUsedBytes: UInt64 = 0
+    private(set) var swapTotalBytes: UInt64 = 0
+    private(set) var hasSwapSample = false
+    // Composite driver value: max(usedFraction, adaptiveScaled(swapRate)). Equals the used-fraction
+    // until swap activity warms up (one tick) and the scaled swap rate rises above it. See Tuning /
+    // ThroughputScaler.
+    private(set) var currentMemoryLoad: Double = 0
+    private(set) var currentSwapRateBytesPerSec: Double = 0
+    private(set) var hasSwapRateSample = false
+    // Cumulative swapped bytes ((swapins+swapouts) * pageSize) at the previous sample; nil until the
+    // first sample or after a cadence break (a source-switch re-sample passes elapsed = nil).
+    private var lastSwapEvents: UInt64?
+    // Swap rate is an unbounded bytes/sec signal, so it normalizes through the shared adaptive scaler
+    // (same design as network/disk) rather than a fixed reference — heavy paging is judged relative to
+    // this machine's recent paging.
+    private var swapScaler = ThroughputScaler(floor: Tuning.swapFloorBytesPerSec)
+
+    // One point read: refreshes the composite load (returned) plus, best-effort, swap capacity.
+    // `elapsed` is the monotonic seconds since the previous sample (nil on the first tick or a
+    // source-switch re-sample) — required to turn the swap counters into a rate. Returns nil only
+    // when the used-fraction read itself fails; a failed swap read degrades just the swap
+    // display/rate (hasSwapSample / hasSwapRateSample = false), never the fraction.
+    func sampleUsage(elapsed: Double?) -> Double? {
+        guard let sample = readVMSample() else { return nil }
+        currentUsedFraction = sample.usedFraction
+        hasSample = true
+        readSwapUsage()
+        updateSwapRate(swapEvents: sample.swapEvents, elapsed: elapsed)
+        let swapLoad = hasSwapRateSample ? swapScaler.normalize(speed: currentSwapRateBytesPerSec) : 0
+        currentMemoryLoad = max(sample.usedFraction, swapLoad)
+        return currentMemoryLoad
     }
 
+    // Swap rate is a counter-delta: it needs a prior sample AND real elapsed wall-clock time. When
+    // elapsed is nil (first tick / source-switch re-sample) it stores the baseline and reports no
+    // rate, so the composite falls back to the pure used-fraction until it warms up.
+    private func updateSwapRate(swapEvents: UInt64, elapsed: Double?) {
+        defer { lastSwapEvents = swapEvents }
+        guard let elapsed, elapsed > 0, let prev = lastSwapEvents else {
+            currentSwapRateBytesPerSec = 0
+            hasSwapRateSample = false
+            return
+        }
+        // Counters are monotonic; a decrease (shouldn't happen) resets rather than underflows.
+        let deltaBytes = swapEvents >= prev ? swapEvents - prev : 0
+        currentSwapRateBytesPerSec = Double(deltaBytes) / elapsed
+        hasSwapRateSample = true
+    }
+
+    // Used-fraction formula (a deliberate approximation — the "right" definition is a judgment
+    // call): "available" = pages reclaimable without pressure = free + purgeable + external
+    // (file-backed). used = 1 - available / physicalMemory. Chosen over a raw free/total ratio
+    // because macOS keeps most RAM occupied by reclaimable cache, so free/total reads alarmingly
+    // high at idle; this tracks Activity Monitor's pressure notion more closely, without claiming
+    // to reproduce its exact green/yellow/red algorithm. total comes from
+    // ProcessInfo.physicalMemory (unprivileged, no extra syscall). One host_statistics64 read yields
+    // both the used-fraction and the cumulative swap counters (swapins+swapouts), so swap rate costs
+    // zero extra syscalls — it's a counter-delta on fields already in hand.
+    private func readVMSample() -> (usedFraction: Double, swapEvents: UInt64)? {
+        var stats = vm_statistics64_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &stats) { ptr -> kern_return_t in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+
+        let total = Double(ProcessInfo.processInfo.physicalMemory)
+        guard total > 0 else { return nil }
+
+        // Query the page size via Mach rather than the `vm_kernel_page_size` global (a mutable
+        // global, which isn't concurrency-safe under strict checking). The vm_statistics64 counts
+        // are in units of this page size.
+        var pageSize: vm_size_t = 0
+        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS else { return nil }
+
+        let availablePages = Double(stats.free_count) + Double(stats.purgeable_count) + Double(stats.external_page_count)
+        let used = 1.0 - ((availablePages * Double(pageSize)) / total)
+
+        // swapins/swapouts are cumulative page counts (int64_t, monotonic); as bytes they're a
+        // counter the caller differences over elapsed time. clamp negatives defensively.
+        let swapPages = UInt64(max(0, stats.swapins)) &+ UInt64(max(0, stats.swapouts))
+        let swapEvents = swapPages &* UInt64(pageSize)
+        return (min(max(used, 0), 1), swapEvents)
+    }
+
+    // vm.swapusage: unprivileged sysctl, instantaneous point read, no lifecycle.
+    private func readSwapUsage() {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.stride
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else {
+            hasSwapSample = false
+            return
+        }
+        swapUsedBytes = UInt64(usage.xsu_used)
+        swapTotalBytes = UInt64(usage.xsu_total)
+        hasSwapSample = true
+    }
+}
+
+// GPU utilization via unprivileged IORegistry. IOAccelerator's PerformanceStatistics dictionary
+// exposes "Device Utilization %" (0…100), an instantaneous point read valid on the first tick — no
+// counter-delta, no EMA. Natively 0…1 after /100, so it does NOT use ThroughputScaler (only unbounded
+// rates do). GPU *power/energy* would need the private IOReport dance; utilization does not. `nil`
+// (never a fabricated 0) when no accelerator matches or the key is absent → the source disables.
+@MainActor
+private final class GPULoadMonitor {
+    private(set) var currentUtilization: Double = 0
+    private(set) var hasSample = false
+    // Availability probed once and cached: a machine with no readable accelerator disables the source.
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool {
+        if !availabilityChecked {
+            available = (readUtilization() != nil)
+            availabilityChecked = true
+        }
+        return available
+    }
+
+    func sampleUsage() -> Double? {
+        guard let util = readUtilization() else {
+            hasSample = false
+            return nil
+        }
+        currentUtilization = util
+        hasSample = true
+        return util
+    }
+
+    // Max "Device Utilization %" across matched accelerators. The IOClass is HW-specific
+    // (e.g. AGXAcceleratorG16X on Apple Silicon), so match the provider class "IOAccelerator" first,
+    // then fall back to "AGXAccelerator".
+    private func readUtilization() -> Double? {
+        for matchKey in ["IOAccelerator", "AGXAccelerator"] {
+            if let util = readUtilization(matching: matchKey) { return util }
+        }
+        return nil
+    }
+
+    private func readUtilization(matching className: String) -> Double? {
+        guard let matching = IOServiceMatching(className) else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var best: Double?
+        var entry = IOIteratorNext(iterator)
+        while entry != 0 {
+            defer {
+                IOObjectRelease(entry)
+                entry = IOIteratorNext(iterator)
+            }
+            guard let prop = IORegistryEntryCreateCFProperty(
+                entry, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0
+            ) else { continue }
+            guard let stats = prop.takeRetainedValue() as? [String: Any],
+                  let pct = (stats["Device Utilization %"] as? NSNumber)?.doubleValue else { continue }
+            let util = min(max(pct / Tuning.percentScale, 0), 1)
+            best = max(best ?? 0, util)
+        }
+        return best
+    }
+}
+
+// Network throughput as a 0…1 load. Cumulative interface byte counters (getifaddrs → if_data) are
+// differenced over real elapsed wall time into bytes/sec (counter-delta, warms up one tick like CPU),
+// then normalized by the shared adaptive ThroughputScaler. Only AF_LINK entries carry valid if_data,
+// and lo0 is skipped so loopback traffic doesn't inflate the number.
+@MainActor
+private final class NetworkLoadMonitor {
+    private(set) var hasSample = false
+    private(set) var currentThroughputBytesPerSec: Double = 0
+    // Last normalized 0…1 load (the scaler's output), so the speed path can re-read it without
+    // re-sampling — mirrors MemoryLoadMonitor.currentMemoryLoad.
+    private(set) var currentLoad: Double = 0
+    private var lastBytes: UInt64?
+    private var scaler = ThroughputScaler(floor: Tuning.networkFloorBytesPerSec)
+    // getifaddrs is always present on macOS; the source is effectively always available.
+    var isAvailable: Bool { true }
+
+    func sampleUsage(elapsed: Double?) -> Double? {
+        guard let total = readTotalBytes() else {
+            hasSample = false
+            return nil
+        }
+        defer { lastBytes = total }
+        // Counter-delta: needs a prior sample AND real elapsed time. First tick / source-switch
+        // re-sample (elapsed nil) just stores the baseline and reports no rate yet.
+        guard let elapsed, elapsed > 0, let prev = lastBytes else {
+            currentThroughputBytesPerSec = 0
+            hasSample = false
+            return nil
+        }
+        let deltaBytes = total >= prev ? total - prev : 0
+        currentThroughputBytesPerSec = Double(deltaBytes) / elapsed
+        hasSample = true
+        currentLoad = scaler.normalize(speed: currentThroughputBytesPerSec)
+        return currentLoad
+    }
+
+    private func readTotalBytes() -> UInt64? {
+        var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else { return nil }
+        defer { freeifaddrs(ifaddrPtr) }
+
+        var total: UInt64 = 0
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            defer { cursor = current.pointee.ifa_next }
+            guard let addr = current.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_LINK) else { continue }
+            if String(cString: current.pointee.ifa_name) == "lo0" { continue }
+            guard let dataPtr = current.pointee.ifa_data else { continue }
+            let data = dataPtr.assumingMemoryBound(to: if_data.self).pointee
+            total &+= UInt64(data.ifi_ibytes) &+ UInt64(data.ifi_obytes)
+        }
+        return total
+    }
+}
+
+// Disk I/O throughput as a 0…1 load — twin of NetworkLoadMonitor. Every IOBlockStorageDriver's
+// Statistics dict carries cumulative "Bytes (Read)"/"Bytes (Write)"; summed across drivers, differenced
+// over real elapsed time into bytes/sec, and normalized by the shared adaptive ThroughputScaler.
+@MainActor
+private final class DiskLoadMonitor {
+    private(set) var hasSample = false
+    private(set) var currentThroughputBytesPerSec: Double = 0
+    private(set) var currentLoad: Double = 0
+    private var lastBytes: UInt64?
+    private var scaler = ThroughputScaler(floor: Tuning.diskFloorBytesPerSec)
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool {
+        if !availabilityChecked {
+            available = (readTotalBytes() != nil)
+            availabilityChecked = true
+        }
+        return available
+    }
+
+    func sampleUsage(elapsed: Double?) -> Double? {
+        guard let total = readTotalBytes() else {
+            hasSample = false
+            return nil
+        }
+        defer { lastBytes = total }
+        guard let elapsed, elapsed > 0, let prev = lastBytes else {
+            currentThroughputBytesPerSec = 0
+            hasSample = false
+            return nil
+        }
+        let deltaBytes = total >= prev ? total - prev : 0
+        currentThroughputBytesPerSec = Double(deltaBytes) / elapsed
+        hasSample = true
+        currentLoad = scaler.normalize(speed: currentThroughputBytesPerSec)
+        return currentLoad
+    }
+
+    private func readTotalBytes() -> UInt64? {
+        guard let matching = IOServiceMatching("IOBlockStorageDriver") else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var total: UInt64 = 0
+        var found = false
+        var entry = IOIteratorNext(iterator)
+        while entry != 0 {
+            defer {
+                IOObjectRelease(entry)
+                entry = IOIteratorNext(iterator)
+            }
+            guard let prop = IORegistryEntryCreateCFProperty(
+                entry, "Statistics" as CFString, kCFAllocatorDefault, 0
+            ) else { continue }
+            guard let stats = prop.takeRetainedValue() as? [String: Any] else { continue }
+            let read = (stats["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
+            let write = (stats["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
+            total &+= read &+ write
+            found = true
+        }
+        return found ? total : nil
+    }
+}
+
+@MainActor
+private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct SpeedProfile {
         let label: String
         let min: Double
@@ -266,20 +703,51 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let key: String
         let menuTitle: String
         let path: String
-        let kind: PresetKind
         let slotScale: CGFloat
         let speedProfile: SpeedProfile
     }
 
+    // Codable mirror of gifs/presets.json — the externalized source of truth for every built-in
+    // preset's profile. Decoded once in init() and mapped into `PresetDescriptor`s; the Swift code
+    // holds no hardcoded preset list. `file` is a GIF filename relative to the manifest's directory.
+    private struct PresetManifest: Decodable {
+        let defaultPreset: String
+        let presets: [Entry]
+
+        struct Entry: Decodable {
+            let key: String
+            let menuTitle: String
+            let file: String
+            let slotScale: Double
+            let speed: Speed
+        }
+
+        struct Speed: Decodable {
+            let label: String
+            let min: Double
+            let max: Double
+            let responseExponent: Double
+        }
+    }
+
+    // Last-resort speed profile: used only when there is neither an active preset nor a manifest
+    // default descriptor to borrow from (i.e. a custom GIF loaded while the manifest failed). In the
+    // normal path a custom GIF inherits `defaultDescriptor`'s profile. Literal, self-contained.
     private static let customSpeedProfile = SpeedProfile(
         label: "custom",
-        min: Tuning.dogSpeedMin,
-        max: Tuning.dogSpeedMax,
-        responseExponent: Tuning.linearSpeedCurveExponent
+        min: 0.5,
+        max: 2.5,
+        responseExponent: 1.0
     )
 
     private let config: Config
     private let allPresets: [PresetDescriptor]
+    // The manifest's declared default preset, resolved once in init. Also the profile fallback for
+    // a custom/user-supplied GIF that matches no preset (its slotScale/speedProfile stand in).
+    private let defaultDescriptor: PresetDescriptor?
+    // Set when the preset manifest could not be loaded/decoded; applicationDidFinishLaunching shows
+    // it and quits. nil on success.
+    private let startupError: String?
     private var activePreset: PresetDescriptor?
     private var activeGifPath: String
     // These menu/status-item IUOs are all assigned exactly once in
@@ -288,10 +756,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
     private var infoMenu: NSMenu!
-    private var cpuUsageItem: NSMenuItem!
+    // Source-conditional: holds the active load source's primary metric (CPU% / Memory%) and
+    // its state qualifier (CPU State Low/Med/High / Memory Pressure Normal/Warning/Critical).
+    private var usageItem: NSMenuItem!
     private var loadAverageItem: NSMenuItem!
-    private var cpuStateItem: NSMenuItem!
+    private var stateItem: NSMenuItem!
     private var speedMultiplierItem: NSMenuItem!
+    private var loadSourceMenuItem: NSMenuItem!
+    private var loadSourceMenuItems: [NSMenuItem] = []
     private var widthStatusItem: NSMenuItem!
     private var widthMenuItem: NSMenuItem!
     private var widthAutoItem: NSMenuItem!
@@ -311,7 +783,21 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var accumulatedFrameTime: TimeInterval = 0
     private var renderedFrames: [NSImage] = []
     private var loadTimer: Timer?
+    // Monotonic timestamp of the previous load sample, for counter-delta sources (swap rate now;
+    // network/disk later). nil until the first tick / after a source switch, so rate-based signals
+    // warm up one sample. systemUptime (not Date) — immune to wall-clock changes.
+    private var lastSampleUptime: Double?
     private var loadMonitor = CPULoadMonitor()
+    private var memoryMonitor = MemoryLoadMonitor()
+    private var gpuMonitor = GPULoadMonitor()
+    private var networkMonitor = NetworkLoadMonitor()
+    private var diskMonitor = DiskLoadMonitor()
+    private var activeLoadSource: LoadSource
+    // Last memory-pressure level seen from the dispatch source. Cached because — unlike
+    // thermalState/isLowPowerModeEnabled — there is NO synchronous getter for memory pressure;
+    // it is event-only, so isUnderPowerPressure reads this stored value.
+    private var memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var speedMultiplier: Double = Tuning.initialSpeedMultiplier
     private var requestedWidthSlots: Int?
     private var requestedOverlayText: String?
@@ -326,47 +812,64 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         self.config = config
         self.requestedWidthSlots = config.widthSlots
         self.requestedOverlayText = config.overlayText
+        self.activeLoadSource = config.loadSource
 
         let scriptDirURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        func resolvedPath(_ relative: String) -> String {
-            scriptDirURL.appendingPathComponent(relative).path
+        let manifestURL = scriptDirURL.appendingPathComponent("gifs/presets.json")
+
+        // Load the externalized preset profiles. On any failure, leave the registry empty and record
+        // a startup error — the app can't offer built-in presets without it (a user-supplied GIF path
+        // still works, falling through to the custom profile).
+        var presets: [PresetDescriptor] = []
+        var manifestDefaultKey: String?
+        var loadError: String?
+        do {
+            let data = try Data(contentsOf: manifestURL)
+            let manifest = try JSONDecoder().decode(PresetManifest.self, from: data)
+            manifestDefaultKey = manifest.defaultPreset
+            presets = manifest.presets.map { entry in
+                PresetDescriptor(
+                    key: entry.key,
+                    menuTitle: entry.menuTitle,
+                    path: scriptDirURL.appendingPathComponent("gifs/\(entry.file)").path,
+                    slotScale: CGFloat(entry.slotScale),
+                    speedProfile: SpeedProfile(
+                        label: entry.speed.label,
+                        min: entry.speed.min,
+                        max: entry.speed.max,
+                        responseExponent: entry.speed.responseExponent
+                    )
+                )
+            }
+        } catch {
+            loadError = "Could not load preset manifest at \(manifestURL.path): \(error.localizedDescription)"
         }
 
-        let dogProfile = SpeedProfile(label: "dog", min: Tuning.dogSpeedMin, max: Tuning.dogSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
-        let horseProfile = SpeedProfile(label: "horse", min: Tuning.horseSpeedMin, max: Tuning.horseSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
-        let totoroProfile = SpeedProfile(label: "totoro", min: Tuning.totoroSpeedMin, max: Tuning.totoroSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
-        let totoroGroupProfile = SpeedProfile(label: "totoro-group", min: Tuning.totoroGroupSpeedMin, max: Tuning.totoroGroupSpeedMax, responseExponent: Tuning.linearSpeedCurveExponent)
-        let rainingProfile = SpeedProfile(label: "raining", min: Tuning.rainingSpeedMin, max: Tuning.rainingSpeedMax, responseExponent: Tuning.rainingSpeedCurveExponent)
-
-        let presets: [PresetDescriptor] = [
-            PresetDescriptor(key: "dog-white", menuTitle: "Dog (White)", path: resolvedPath("gifs/running-dog-white.gif"), kind: .dog, slotScale: Tuning.dogSlotScale, speedProfile: dogProfile),
-            PresetDescriptor(key: "dog-black", menuTitle: "Dog (Black)", path: resolvedPath("gifs/running-dog-black.gif"), kind: .dog, slotScale: Tuning.dogSlotScale, speedProfile: dogProfile),
-            PresetDescriptor(key: "horse-black", menuTitle: "Horse (Black)", path: resolvedPath("gifs/running-horse-black.gif"), kind: .horse, slotScale: Tuning.horseSlotScale, speedProfile: horseProfile),
-            PresetDescriptor(key: "horse-white", menuTitle: "Horse (White)", path: resolvedPath("gifs/running-horse-white.gif"), kind: .horse, slotScale: Tuning.horseSlotScale, speedProfile: horseProfile),
-            PresetDescriptor(key: "totoro", menuTitle: "Totoro", path: resolvedPath("gifs/totoro.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
-            PresetDescriptor(key: "totoro-group-white", menuTitle: "Totoro (Group, White)", path: resolvedPath("gifs/totoro-group-white.gif"), kind: .totoroGroup, slotScale: Tuning.totoroGroupSlotScale, speedProfile: totoroGroupProfile),
-            PresetDescriptor(key: "totoro-group-black", menuTitle: "Totoro (Group, Black)", path: resolvedPath("gifs/totoro-group-black.gif"), kind: .totoroGroup, slotScale: Tuning.totoroGroupSlotScale, speedProfile: totoroGroupProfile),
-            PresetDescriptor(key: "totoro-white", menuTitle: "Totoro (White)", path: resolvedPath("gifs/totoro-white.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
-            PresetDescriptor(key: "totoro-black", menuTitle: "Totoro (Black)", path: resolvedPath("gifs/totoro-black.gif"), kind: .totoro, slotScale: Tuning.totoroSlotScale, speedProfile: totoroProfile),
-            PresetDescriptor(key: "raining", menuTitle: "Raining", path: resolvedPath("gifs/raining.gif"), kind: .raining, slotScale: Tuning.rainingSlotScale, speedProfile: rainingProfile),
-        ]
-
         self.allPresets = presets
-        // Resolve the positional arg (a preset keyword or a GIF path). The shell launcher
-        // forwards it verbatim; this is the single place keywords become paths.
-        if let matched = presets.first(where: { $0.key == config.presetOrPath }) {
+        self.defaultDescriptor = presets.first { $0.key == manifestDefaultKey }
+        self.startupError = loadError
+
+        // Resolve the positional arg (a preset keyword or a GIF path). The shell launcher forwards it
+        // verbatim; this is the single place keywords become paths. Empty → the manifest default.
+        let requested = config.presetOrPath.isEmpty ? (manifestDefaultKey ?? "") : config.presetOrPath
+        if let matched = presets.first(where: { $0.key == requested }) {
             self.activeGifPath = matched.path
             self.activePreset = matched
         } else {
             // Not a known keyword — treat it as a (custom) GIF path. Still match by path so a
             // raw path pointing at a built-in GIF adopts that preset's profile.
-            self.activeGifPath = config.presetOrPath
-            self.activePreset = presets.first { $0.path == config.presetOrPath }
+            self.activeGifPath = requested
+            self.activePreset = presets.first { $0.path == requested }
         }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        if let startupError {
+            showStartupErrorAndQuit(startupError)
+            return
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else {
@@ -383,21 +886,41 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu = NSMenu()
         infoMenu.delegate = self
 
-        cpuUsageItem = NSMenuItem(title: "CPU Usage: --", action: nil, keyEquivalent: "")
-        cpuUsageItem.isEnabled = false
-        infoMenu.addItem(cpuUsageItem)
+        usageItem = NSMenuItem(title: "CPU Usage: --", action: nil, keyEquivalent: "")
+        usageItem.isEnabled = false
+        infoMenu.addItem(usageItem)
 
         loadAverageItem = NSMenuItem(title: "Load Avg (1/5/15m): -- / -- / --", action: nil, keyEquivalent: "")
         loadAverageItem.isEnabled = false
         infoMenu.addItem(loadAverageItem)
 
-        cpuStateItem = NSMenuItem(title: "CPU State: --", action: nil, keyEquivalent: "")
-        cpuStateItem.isEnabled = false
-        infoMenu.addItem(cpuStateItem)
+        stateItem = NSMenuItem(title: "CPU State: --", action: nil, keyEquivalent: "")
+        stateItem.isEnabled = false
+        infoMenu.addItem(stateItem)
 
         speedMultiplierItem = NSMenuItem(title: "Speed Multiplier: --", action: nil, keyEquivalent: "")
         speedMultiplierItem.isEnabled = false
         infoMenu.addItem(speedMultiplierItem)
+
+        loadSourceMenuItem = NSMenuItem(title: "Load Source", action: nil, keyEquivalent: "")
+        let loadSourceSubmenu = NSMenu(title: "Load Source")
+        for source in LoadSource.allCases {
+            let item = NSMenuItem(title: source.menuTitle, action: #selector(selectLoadSource(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = source.rawValue
+            loadSourceSubmenu.addItem(item)
+            loadSourceMenuItems.append(item)
+        }
+        loadSourceMenuItem.submenu = loadSourceSubmenu
+        infoMenu.addItem(loadSourceMenuItem)
+
+        // Availability fallback: if the requested source (--load-source / env) can't produce a value on
+        // this hardware — realistically only GPU — degrade to CPU rather than driving off a dead reader.
+        // An absent source never fails launch (design principle 4); the menu item stays disabled.
+        if !isSourceAvailable(activeLoadSource) {
+            fputs("Load source \"\(activeLoadSource.key)\" is unavailable on this machine; falling back to cpu.\n", stderr)
+            activeLoadSource = .cpu
+        }
 
         widthStatusItem = NSMenuItem(title: "Width: --", action: nil, keyEquivalent: "")
         widthStatusItem.isEnabled = false
@@ -462,6 +985,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshPresetSelectionState()
         refreshWidthSelectionState()
         refreshOverlaySelectionState()
+        refreshLoadSourceSelectionState()
 
         if !loadFrames(from: activeGifPath) {
             showStartupErrorAndQuit("Failed to decode GIF at: \(activeGifPath)")
@@ -507,6 +1031,26 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             MainActor.assumeIsolated { self?.reevaluateSpeedForCurrentConditions() }
         }
 
+        // Memory pressure is the third self-throttle input alongside low-power/thermal, but its
+        // lifecycle differs: it is event-only (no synchronous getter), so we cache the level and
+        // MUST include `.normal` in the mask to ever lift the throttle. It also needs an explicit
+        // resume() and is torn down via cancel(), not removeObserver() — a sibling lifecycle to
+        // the notification observers above, hence its own property.
+        let pressureSource = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.normal, .warning, .critical],
+            queue: .main
+        )
+        pressureSource.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let level = self.memoryPressureSource?.data else { return }
+                self.memoryPressureLevel = level
+                self.reevaluateSpeedForCurrentConditions()
+                self.refreshMenuMetrics()
+            }
+        }
+        memoryPressureSource = pressureSource
+        pressureSource.resume()
+
         // Pause the whole game loop when the status item's window is fully occluded
         // (hidden behind the notch / menu-bar overflow, another Space, display off):
         // there's no point re-rasterizing frames no one can see.
@@ -519,6 +1063,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 MainActor.assumeIsolated { self?.updateAnimationForOcclusion() }
             }
         }
+
+        // Debug/test hook (MENUBAR_LOAD_RUNNER_EXIT_AFTER): self-terminate so smoke tests exit 0
+        // on their own rather than relying on an external kill against the blocking run loop.
+        if let seconds = config.exitAfterSeconds {
+            fputs("MENUBAR_LOAD_RUNNER_EXIT_AFTER=\(seconds): terminating after \(seconds)s.\n", stderr)
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                MainActor.assumeIsolated { NSApp.terminate(nil) }
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -529,6 +1082,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 NotificationCenter.default.removeObserver(observer)
             }
         }
+        // Dispatch source: cancel() (not removeObserver) — its own lifecycle.
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
     }
 
     @objc
@@ -541,7 +1097,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let speedMode = isAutoSpeed
             ? "Speed adapts to system CPU load."
             : "Fixed speed multiplier: \(String(format: "%.2f", speedMultiplier))x."
-        alert.informativeText = "Displays an animated GIF in the macOS menu bar.\n\(speedMode)"
+        alert.informativeText = "Version \(AppInfo.version)\nDisplays an animated GIF in the macOS menu bar.\n\(speedMode)"
         alert.alertStyle = .informational
         alert.runModal()
     }
@@ -571,8 +1127,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return icon
     }
 
+    // Modal alerts block the run loop waiting for a click — fine for a real user, but they'd
+    // wedge an automated/headless run indefinitely and pop an intrusive dialog during QA. When
+    // the EXIT_AFTER test hook is active we treat the run as non-interactive: report to stderr
+    // instead of showing a modal.
+    private var suppressModalAlerts: Bool { config.exitAfterSeconds != nil }
+
     private func showStartupErrorAndQuit(_ message: String) {
         fputs(message + "\n", stderr)
+        if suppressModalAlerts {
+            NSApp.terminate(nil)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "MenuBar Load Runner startup error"
         if let icon = makeMenuAlertIcon() {
@@ -603,7 +1169,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private func sampleSystemLoad() {
         cachedLoadAverages = readSystemLoadAverages()
 
-        if let usage = loadMonitor.sampleUsage() {
+        // Real elapsed wall-clock since the last tick (nil on the first), for counter-delta sources.
+        // The nominal 2s interval isn't trustworthy — a tick can slip under load/sleep — so rates
+        // divide by this, not the interval.
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = lastSampleUptime.map { now - $0 }
+        lastSampleUptime = now
+
+        // Sample only the active source (active-only, per the self-throttle ethos): the inactive
+        // monitors aren't polled, so their menu lines aren't shown while another source drives.
+        if let usage = sampleActiveSource(elapsed: elapsed) {
             if isAutoSpeed {
                 let candidate = speedMultiplier(forUsage: usage)
                 if abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis {
@@ -617,33 +1192,135 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshMenuMetrics()
     }
 
+    // Sample whichever reader currently drives the animation, returning its 0…1 fraction (or nil
+    // if unavailable / not warmed up). The single point where the active source is read for speed.
+    private func sampleActiveSource(elapsed: Double?) -> Double? {
+        switch activeLoadSource {
+        case .cpu: return loadMonitor.sampleUsage()
+        case .memory: return memoryMonitor.sampleUsage(elapsed: elapsed)
+        case .gpu: return gpuMonitor.sampleUsage()
+        case .network: return networkMonitor.sampleUsage(elapsed: elapsed)
+        case .disk: return diskMonitor.sampleUsage(elapsed: elapsed)
+        }
+    }
+
+    // Whether the active source has produced at least one usable sample.
+    private var activeSourceHasSample: Bool {
+        switch activeLoadSource {
+        case .cpu: return loadMonitor.hasSample
+        case .memory: return memoryMonitor.hasSample
+        case .gpu: return gpuMonitor.hasSample
+        case .network: return networkMonitor.hasSample
+        case .disk: return diskMonitor.hasSample
+        }
+    }
+
+    // The active source's most recent driving fraction, without re-sampling. For memory this is the
+    // composite load (used-fraction ∨ scaled swap rate); for network/disk it's the scaler's last
+    // normalized value — matching what sampleActiveSource returns, not the raw metric shown in the menu.
+    private var activeSourceCurrentUsage: Double {
+        switch activeLoadSource {
+        case .cpu: return loadMonitor.smoothedUsage
+        case .memory: return memoryMonitor.currentMemoryLoad
+        case .gpu: return gpuMonitor.currentUtilization
+        case .network: return networkMonitor.currentLoad
+        case .disk: return diskMonitor.currentLoad
+        }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         refreshMenuMetrics()
         refreshPresetSelectionState()
         refreshWidthSelectionState()
         refreshOverlaySelectionState()
+        refreshLoadSourceSelectionState()
     }
 
     private func refreshMenuMetrics() {
-        if loadMonitor.hasSample {
-            cpuUsageItem.title = String(format: "CPU Usage (smoothed): %.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
-            cpuStateItem.title = "CPU State: \(cpuStateText(for: loadMonitor.smoothedUsage))"
-            statusItem.button?.setAccessibilityLabel(String(
-                format: "MenuBar Load Runner — CPU %.0f%%, %@",
-                loadMonitor.smoothedUsage * Tuning.percentScale,
-                cpuStateText(for: loadMonitor.smoothedUsage)
-            ))
-        } else {
-            cpuUsageItem.title = "CPU Usage (smoothed): warming up..."
-            cpuStateItem.title = "CPU State: warming up..."
-            statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring CPU load")
+        // Source-conditional: usageItem/stateItem show the ACTIVE source's metric + state. The
+        // inactive source isn't sampled (see sampleSystemLoad), so showing its stale line would
+        // mislead — instead only the driver's figures appear. Load Avg stays (system-wide).
+        switch activeLoadSource {
+        case .cpu:
+            if loadMonitor.hasSample {
+                usageItem.title = String(format: "CPU Usage (smoothed): %.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
+                stateItem.title = "CPU State: \(cpuStateText(for: loadMonitor.smoothedUsage))"
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — CPU %.0f%%, %@",
+                    loadMonitor.smoothedUsage * Tuning.percentScale,
+                    cpuStateText(for: loadMonitor.smoothedUsage)
+                ))
+            } else {
+                usageItem.title = "CPU Usage (smoothed): warming up..."
+                stateItem.title = "CPU State: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring CPU load")
+            }
+        case .memory:
+            // Memory pressure (state line) reflects the cached dispatch-source level and is valid
+            // even before the first used-fraction sample, so it's shown unconditionally.
+            stateItem.title = "Memory Pressure: \(memoryPressureText())"
+            if memoryMonitor.hasSample {
+                usageItem.title = memoryUsageLineText()
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — memory %.0f%%, pressure %@",
+                    memoryMonitor.currentUsedFraction * Tuning.percentScale,
+                    memoryPressureText()
+                ))
+            } else {
+                usageItem.title = "Memory: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring memory load")
+            }
+        case .gpu:
+            if gpuMonitor.hasSample {
+                usageItem.title = String(format: "GPU: %.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale)
+                stateItem.title = "GPU State: \(cpuStateText(for: gpuMonitor.currentUtilization))"
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — GPU %.0f%%, %@",
+                    gpuMonitor.currentUtilization * Tuning.percentScale,
+                    cpuStateText(for: gpuMonitor.currentUtilization)
+                ))
+            } else {
+                usageItem.title = "GPU: warming up..."
+                stateItem.title = "GPU State: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring GPU load")
+            }
+        case .network:
+            if networkMonitor.hasSample {
+                usageItem.title = networkUsageLineText()
+                stateItem.title = "Network State: \(cpuStateText(for: networkMonitor.currentLoad))"
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — network %.1f MB/s, %@",
+                    networkMonitor.currentThroughputBytesPerSec / 1_048_576.0,
+                    cpuStateText(for: networkMonitor.currentLoad)
+                ))
+            } else {
+                usageItem.title = "Network: warming up..."
+                stateItem.title = "Network State: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring network load")
+            }
+        case .disk:
+            if diskMonitor.hasSample {
+                usageItem.title = diskUsageLineText()
+                stateItem.title = "Disk State: \(cpuStateText(for: diskMonitor.currentLoad))"
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — disk %.1f MB/s, %@",
+                    diskMonitor.currentThroughputBytesPerSec / 1_048_576.0,
+                    cpuStateText(for: diskMonitor.currentLoad)
+                ))
+            } else {
+                usageItem.title = "Disk: warming up..."
+                stateItem.title = "Disk State: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring disk load")
+            }
         }
 
         if isAutoSpeed {
             let profile = currentSpeedProfile()
             let constrained = isUnderPowerPressure ? " [throttled: low power/thermal]" : ""
+            // Includes the active source so the dashboard shows WHAT drives the animation.
             speedMultiplierItem.title = String(
-                format: "Speed Multiplier (auto %@ %.2fx..%.2fx): %.2fx%@",
+                format: "Speed Multiplier (auto %@ %@ %.2fx..%.2fx): %.2fx%@",
+                activeLoadSource.menuTitle,
                 profile.label,
                 profile.min,
                 profile.max,
@@ -661,6 +1338,43 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
     }
 
+    private func memoryPressureText() -> String {
+        if memoryPressureLevel.contains(.critical) { return "Critical" }
+        if memoryPressureLevel.contains(.warning) { return "Warning" }
+        return "Normal"
+    }
+
+    private func memoryUsageLineText() -> String {
+        let pct = memoryMonitor.currentUsedFraction * Tuning.percentScale
+        var line = String(format: "Memory: %.0f%%", pct)
+        if memoryMonitor.hasSwapSample, memoryMonitor.swapTotalBytes > 0 {
+            let gib = 1_073_741_824.0
+            line += String(
+                format: " · swap %.1f/%.1f GB",
+                Double(memoryMonitor.swapUsedBytes) / gib,
+                Double(memoryMonitor.swapTotalBytes) / gib
+            )
+        }
+        // Show the swap *rate* when actively paging — it's part of what drives the animation, so the
+        // dashboard shouldn't read "Memory: 40%" while swap activity pushes the speed higher.
+        if memoryMonitor.hasSwapRateSample, memoryMonitor.currentSwapRateBytesPerSec > 0 {
+            let mibps = 1_048_576.0
+            line += String(format: " · %.1f MB/s", memoryMonitor.currentSwapRateBytesPerSec / mibps)
+        }
+        return line
+    }
+
+    // Network/disk metric lines: the human-meaningful throughput (MB/s), not the adaptive-normalized
+    // 0…1 load that actually drives the animation (that's activeSourceCurrentUsage). Mirrors the
+    // memory line showing raw used-% while the composite drives speed.
+    private func networkUsageLineText() -> String {
+        String(format: "Network: %.1f MB/s", networkMonitor.currentThroughputBytesPerSec / 1_048_576.0)
+    }
+
+    private func diskUsageLineText() -> String {
+        String(format: "Disk: %.1f MB/s", diskMonitor.currentThroughputBytesPerSec / 1_048_576.0)
+    }
+
     private func refreshPresetSelectionState() {
         let fileManager = FileManager.default
         for (item, preset) in zip(presetMenuItems, allPresets) {
@@ -668,6 +1382,43 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             item.state = (activePreset?.key == preset.key) ? .on : .off
         }
     }
+
+    // Radio group: the active source is `.on`, the rest `.off` — mirrors the width/preset selection
+    // pattern. A source whose reader can't produce a value on this hardware (e.g. no readable GPU
+    // accelerator) is disabled, like refreshPresetSelectionState disables a missing-GIF preset.
+    private func refreshLoadSourceSelectionState() {
+        for item in loadSourceMenuItems {
+            item.state = (item.tag == activeLoadSource.rawValue) ? .on : .off
+            if let source = LoadSource(rawValue: item.tag) {
+                item.isEnabled = isSourceAvailable(source)
+            }
+        }
+    }
+
+    // Whether a source's reader can produce a value on this machine. CPU/memory are always available
+    // (core Mach/sysctl); gpu/network/disk defer to their monitor's probe. Availability is static, so
+    // an unavailable source is disabled in the menu and, if requested at launch, falls back to CPU —
+    // no per-tick fallback loop is needed (a reader erroring mid-run just yields nil that tick and the
+    // animation holds its last speed; it never crashes).
+    private func isSourceAvailable(_ source: LoadSource) -> Bool {
+        // Test hook: force listed sources unavailable so QA can exercise the disable + launch-fallback
+        // path on hardware where every reader actually works.
+        if forcedUnavailableSources.contains(source.key) { return false }
+        switch source {
+        case .cpu, .memory: return true
+        case .gpu: return gpuMonitor.isAvailable
+        case .network: return networkMonitor.isAvailable
+        case .disk: return diskMonitor.isAvailable
+        }
+    }
+
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk marks those sources
+    // unavailable regardless of hardware, so §3/§7 QA can verify the disabled menu item and the
+    // launch-time fallback-to-cpu. Empty/unset = no override. Mirrors the EXIT_AFTER hook convention.
+    private let forcedUnavailableSources: Set<String> = {
+        guard let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE"] else { return [] }
+        return Set(raw.lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }()
 
     private func refreshWidthSelectionState() {
         let minSlots = minimumSlotsForCurrentPreset()
@@ -706,6 +1457,23 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         guard allPresets.indices.contains(sender.tag) else { return }
         let preset = allPresets[sender.tag]
         switchToGif(to: preset.path, descriptor: preset)
+    }
+
+    @objc
+    private func selectLoadSource(_ sender: NSMenuItem) {
+        guard let source = LoadSource(rawValue: sender.tag), source != activeLoadSource else { return }
+        activeLoadSource = source
+        // Sample the newly-active source at once and re-derive speed immediately (bypassing the
+        // 2s-tick hysteresis), the same way preset switches re-derive on the spot. Pass elapsed=nil:
+        // an on-demand resample has no meaningful interval, so counter-delta signals (memory's swap
+        // rate) just store a baseline here and re-warm over the next tick. Reset lastSampleUptime so
+        // that next tick treats the gap as a fresh start rather than dividing by a stale interval.
+        // reevaluateSpeedForCurrentConditions no-ops until the source has a usable sample.
+        _ = sampleActiveSource(elapsed: nil)
+        lastSampleUptime = nil
+        reevaluateSpeedForCurrentConditions()
+        refreshLoadSourceSelectionState()
+        refreshMenuMetrics()
     }
 
     @objc
@@ -842,6 +1610,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func showRuntimeError(_ message: String) {
         NSSound.beep()
+        if suppressModalAlerts {
+            fputs(message + "\n", stderr)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "MenuBar Load Runner"
         if let icon = makeMenuAlertIcon() {
@@ -887,25 +1659,33 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return min(max(value, profile.min), profile.max)
     }
 
-    // Reads system power/thermal state (getters only — never mutates it). True when
-    // the Mac is in Low Power Mode or thermally throttling, i.e. when this app should
-    // reduce its OWN animation work rather than add to the load it's displaying.
+    // Reads system power/thermal/memory-pressure state (getters only — never mutates it). True
+    // when the Mac is in Low Power Mode, thermally throttling, or under memory pressure, i.e.
+    // when this app should reduce its OWN animation work rather than add to the load it displays.
     private var isUnderPowerPressure: Bool {
         let info = ProcessInfo.processInfo
         if info.isLowPowerModeEnabled { return true }
         switch info.thermalState {
         case .serious, .critical: return true
-        default: return false
+        default: break
         }
+        // Memory pressure is event-only (no synchronous getter), so this reads the cached level
+        // updated by the dispatch source. Requires `.normal` in the source's mask to ever clear.
+        if memoryPressureLevel.contains(.warning) || memoryPressureLevel.contains(.critical) {
+            return true
+        }
+        return false
     }
 
-    // Recompute this app's OWN auto animation speed from the latest smoothed usage
-    // immediately, bypassing the sample-tick hysteresis. Called when power/thermal
-    // state flips so the app's self-imposed speed cap engages (or lifts) without
-    // waiting for the next loadSampleInterval tick. Changes nothing outside this app.
+    // Recompute this app's OWN auto animation speed from the active source's latest sample
+    // immediately, bypassing the sample-tick hysteresis. Called when power/thermal/memory-
+    // pressure state flips, or when the load source changes, so the app's self-imposed speed
+    // cap engages (or lifts) — or the new source takes over — without waiting for the next
+    // loadSampleInterval tick. Consults the ACTIVE source, not CPU specifically. Changes nothing
+    // outside this app.
     private func reevaluateSpeedForCurrentConditions() {
-        guard isAutoSpeed, loadMonitor.hasSample else { return }
-        speedMultiplier = speedMultiplier(forUsage: loadMonitor.smoothedUsage)
+        guard isAutoSpeed, activeSourceHasSample else { return }
+        speedMultiplier = speedMultiplier(forUsage: activeSourceCurrentUsage)
         refreshMenuMetrics()
     }
 
@@ -1033,7 +1813,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         newRenderedFrames.reserveCapacity(frames.count)
 
         for (i, rawImage) in frames.enumerated() {
-            let aspect = i < frameAspects.count ? frameAspects[i] : Tuning.dogSlotScale
+            let aspect = i < frameAspects.count ? frameAspects[i] : Tuning.fallbackSlotScale
             let targetSize: NSSize
             
             if requestedWidthSlots != nil {
@@ -1111,11 +1891,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func currentPresetScale() -> CGFloat {
-        activePreset?.slotScale ?? Tuning.dogSlotScale
+        activePreset?.slotScale ?? defaultDescriptor?.slotScale ?? Tuning.fallbackSlotScale
     }
 
     private func currentSpeedProfile() -> SpeedProfile {
-        activePreset?.speedProfile ?? Self.customSpeedProfile
+        activePreset?.speedProfile ?? defaultDescriptor?.speedProfile ?? Self.customSpeedProfile
     }
 
     // True when animation speed is CPU-driven (no `--speed-multiplier` override).
@@ -1162,7 +1942,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             nextFrames.append(image)
             let aspect = preparedImage.height > 0
                 ? CGFloat(preparedImage.width) / CGFloat(preparedImage.height)
-                : Tuning.dogSlotScale
+                : Tuning.fallbackSlotScale
             nextAspects.append(max(aspect, Tuning.minAspect))
         }
 

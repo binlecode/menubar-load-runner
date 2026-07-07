@@ -1,0 +1,68 @@
+{
+  "defaultPreset": "horse-white",
+  "presets": [
+    {
+      "key": "dog-white",
+      "menuTitle": "Dog (White)",
+      "file": "running-dog-white.gif",
+      "slotScale": 1.0,
+      "speed": { "label": "dog", "min": 0.5, "max": 2.5, "responseExponent": 1.0 }
+    },
+    {
+      "key": "dog-black",
+      "menuTitle": "Dog (Black)",
+      "file": "running-dog-black.gif",
+      "slotScale": 1.0,
+      "speed": { "label": "dog", "min": 0.5, "max": 2.5, "responseExponent": 1.0 }
+    },
+    {
+      "key": "horse-black",
+      "menuTitle": "Horse (Black)",
+      "file": "running-horse-black.gif",
+      "slotScale": 1.2,
+      "speed": { "label": "horse", "min": 0.45, "max": 2.3, "responseExponent": 1.0 }
+    },
+    {
+      "key": "horse-white",
+      "menuTitle": "Horse (White)",
+      "file": "running-horse-white.gif",
+      "slotScale": 1.2,
+      "speed": { "label": "horse", "min": 0.45, "max": 2.3, "responseExponent": 1.0 }
+    },
+    {
+      "key": "totoro",
+      "menuTitle": "Totoro",
+      "file": "totoro.gif",
+      "slotScale": 1.25,
+      "speed": { "label": "totoro", "min": 0.5, "max": 2.6, "responseExponent": 1.0 }
+    },
+    {
+      "key": "totoro-group-white",
+      "menuTitle": "Totoro (Group, White)",
+      "file": "totoro-group-white.gif",
+      "slotScale": 4.0,
+      "speed": { "label": "totoro-group", "min": 0.2, "max": 2.0, "responseExponent": 1.0 }
+    },
+    {
+      "key": "totoro-group-black",
+      "menuTitle": "Totoro (Group, Black)",
+      "file": "totoro-group-black.gif",
+      "slotScale": 4.0,
+      "speed": { "label": "totoro-group", "min": 0.2, "max": 2.0, "responseExponent": 1.0 }
+    },
+    {
+      "key": "totoro-white",
+      "menuTitle": "Totoro (White)",
+      "file": "totoro-white.gif",
+      "slotScale": 1.25,
+      "speed": { "label": "totoro", "min": 0.5, "max": 2.6, "responseExponent": 1.0 }
+    },
+    {
+      "key": "totoro-black",
+      "menuTitle": "Totoro (Black)",
+      "file": "totoro-black.gif",
+      "slotScale": 1.25,
+      "speed": { "label": "totoro", "min": 0.5, "max": 2.6, "responseExponent": 1.0 }
+    }
+  ]
+}

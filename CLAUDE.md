@@ -48,6 +48,13 @@ Run from the repository root:
   ```bash
   swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o tmp/mblr-check
   ```
+- To smoke-test at runtime, set `MENUBAR_LOAD_RUNNER_EXIT_AFTER=<seconds>` so the app self-terminates
+  (exit 0) instead of blocking the AppKit run loop forever — no background/kill dance needed:
+  ```bash
+  MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 ./tmp/mblr-check --load-source memory   # runs 5s, exits 0
+  ```
+  Prefer this (or `timeout 5 …`) over launch-then-`kill`. Note the raw binary bypasses the launcher's
+  singleton, so stacked instances / a run wedged in a modal alert are what otherwise force a manual `pkill`.
 - The launcher enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` — only one instance runs unless
   `--extra` is passed. (The pattern matches the compiled binary path, not the process args, since args no
   longer carry a `.gif` path now that Swift resolves preset keywords.) When iterating locally, stop any
@@ -63,26 +70,57 @@ Run from the repository root:
 
 Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bottom as:
 
-- **`Tuning`** — every magic number (speed ranges per preset, slot-width scaling, overlay font sizing, alpha
-  trim threshold, hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than
-  inlining new literals.
+- **`Tuning`** — every magic number (slot-width scaling, overlay font sizing, alpha trim threshold,
+  hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
+  literals. **Exception:** per-preset speed ranges and slot scales live in `gifs/presets.json` (see the
+  preset-registry note below), not `Tuning`.
 - **`Config`** — CLI arg / env var parsing (`--width`, `--speed-multiplier`, `--overlay-text`, positional
   preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
-  `presetOrPath` and defaults to `Config.defaultPreset` (`horse-white`) when absent; keyword→path resolution
+  `presetOrPath`; when absent it is left empty and the app resolves the manifest's `defaultPreset`
+  (`horse-white`). Keyword→path resolution
   happens in `MenuBarLoadRunnerApp.init` (matching `allPresets` by `key`, then by `path`), *not* in the shell
   launcher, which now forwards the arg unchanged.
 - **`CPULoadMonitor`** — reads `host_processor_info`/`PROCESSOR_CPU_LOAD_INFO` via Mach APIs and exposes an
   EMA-smoothed CPU usage fraction (`Tuning.cpuSmoothingAlpha`). Requires two samples to produce a delta, so
   usage is nil until the second `sampleSystemLoad` tick.
+- **`MemoryLoadMonitor`** — sibling reader, a *mixed domain*: an *instantaneous* memory used-fraction
+  via `host_statistics64(HOST_VM_INFO64)` (a point read, no EMA, valid on the first sample) plus a
+  *counter-delta* swap rate — `swapins`/`swapouts` from the same `vm_statistics64` read, differenced
+  over the real elapsed wall time passed into `sampleUsage(elapsed:)` (so the rate warms up one tick,
+  like the CPU reader). The driver value is `currentMemoryLoad = max(usedFraction, scaled(swapRate))`
+  where the unbounded swap *rate* normalizes through a shared `ThroughputScaler` (see below), not a
+  fixed reference; the menu still shows the raw used-fraction (+ swap capacity via
+  `sysctlbyname("vm.swapusage")` and, when paging, the live MB/s rate). Same unprivileged Mach/sysctl
+  tier as `CPULoadMonitor`. `nil` (never `0`) on failure. Used-fraction + composite formulas are
+  documented in the class comment / `Tuning` (a deliberate approximation, not Activity Monitor's exact
+  algorithm).
+- **`GPULoadMonitor` / `NetworkLoadMonitor` / `DiskLoadMonitor`** — the other three load-source
+  readers, same unprivileged tier (IORegistry + `getifaddrs`, `import IOKit`). GPU is an instantaneous
+  0…1 point read (`IOAccelerator → PerformanceStatistics → "Device Utilization %"`); network
+  (`getifaddrs → if_data`, AF_LINK, skip `lo0`) and disk (`IOBlockStorageDriver → Statistics → Bytes
+  (Read)/(Write)`) are counter-deltas over `elapsed:`. Each has an `isAvailable` probe (`nil` reader →
+  disabled menu item + launch fallback to `.cpu`).
+- **`ThroughputScaler`** — shared value type (ported from btop `Net::collect`) that normalizes any
+  *unbounded rate* signal (network/disk/swap bytes-per-sec) to 0…1 against an adaptive ceiling:
+  `max(avg(last Tuning.scalerWindow) × headroom, floor)`, rescaled only after
+  `Tuning.scalerRescaleCount` consecutive out-of-band samples (hysteresis), asymmetric headroom
+  (`scalerHeadroomUp`/`scalerHeadroomDown`), per-source floor. **Bounded** percentage signals (CPU %,
+  memory-used %, GPU %) are NOT scaled — they map through directly.
 - **`MenuBarLoadRunnerApp`** (`NSApplicationDelegate`/`NSMenuDelegate`) — the entire app. Key internal
   concepts to know before changing behavior:
-  - **Preset identity is a single registry.** `allPresets: [PresetDescriptor]` (built once in `init(config:)`,
-    paths resolved relative to `#filePath`'s directory) is the source of truth for every built-in preset's
-    menu title, path, `PresetKind`, slot scale, and `SpeedProfile`. Selecting a preset resolves `activePreset`
-    once (in `switchToGif(to:descriptor:)`); `currentPresetKind()`/`currentPresetScale()`/
-    `currentSpeedProfile()` are trivial reads of `activePreset`. A custom/user-supplied GIF that doesn't match
-    any entry in `allPresets` leaves `activePreset` `nil`, falling through to `.custom` (dog's speed range,
-    `dogSlotScale` width, via `Self.customSpeedProfile`).
+  - **Preset identity is externalized to `gifs/presets.json`.** That manifest (`defaultPreset` + a
+    `presets` array of `{key, menuTitle, file, slotScale, speed:{label,min,max,responseExponent}}`) is the
+    single source of truth for every built-in preset's profile. `init(config:)` decodes it via `JSONDecoder`
+    into the `PresetManifest` Codable structs and maps each entry into `allPresets: [PresetDescriptor]`
+    (`file` is resolved to an absolute path relative to `#filePath`'s directory). The Swift code holds **no**
+    hardcoded preset list, and there are no per-preset speed/slot constants in `Tuning` anymore. Selecting a
+    preset resolves `activePreset` once (in `switchToGif(to:descriptor:)`); `currentPresetScale()`/
+    `currentSpeedProfile()` are trivial reads of `activePreset` (falling back to `defaultDescriptor`, the
+    manifest's declared default). A custom/user-supplied GIF that matches no entry leaves `activePreset` `nil`
+    and borrows `defaultDescriptor`'s profile (or `Self.customSpeedProfile` / `Tuning.fallbackSlotScale` if the
+    manifest itself failed to load). If the manifest can't be loaded/decoded, `init` records `startupError` and
+    `applicationDidFinishLaunching` shows it and quits. The default preset is the manifest's `defaultPreset`
+    field, resolved when `config.presetOrPath` is empty (no arg / env override).
   - **Two decoupled pipelines**: `frames`/`frameAspects`/`baseDurations` hold the raw decoded GIF (from
     `loadFrames`, which also trims transparent padding via `trimTransparentPadding` so preset art isn't
     padded to a square). `renderedFrames` holds the actual per-frame `NSImage`s sized for the current status
@@ -97,27 +135,45 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     `speedMultiplier` live — `sampleSystemLoad` no longer restarts the driver on a speed change. `startGameLoop`
     (re)creates the driver; `resetGameLoopTiming` re-syncs the clock (used on frame-source switch). Gaps larger
     than `Tuning.maxFrameAdvanceDelta` (sleep/occlusion/clock jump) resync instead of replaying every frame.
-  - **Auto speed**: on each `loadSampleInterval` (2s) tick, `speedMultiplier(forUsage:)` maps smoothed CPU
-    usage through the current preset's `SpeedProfile` (min/max/response exponent — linear for most presets,
-    an eased curve for `raining`), and only applies the new value if the change exceeds
-    `Tuning.speedUpdateHysteresis`, to avoid visible jitter. Disabled entirely when `--speed-multiplier` is
-    passed.
+  - **Auto speed**: on each `loadSampleInterval` (2s) tick, `speedMultiplier(forUsage:)` maps the active
+    load source's 0..1 fraction through the current preset's `SpeedProfile` (min/max/response exponent —
+    linear for every preset), and only applies the new value if the change exceeds
+    `Tuning.speedUpdateHysteresis`, to avoid visible jitter. Disabled entirely when
+    `--speed-multiplier` is passed.
+  - **Load source selector**: `activeLoadSource: LoadSource` (`.cpu` default, `.memory` available;
+    `--load-source`/`MENUBAR_LOAD_RUNNER_LOAD_SOURCE`, unknown → `.cpu`) picks *which* reader drives the
+    animation, independent of the preset's speed range. `LoadSource` is a single registry (key + menu title)
+    like `PresetDescriptor`. The speed path reads the active source, never `loadMonitor` directly, through
+    three helpers: `sampleActiveSource(elapsed:)` (in `sampleSystemLoad`), `activeSourceHasSample` /
+    `activeSourceCurrentUsage` (in `reevaluateSpeedForCurrentConditions`). Sampling is **active-only** (the
+    inactive monitor isn't polled), so `refreshMenuMetrics` is **source-conditional**: it shows the active
+    source's metric + state (CPU%/CPU State, or Memory%+swap/Memory Pressure) — not both. The `Load Source`
+    submenu is a radio group wired exactly like width/preset (`selectLoadSource`,
+    `refreshLoadSourceSelectionState`). Adding gpu/network/disk = add a `LoadSource` case + its reader +
+    branches in the three helpers. Counter-delta sources divide by the real elapsed wall time captured
+    each tick in `sampleSystemLoad` (`ProcessInfo.systemUptime` → `lastSampleUptime`, threaded as the
+    `elapsed:` arg); the memory source's swap rate already uses it, and network/disk reuse it (a source
+    switch resets `lastSampleUptime` so rates re-warm cleanly).
   - **Self-throttling under pressure** (the app throttles *its own* animation, never the system —
     it only ever *reads* system state): the indicator reduces its own CPU use so it doesn't add to
     the load it visualizes. `speedMultiplier(forUsage:)` caps *this app's* auto animation speed at the
     midpoint of the preset's range (`Tuning.constrainedSpeedCeilingFraction`) when `isUnderPowerPressure`
-    (Low Power Mode on, or `thermalState` `.serious`/`.critical`). Fewer frame advances/redraws = less
-    CPU spent by the app; nothing about the system or other processes is changed. It subscribes to `.NSProcessInfoPowerStateDidChange` /
-    `ProcessInfo.thermalStateDidChangeNotification` and calls `reevaluateSpeedForCurrentConditions()`
-    (recomputes immediately, bypassing hysteresis) so the cap engages/lifts without waiting for the next
-    2s tick. Separately, `updateAnimationForOcclusion()` (driven by
+    (Low Power Mode on, `thermalState` `.serious`/`.critical`, or memory pressure `.warning`/`.critical`).
+    Fewer frame advances/redraws = less CPU spent by the app; nothing about the system or other processes
+    is changed. It subscribes to `.NSProcessInfoPowerStateDidChange` /
+    `ProcessInfo.thermalStateDidChangeNotification` and a `DispatchSource.makeMemoryPressureSource` (mask
+    **must** include `.normal` to lift the cap — memory pressure is event-only with no synchronous getter,
+    so `memoryPressureLevel` is cached; its lifecycle is `resume()`/`cancel()`, NOT `removeObserver`), each
+    calling `reevaluateSpeedForCurrentConditions()` (recomputes immediately, bypassing hysteresis) so the
+    cap engages/lifts without waiting for the next 2s tick. Separately, `updateAnimationForOcclusion()` (driven by
     `NSWindow.didChangeOcclusionStateNotification` on the status button's window) stops the game loop
     entirely when the item is fully occluded (notch/overflow, another Space, display off) and restarts
     it when visible — no re-rasterizing frames no one can see. It only ever pauses in response to a
     positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
-    `refreshWidthSelectionState`, `refreshOverlaySelectionState`) rather than pushed reactively. When adding
+    `refreshWidthSelectionState`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather
+    than pushed reactively. When adding
     a new piece of runtime state, wire it into these refresh functions and into the initial
     `applicationDidFinishLaunching` setup.
   - **Width model**: `requestedWidthSlots` (nil = auto) combines with `minimumSlotsForCurrentPreset()`
@@ -126,14 +182,14 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
 
 ## Adding a new built-in preset
 
-Touch all of these together, or the preset will be inconsistent across the CLI, menu, and README:
+No Swift edit is needed — preset profiles are data in `gifs/presets.json`. Touch these together, or the
+preset will be inconsistent across the CLI, menu, and README:
 1. Add the GIF to `gifs/`.
-2. `MenuBarLoadRunner.swift` — add one `PresetDescriptor` entry to the `allPresets` array literal in
-   `init(config:)` (reuse an existing `PresetKind` case, or add a new one, plus a `Tuning` min/max pair and a
-   `SpeedProfile` if it needs its own speed range). This is the single source of the preset's `key`, path, menu
-   title, and speed profile — the CLI keyword, menu item, `@objc` action, and every selection-state check all
-   derive automatically from it. No other Swift call site needs touching, and the launcher needs no change (it
-   forwards the keyword to Swift unchanged).
+2. `gifs/presets.json` — add one object to the `presets` array: `{key, menuTitle, file, slotScale,
+   speed:{label, min, max, responseExponent}}`. `file` is the GIF filename relative to `gifs/`. This is the
+   single source of the preset's keyword, menu title, path, slot scale, and speed profile — the CLI keyword,
+   menu item, `@objc` action, and every selection-state check all derive from it at startup. (Optionally set
+   `defaultPreset` to a `key` in the array to change the no-arg default.)
 3. `menubar-load-runner` — add a line to `print_help`'s preset list and usage string (docs only; the launcher
-   no longer maps keywords to paths).
+   forwards the keyword to Swift unchanged).
 4. `README.md` — add it to the file list, the built-in presets command list, and the auto speed ranges table.

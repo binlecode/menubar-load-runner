@@ -278,6 +278,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private let allPresets: [PresetDescriptor]
     private var activePreset: PresetDescriptor?
     private var activeGifPath: String
+    // These menu/status-item IUOs are all assigned exactly once in
+    // applicationDidFinishLaunching and only read afterwards (menu-delegate callbacks,
+    // refresh functions, @objc actions) — never before launch. The `!` reflects that
+    // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
     private var infoMenu: NSMenu!
     private var cpuUsageItem: NSMenuItem!

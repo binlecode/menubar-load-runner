@@ -1,10 +1,17 @@
 # DESIGN-system.md
 
-Ground truth for this document: `menubar-load-runner` (zsh launcher, 223 lines) and
-`MenuBarLoadRunner.swift` (1077 lines). Every claim below cites the line(s) it is derived
-from. This document contains no design rationale, no recommendations, and no speculation
-beyond what the cited code does — it is a structural map of the code as it exists, for
-resync whenever either source file changes.
+Ground truth for this document: `menubar-load-runner` (zsh launcher, 225 lines) and
+`MenuBarLoadRunner.swift` (1241 lines). Every claim below is derived from the source; line-number
+citations are approximate anchors (the file has grown since they were first written — treat them
+as "near line N", not exact). This document is a structural map of the code as it exists, for
+resync whenever either source file changes; it carries only the minimal rationale needed to make
+a behavior legible, not review-style recommendations.
+
+It reflects the current implemented state including: the `@MainActor`/`-strict-concurrency=complete`
+concurrency posture (§4); self-throttling of the app's own animation under power/thermal pressure
+and full pause under occlusion (§12.2, §13.6); graceful startup-error quit instead of `fatalError`
+(§9.2, §17); the live VoiceOver accessibility label (§9.2, §10.3); and the `CADisplayLink` game loop
+(§13).
 
 ---
 
@@ -125,9 +132,18 @@ prints an error to stderr and exits 1 without ever invoking the Swift process.
 |---|---|---|---|
 | 1 | `Tuning` | 6-58 | `enum` (namespace of `static let` constants only) |
 | 2 | `Config` | 60-155 | `struct` (CLI/env parsing + usage text) |
-| 3 | `CPULoadMonitor` | 157-225 | `final class` (CPU sampling) |
-| 4 | `MenuBarLoadRunnerApp` | 227-1065 | `final class`, `NSObject`, conforms to `NSApplicationDelegate`, `NSMenuDelegate` |
-| — | entry point | 1067-1077 | top-level `switch` on `Config.parse()` |
+| 3 | `CPULoadMonitor` | ~172 | `@MainActor final class` (CPU sampling) |
+| 4 | `MenuBarLoadRunnerApp` | ~243 | `@MainActor final class`, `NSObject`, conforms to `NSApplicationDelegate`, `NSMenuDelegate` |
+| — | entry point | (end of file) | top-level `switch` on `Config.parse()` |
+
+**Concurrency posture.** Both classes are annotated `@MainActor`, and the launcher builds with
+`swiftc -O -strict-concurrency=complete` (interpreted fallback: `swift -strict-concurrency=complete`)
+in Swift 5 mode — so any future data-race violation surfaces as a *warning*, not a hard build break.
+The build is warning-clean. The only two sites that needed help reaching the `@MainActor`-isolated
+methods from `NotificationCenter` callbacks are the observer closures registered on `queue: .main`
+(the screen-parameters, power-state, thermal-state, and occlusion observers): each wraps its call in
+`MainActor.assumeIsolated { ... }`, safe precisely because those observers are registered to fire on
+the main queue.
 
 ### 4.1 Entry point (lines 1067-1077)
 ```
@@ -363,7 +379,17 @@ var requestedOverlayText: String?                 // nil = no overlay; set via C
 var requestedOverlayBold = true                   // overlay font weight toggle
 var cachedLoadAverages: (Double, Double, Double)? // last getloadavg() result; nil until first sample
 var screenObserver: NSObjectProtocol?              // NotificationCenter token for screen-parameter changes
+var powerStateObserver: NSObjectProtocol?          // .NSProcessInfoPowerStateDidChange (Low Power Mode); see §12.2
+var thermalStateObserver: NSObjectProtocol?        // ProcessInfo.thermalStateDidChangeNotification; see §12.2
+var occlusionObserver: NSObjectProtocol?           // NSWindow.didChangeOcclusionStateNotification on the status button's window; see §13.6
 ```
+
+**IUO lifecycle invariant.** The `statusItem`/`infoMenu` and all the `NSMenuItem!` properties above
+are implicitly-unwrapped optionals assigned exactly once inside `applicationDidFinishLaunching`
+(`init` never touches them) and read only afterwards (menu-delegate callbacks, `refresh*()` methods,
+`@objc` actions). The `!` encodes this single-init lifecycle: guaranteed non-nil for the app's
+lifetime, never accessed before launch. A source comment above the property block records the same
+invariant.
 
 ### 8.1 Preset registry — `allPresets` (built in `init`, lines 312-323)
 
@@ -405,11 +431,15 @@ match any built-in preset (custom GIF case). No AppKit objects are touched here.
 
 ### 9.2 `applicationDidFinishLaunching(_:)` (lines 330-447) — exact order of operations
 1. `NSApp.setActivationPolicy(.accessory)` (line 331) — no Dock icon, no app switcher entry.
-2. Create `statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`
-   (line 333); `fatalError` if `.button` is `nil` (lines 334-336).
+2. Create `statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`;
+   if `.button` is `nil`, call `showStartupErrorAndQuit("Unable to create NSStatusItem button.")`
+   and `return` — a graceful quit consistent with the GIF-decode-failure path (step 10), **not**
+   a `fatalError`/crash.
 3. `button.imagePosition = .imageOnly`; `button.imageScaling` set based on whether
    `requestedWidthSlots` is `nil` (`.scaleProportionallyUpOrDown`) or set
-   (`.scaleAxesIndependently`) (lines 338-339); `button.toolTip = activeGifPath` (line 340).
+   (`.scaleAxesIndependently`); `button.toolTip = activeGifPath`;
+   `button.setAccessibilityLabel("MenuBar Load Runner")` — a static VoiceOver base label, later
+   enriched with live CPU load by `refreshMenuMetrics()` (§10.3).
 4. Build `infoMenu` (`NSMenu`), set `self` as its delegate (lines 342-343).
 5. Append, in this exact order, to `infoMenu` (lines 345-417):
    `CPU Usage: --` → `Load Avg (1/5/15m): -- / -- / --` → `CPU State: --` →
@@ -437,13 +467,22 @@ match any built-in preset (custom GIF case). No AppKit objects are touched here.
 12. If `config.speedMultiplierOverride` is set, clamp it into
     `Tuning.speedOverrideMin...Max` and assign to `speedMultiplier` (lines 432-434).
 13. `startLoadMonitoring()`, `startGameLoop()`, `refreshMenuMetrics()` (lines 435-437).
-14. Register `screenObserver` for
-    `NSApplication.didChangeScreenParametersNotification` → `applySizing()` +
-    `renderCurrentFrame()` on `.main` queue (lines 439-446).
+14. Register four `NotificationCenter` observers, all on `queue: .main` (each callback wraps its
+    body in `MainActor.assumeIsolated`, §4):
+    - `screenObserver` — `NSApplication.didChangeScreenParametersNotification` → `applySizing()` +
+      `renderCurrentFrame()`.
+    - `powerStateObserver` — `.NSProcessInfoPowerStateDidChange` (Low Power Mode toggled) →
+      `reevaluateSpeedForCurrentConditions()` (§12.2).
+    - `thermalStateObserver` — `ProcessInfo.thermalStateDidChangeNotification` →
+      `reevaluateSpeedForCurrentConditions()` (§12.2).
+    - `occlusionObserver` — `NSWindow.didChangeOcclusionStateNotification` on the status button's
+      window (registered only if that window exists) → `updateAnimationForOcclusion()` (§13.6).
 
-### 9.3 `applicationWillTerminate(_:)` (lines 449-455)
+### 9.3 `applicationWillTerminate(_:)`
 Calls `stopGameLoop()` (tears down whichever of `displayLink`/`fallbackTimer` is live) and
-invalidates `loadTimer`; removes `screenObserver` from `NotificationCenter.default` if set.
+invalidates `loadTimer`; removes every registered observer
+(`screenObserver`/`powerStateObserver`/`thermalStateObserver`/`occlusionObserver`) from
+`NotificationCenter.default`.
 
 ---
 
@@ -471,6 +510,11 @@ state (e.g. `selectWidthAuto()` calls `refreshWidthSelectionState()` itself, lin
   and min/max; fixed mode shows `(fixed)`.
 - `loadAverageItem.title`: `"unavailable"` if `cachedLoadAverages == nil`, else the 3 values
   formatted `%.2f`.
+- `statusItem.button?.setAccessibilityLabel(...)`: enriches the static launch-time label with live
+  state — `"MenuBar Load Runner — CPU NN%, <state>"` once `loadMonitor.hasSample`, else
+  `"MenuBar Load Runner — measuring CPU load"`. Because `refreshMenuMetrics()` runs on every 2s
+  `sampleSystemLoad()` tick (§12) and not only on `menuWillOpen`, the VoiceOver description tracks
+  current load without the menu being opened.
 
 ### 10.4 `refreshPresetSelectionState()` (lines 580-586)
 A single loop over `zip(presetMenuItems, allPresets)` (relies on both arrays being built
@@ -513,8 +557,13 @@ If `requestedOverlayText` is set: `overlayStatusItem.title = "Overlay Text: <tex
 1. Builds an `NSAlert` with a custom `accessoryView` containing: a label (`"Overlay text"`),
    an `NSTextField` pre-filled with `requestedOverlayText ?? ""`, and an `NSButton`
    checkbox (`"Bold"`) pre-set to `requestedOverlayBold`.
-2. Schedules the same focus/select-text closure three times: immediately, and after 0.03s
-   and 0.12s (`DispatchQueue.main.async` / `asyncAfter`, lines 673-684).
+2. Hands first-responder focus to the text field deterministically via
+   `alert.window.initialFirstResponder = field` *before* `runModal()`, plus a single
+   `DispatchQueue.main.async` belt-and-suspenders hop that re-asserts `makeFirstResponder(field)`
+   (in case an AppKit version ignores `initialFirstResponder` on an NSAlert accessory view) and
+   moves the caret to the end of any pre-filled text (which needs the field editor that exists only
+   once focused). Closures capture `field`/`alertWindow` weakly. (This replaced an earlier
+   timing-dependent hack that fired the same closure three times at staggered 0/0.03/0.12s delays.)
 3. `alert.runModal()` — if the result isn't `.alertFirstButtonReturn` (i.e. "Cancel" or the
    window was closed), returns with no state change (line 686).
 4. On "Apply": `requestedOverlayBold = boldToggle.state == .on` (line 688) always happens
@@ -559,6 +608,12 @@ currently exercised by any call site).
 Invoked every `Tuning.loadSampleInterval` (2.0s) by `loadTimer` (started in
 `startLoadMonitoring()`, lines 512-523, registered on `RunLoop.main` in `.common` mode).
 
+`loadTimer` uses the classic `Timer(target: self, selector:)` form, which strongly retains `self`
+while `self` retains the timer — a retain cycle. This is intentionally accepted, not a leak in
+practice: the `MenuBarLoadRunnerApp` delegate lives for the entire process and only deallocates at
+`NSApp.terminate`, so nothing is ever waiting to be freed. (The game-loop driver does not have this
+concern — `displayLink`/`fallbackTimer` are held directly and torn down in `stopGameLoop()`, §13.1b.)
+
 1. `cachedLoadAverages = readSystemLoadAverages()` (line 527) — always attempted,
    independent of anything below.
 2. `loadMonitor.sampleUsage()` — if it returns a non-`nil` `usage`:
@@ -587,7 +642,27 @@ return min(max(value, profile.min), profile.max)   // redundant clamp given the 
 `2.6` (`Tuning.rainingSpeedCurveExponent`) — i.e. `raining`'s speed stays near `min` for most
 of the CPU range and only accelerates sharply near `usage = 1.0`.
 
-### 12.2 `readSystemLoadAverages()` (lines 766-777)
+The actual source inserts one extra step before the final clamp: **if `isUnderPowerPressure`**,
+`value` is capped at `profile.min + (profile.max - profile.min) * Tuning.constrainedSpeedCeilingFraction`
+(0.5, i.e. the midpoint of the preset's range) — see §12.2.
+
+### 12.2 Self-throttling under power/thermal pressure
+The app only ever *reads* system power/thermal state; it never mutates it and cannot throttle the
+system or any other process. "Self-throttling" means it reduces **its own** animation work (fewer
+frame advances/redraws) so the load indicator doesn't add to the load it visualizes.
+
+- `isUnderPowerPressure` (a computed `Bool`): `true` when `ProcessInfo.isLowPowerModeEnabled` is on
+  **or** `thermalState` is `.serious`/`.critical`. Read-only, getters only.
+- When true, `speedMultiplier(forUsage:)` (§12.1) caps this app's auto speed at the midpoint of the
+  active preset's range (`Tuning.constrainedSpeedCeilingFraction`). The menu's Speed Multiplier line
+  appends `" [throttled: low power/thermal]"` while capped (§10.3 shows the base format).
+- `reevaluateSpeedForCurrentConditions()`: recomputes `speedMultiplier` from the latest smoothed
+  usage **immediately, bypassing the 2s-tick hysteresis** (guarded by `speedMultiplierOverride == nil`
+  && `loadMonitor.hasSample`), then calls `refreshMenuMetrics()`. Invoked from the `powerStateObserver`
+  and `thermalStateObserver` (§9.2 step 14) so the cap engages/lifts without waiting up to 2s.
+- Disabled entirely in fixed-speed mode (`--speed-multiplier`), like all auto-speed logic.
+
+### 12.3 `readSystemLoadAverages()` (lines 766-777)
 Calls `getloadavg(&samples, 3)` (POSIX API) into a 3-element buffer. Returns `nil` if the
 call returns fewer than 3 samples; otherwise returns the tuple indexed by
 `Tuning.loadAverage1mIndex/5mIndex/15mIndex` (`0/1/2`).
@@ -689,6 +764,20 @@ No-ops (sets `renderedFrames = []`) if `frames` is empty.
    - `rendered.isTemplate = false` (explicit — not left to the `NSImage` default).
 4. Assigns the full array to `renderedFrames` (line 979) — every frame is regenerated on
    every call; there is no per-frame caching/memoization across calls.
+
+### 13.6 Occlusion pause — `updateAnimationForOcclusion()`
+Driven by the `occlusionObserver` (`NSWindow.didChangeOcclusionStateNotification` on the status
+button's window, §9.2 step 14). When the button's window is **not** `.visible` (behind the notch /
+menu-bar overflow, on another Space, or the display is off), calls `stopGameLoop()` — no point
+re-rasterizing frames no one can see. When it becomes visible again (and no driver is currently
+live), calls `startGameLoop()`, which re-syncs timing so playback resumes from the current frame
+rather than replaying skipped ones (§13.2 step 2).
+
+By design it only ever pauses in *response to a positive occlusion-changed event*: if the
+notification never fires, the game loop just keeps running (always-animating fallback) — so a
+missing/never-firing notification can never freeze a visible icon. This is complementary to §12.2:
+occlusion pause stops work entirely when invisible; power/thermal capping reduces work when visible
+but the machine is under pressure.
 
 ---
 

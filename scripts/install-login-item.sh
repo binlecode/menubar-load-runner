@@ -71,7 +71,13 @@ PLIST_EOF
 # NOTE: no KeepAlive on purpose — choosing Exit from the menu quits it until next login.
 
 # Idempotent (re)load: bootout first so a re-install doesn't hit "service already loaded".
+# bootout is asynchronous, so poll until the old service actually disappears before
+# re-bootstrapping — otherwise bootstrap races the teardown and fails with 5 ("Input/output error").
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 30); do
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.1
+done
 launchctl bootstrap "$DOMAIN" "$PLIST"
 launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null || true   # start now, no logout needed
 

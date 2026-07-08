@@ -30,6 +30,27 @@
       "speed": { "label": "horse", "min": 0.45, "max": 2.3, "responseExponent": 1.0 }
     },
     {
+      "key": "chihiro",
+      "menuTitle": "Chihiro (Walking)",
+      "file": "chihiro-walk.gif",
+      "slotScale": 1.0,
+      "speed": { "label": "chihiro", "min": 0.5, "max": 2.5, "responseExponent": 1.0 }
+    },
+    {
+      "key": "chihiro-white",
+      "menuTitle": "Chihiro (Walking, White)",
+      "file": "chihiro-walk-white.gif",
+      "slotScale": 1.0,
+      "speed": { "label": "chihiro", "min": 0.5, "max": 2.5, "responseExponent": 1.0 }
+    },
+    {
+      "key": "chihiro-black",
+      "menuTitle": "Chihiro (Walking, Black)",
+      "file": "chihiro-walk-black.gif",
+      "slotScale": 1.0,
+      "speed": { "label": "chihiro", "min": 0.5, "max": 2.5, "responseExponent": 1.0 }
+    },
+    {
       "key": "totoro",
       "menuTitle": "Totoro",
       "file": "totoro.gif",

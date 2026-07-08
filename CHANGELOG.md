@@ -26,6 +26,16 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.1.1] - 2026-07-07
+
+### Fixed
+
+- `scripts/install-login-item.sh` re-install (running install while already installed, e.g. to
+  change the baked-in preset / `--load-source` args) failed with launchctl error 5 ("Input/output
+  error"). `launchctl bootout` is asynchronous, so the follow-up `bootstrap` raced the still-tearing-
+  down service. Install now polls until the old service is fully gone before re-`bootstrap`. First
+  install and uninstall were unaffected.
+
 ## [1.1.0] - 2026-07-07
 
 ### Added

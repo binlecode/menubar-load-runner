@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.1.2"
+    static let version = "1.1.3"
 }
 
 private enum Tuning {
@@ -814,7 +814,21 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         self.requestedOverlayText = config.overlayText
         self.activeLoadSource = config.loadSource
 
-        let scriptDirURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        // Resolve the resource base directory (which holds `gifs/`). Prefer the running executable's
+        // own directory: the compiled `MenuBarLoadRunner` binary sits next to `gifs/`, and the
+        // executable path is absolute and independent of both the current working directory and the
+        // path passed to the compiler. This is the robust anchor — `#filePath` (the source path baked
+        // in at compile time) is only correct when the binary is run from the right CWD *and* was
+        // compiled with an absolute path, which is exactly how a relative-path build broke the launchd
+        // login item (CWD=`/` → `/gifs/presets.json`). `#filePath`'s directory is kept as a fallback
+        // for the interpreted `swift <file>` dev path, where there is no standalone executable beside
+        // `gifs/`. Pick the first candidate that actually contains the manifest.
+        let fileDirURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let candidateBases = [Bundle.main.executableURL?.deletingLastPathComponent(), fileDirURL]
+            .compactMap { $0 }
+        let scriptDirURL = candidateBases.first {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent("gifs/presets.json").path)
+        } ?? fileDirURL
         let manifestURL = scriptDirURL.appendingPathComponent("gifs/presets.json")
 
         // Load the externalized preset profiles. On any failure, leave the registry empty and record
@@ -1095,7 +1109,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             alert.icon = icon
         }
         let speedMode = isAutoSpeed
-            ? "Speed adapts to system CPU load."
+            ? "Speed adapts to \(activeLoadSource.menuTitle) load (switch source in the Load Source menu)."
             : "Fixed speed multiplier: \(String(format: "%.2f", speedMultiplier))x."
         alert.informativeText = "Version \(AppInfo.version)\nDisplays an animated GIF in the macOS menu bar.\n\(speedMode)"
         alert.alertStyle = .informational
@@ -1114,16 +1128,51 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         else {
             return nil
         }
-        let iconSize = NSSize(width: 48, height: 48)
-        let icon = NSImage(size: iconSize)
-        icon.lockFocus()
-        source.draw(
-            in: NSRect(origin: .zero, size: iconSize),
-            from: NSRect(origin: .zero, size: source.size),
-            operation: .sourceOver,
-            fraction: 1.0
+        let box = NSSize(width: 48, height: 48)
+        // Aspect-fit into the square box (the art is ~3:2, so a plain square draw would squish it),
+        // centered with transparent padding.
+        let sourceSize = source.size
+        let fit = min(box.width / max(sourceSize.width, 1), box.height / max(sourceSize.height, 1))
+        let drawSize = NSSize(width: sourceSize.width * fit, height: sourceSize.height * fit)
+        let drawRect = NSRect(
+            x: (box.width - drawSize.width) / 2,
+            y: (box.height - drawSize.height) / 2,
+            width: drawSize.width,
+            height: drawSize.height
         )
-        icon.unlockFocus()
+        // Back the bitmap at the display scale (Retina) and interpolate at high quality, so the
+        // scaled horse is smooth rather than jagged/blocky.
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(box.width * scale),
+            pixelsHigh: Int(box.height * scale),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return nil
+        }
+        rep.size = box
+        NSGraphicsContext.saveGraphicsState()
+        if let ctx = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.current = ctx
+            ctx.imageInterpolation = .high
+            source.draw(
+                in: drawRect,
+                from: NSRect(origin: .zero, size: sourceSize),
+                operation: .sourceOver,
+                fraction: 1.0
+            )
+            ctx.flushGraphics()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let icon = NSImage(size: box)
+        icon.addRepresentation(rep)
         return icon
     }
 

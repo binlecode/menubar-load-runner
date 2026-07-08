@@ -26,6 +26,21 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.1.3] - 2026-07-07
+
+### Fixed
+
+- About dialog: the auto-speed line was hardcoded to "CPU load"; it now names the active load source
+  (e.g. "Speed adapts to GPU load …"), matching the Speed Multiplier menu line.
+- About/alert icon: the horse art (~3:2) was squished into a 48×48 square and rasterized at 1× with
+  default interpolation. It is now aspect-fit and centered, backed at the display (Retina) scale, and
+  drawn with high interpolation — smooth, with correct proportions.
+- Resource resolution hardened: `gifs/` and `presets.json` are now located relative to the running
+  executable (falling back to `#filePath` for the interpreted `swift <file>` dev path) rather than
+  `#filePath` alone. A binary compiled with a relative source path and run under `launchd` (working
+  directory `/`) previously resolved the manifest to `/gifs/presets.json` and failed at startup; the
+  new anchor is independent of both the working directory and the compile-time path.
+
 ## [1.1.2] - 2026-07-07
 
 ### Changed

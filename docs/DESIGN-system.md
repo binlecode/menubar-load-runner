@@ -1,8 +1,8 @@
 # DESIGN-system.md
 
 Ground truth for this document: `menubar-load-runner` (zsh launcher, 173 lines) and
-`MenuBarLoadRunner.swift` (1256 lines). Every claim below is derived from the source and was
-re-verified against it.
+`MenuBarLoadRunner.swift` (1256 lines), plus the auxiliary login-item scripts under `scripts/`
+(§19). Every claim below is derived from the source and was re-verified against it.
 
 **Anchoring convention.** Each section/subsection names the exact Swift/shell **symbol** it maps to
 (e.g. `speedMultiplier(forUsage:)`, `resolve_script_dir()`). That symbol name — unique and
@@ -1340,6 +1340,70 @@ it forwards the positional arg verbatim, and the Swift side owns the keyword→p
 the `horse-white` default. The launcher still validates none of `--width`'s value,
 `--speed-multiplier`'s value, or `--overlay-text`'s length — all of that validation happens
 only inside `Config.parse()` after the Swift process starts (§6.3 table).
+
+---
+
+## 19. Login-item scripts (`scripts/install-login-item.sh` / `uninstall-login-item.sh`)
+
+A third artifact beyond the two core source files: optional, personal-use start-at-login tooling.
+These are plain `bash` scripts that only invoke the `menubar-load-runner` launcher and macOS
+`launchctl`; they do **not** touch `MenuBarLoadRunner.swift` logic. Shared identifiers: `LABEL =
+ai.bera.menubarloadrunner`, `PLIST = ~/Library/LaunchAgents/$LABEL.plist`, `LOG = /tmp/$LABEL.log`,
+`DOMAIN = gui/$(id -u)` (the per-user GUI launchd domain).
+
+### 19.1 `install-login-item.sh`
+
+1. **Path resolution** — resolves its own real directory (a `readlink` loop over `BASH_SOURCE`,
+   mirroring the launcher's `resolve_script_dir`), then `REPO_DIR` (parent) and `LAUNCHER =
+   $REPO_DIR/menubar-load-runner`; aborts if the launcher isn't executable. So the plist gets an
+   absolute launcher path regardless of the caller's CWD.
+2. **Best-effort pre-build** — if `swiftc` is on `PATH`, compiles the binary once
+   (`-O -strict-concurrency=complete`). This removes the swift-toolchain dependency from *login* for
+   the common (unchanged-source) case; if the source later changes, the launcher's mtime check
+   recompiles at next login (needs `swiftc` on launchd's `PATH` then — see the `EnvironmentVariables`
+   key below). A failed pre-build only warns; on-demand compile still covers it.
+3. **`ProgramArguments`** — `[LAUNCHER, "--no-detach", "$@"]`, minimally XML-escaped. `--no-detach`
+   is load-bearing: the launcher's default path is `nohup … & disown` then `exit 0` (§3.3), which
+   `launchd` would read as "the job finished." `--no-detach` makes the launcher `exec` into the Swift
+   process (same PID), so `launchd` supervises the *real* long-lived process.
+4. **Plist keys written**: `Label`; `ProgramArguments`; `EnvironmentVariables.PATH =
+   /usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin` (launchd's per-user default `PATH` is minimal; the
+   launcher needs `swift`/`swiftc` and `pgrep` for its on-demand compile and singleton check);
+   `RunAtLoad = true`; `StandardOutPath`/`StandardErrorPath = $LOG`. **No `KeepAlive`** — on purpose,
+   so a menu **Exit** (or a crash) leaves it stopped until the next login rather than respawning.
+5. **When it runs.** `RunAtLoad` means launchd starts it *immediately when it loads the agent*, which
+   happens as the `gui/$uid` domain comes up at **login** (reboot → login, log-out → log-in, or
+   fast-user-switch into the account). It is a *user* agent, so it requires login; it never runs at
+   boot pre-login (that would be a system LaunchDaemon).
+6. **Idempotent (re)load** — `launchctl bootout "$DOMAIN/$LABEL"` (`|| true`), then **poll**
+   `launchctl print` until the service is gone (≤ 30 × 0.1 s), then `bootstrap`, then `kickstart -k`
+   (start now, no logout). The poll is the v1.1.1 fix: `bootout` is asynchronous, so an immediate
+   `bootstrap` races the still-terminating service and fails with launchctl error 5 ("Input/output
+   error"). Because of the poll, re-running install (e.g. to change the baked-in preset/args) is safe.
+7. **Default preset.** The scripts pass args through verbatim and hardcode no preset; a no-arg install
+   yields `ProgramArguments = [LAUNCHER, "--no-detach"]`, and the app then resolves the manifest's
+   `defaultPreset` (`horse-white`, §6/§9.1). Passing a keyword pins it explicitly.
+
+### 19.2 `uninstall-login-item.sh`
+
+The exact inverse: `launchctl bootout "$DOMAIN/$LABEL"` (`|| true`, stops the process and deregisters
+the agent), then `rm -f` the plist and the `/tmp` log. It deliberately does **not** use `launchctl
+disable`, which writes a *persistent* override into the launchd/BTM store that would survive file
+removal. Safe to re-run (a no-op when nothing is installed). It does not kill an instance the user
+launched manually (that process isn't in `$DOMAIN/$LABEL`); it prints the `pkill` hint instead.
+
+### 19.3 Background Task Management (BTM) and where it surfaces
+
+A loaded LaunchAgent is tracked by macOS's Background Task Management, so it appears in **System
+Settings → General → Login Items → "Allow in the Background"** — *not* the top "Open at Login" list,
+which is reserved for `.app`-style login items (`SMAppService.mainApp` / drag-added apps). Because the
+launcher is an unsigned script (no Developer ID, no bundle), BTM may label the entry generically.
+Toggling it **off** in Settings applies a persistent BTM override, separate from `launchctl` state and
+from these scripts; `uninstall-login-item.sh` is the clean removal path (deregister + delete), which
+also clears the "Allow in the Background" entry. The `.app` + `SMAppService.mainApp` route (which would
+instead land in "Open at Login", with a friendly name and an in-app toggle) is intentionally not taken
+— it needs a bundle + `Bundle.main.resourceURL` resource resolution and buys only cosmetics over the
+LaunchAgent's identical start-at-login behavior.
 
 ---
 

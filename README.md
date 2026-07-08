@@ -58,26 +58,22 @@ menubar-load-runner dog-black
 
 ## Start at login (personal, optional)
 
-Auto-start via a per-user LaunchAgent — no root, no installer, no `.app` bundle. It registers the
-launcher with `launchd` using `--no-detach`, so `launchd` supervises the process directly.
+Auto-start via a **per-user LaunchAgent** — no root, no installer, no `.app` bundle, no signing.
 
 ```bash
-./scripts/install-login-item.sh                              # default preset
+./scripts/install-login-item.sh                              # start at login (defaults to horse-white)
 ./scripts/install-login-item.sh dog-black --load-source memory   # bake in launcher args
+./scripts/uninstall-login-item.sh                            # remove it again
 ```
 
-It starts immediately (no logout needed) and on every login. There is no `KeepAlive`, so choosing
-**Exit** from the menu quits it until the next login — the expected behavior for a login item.
+Install starts it immediately (no logout needed) and on every login; with no args it uses the
+manifest's default preset (`horse-white`). Choosing **Exit** from the menu quits it until the next
+login (there is no `KeepAlive`). It shows up in **System Settings → General → Login Items → "Allow in
+the Background"** — not the top "Open at Login" list, which is only for `.app`-style login items.
 
-Fully reversible — the entire footprint is one plist in `~/Library/LaunchAgents/`:
-
-```bash
-./scripts/uninstall-login-item.sh                            # deregister + delete plist/log
-```
-
-This is deliberately low-footprint: user-scoped only, nothing written under `/Library` or
-`/System`, and no receipts database or Background Task Management entry (unlike a `.pkg` or
-`SMAppService`). Uninstall is the exact inverse of install, leaving no residue.
+Uninstall is the exact inverse and leaves no residue (deregisters the agent, deletes the plist + log).
+The mechanics — `--no-detach` supervision, `RunAtLoad` timing, the `bootout` reload race, and the
+Background Task Management behavior — are documented in `docs/DESIGN-system.md` §19.
 
 ## Built-in presets
 

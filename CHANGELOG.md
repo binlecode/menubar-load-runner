@@ -26,6 +26,16 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.1.2] - 2026-07-07
+
+### Changed
+
+- Documentation only: split the login-item docs to match the repo convention (README = usage,
+  `docs/DESIGN-system.md` = source-anchored mechanism). The README "Start at login" section is
+  trimmed to install/uninstall usage; the full LaunchAgent mechanics — `--no-detach` supervision,
+  `RunAtLoad` timing, the `bootout` reload race, and Background Task Management ("Allow in the
+  Background") behavior — now live in `docs/DESIGN-system.md` §19.
+
 ## [1.1.1] - 2026-07-07
 
 ### Fixed

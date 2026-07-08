@@ -26,6 +26,25 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.1.0] - 2026-07-07
+
+### Added
+
+- Optional start-at-login support for personal use, via two scripts:
+  `scripts/install-login-item.sh` and `scripts/uninstall-login-item.sh`. Install registers a
+  per-user LaunchAgent (`~/Library/LaunchAgents/ai.bera.menubarloadrunner.plist`) that runs the
+  launcher with `--no-detach` so `launchd` supervises the process; it starts immediately and on
+  every login, and passes through any launcher args (preset keyword, `--load-source`, etc.).
+- Fully reversible uninstall: the LaunchAgent is deregistered (`launchctl bootout`) and its plist +
+  log deleted, leaving no residue (no root writes, no receipts database, no Background Task
+  Management entry). Documented under "Start at login" in the README.
+
+### Notes
+
+- No `.app` bundle, `.dmg`, `.pkg`, or code signing is involved — this is the minimal, low-footprint
+  auto-start path for a personal single-machine setup. Distribution to other Macs would still call
+  for a signed/notarized bundle (out of scope for this release).
+
 ## [1.0.0] - 2026-07-07
 
 Initial stable release.

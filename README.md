@@ -9,6 +9,7 @@ Current version: **1.0.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 - `MenuBarLoadRunner.swift`: app source.
 - `menubar-load-runner`: launcher script.
+- `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh`: optional start-at-login setup (see below).
 - `CHANGELOG.md`: release history (Keep a Changelog + semver).
 - `gifs/running-dog-white.gif`: built-in white dog preset (transparent).
 - `gifs/running-dog-black.gif`: built-in black dog preset (transparent).
@@ -54,6 +55,29 @@ menubar-load-runner dog-black
 ```
 
 `menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`, `--extra`).
+
+## Start at login (personal, optional)
+
+Auto-start via a per-user LaunchAgent — no root, no installer, no `.app` bundle. It registers the
+launcher with `launchd` using `--no-detach`, so `launchd` supervises the process directly.
+
+```bash
+./scripts/install-login-item.sh                              # default preset
+./scripts/install-login-item.sh dog-black --load-source memory   # bake in launcher args
+```
+
+It starts immediately (no logout needed) and on every login. There is no `KeepAlive`, so choosing
+**Exit** from the menu quits it until the next login — the expected behavior for a login item.
+
+Fully reversible — the entire footprint is one plist in `~/Library/LaunchAgents/`:
+
+```bash
+./scripts/uninstall-login-item.sh                            # deregister + delete plist/log
+```
+
+This is deliberately low-footprint: user-scoped only, nothing written under `/Library` or
+`/System`, and no receipts database or Background Task Management entry (unlike a `.pkg` or
+`SMAppService`). Uninstall is the exact inverse of install, leaving no residue.
 
 ## Built-in presets
 

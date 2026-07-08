@@ -297,6 +297,7 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
 ```bash
 pkill -f 'mblr-check' 2>/dev/null; pkill -f 'MenuBarLoadRunner' 2>/dev/null
 rm -f tmp/mblr-check
+./scripts/uninstall-login-item.sh 2>/dev/null || true   # if a login item was installed while testing
 git status --short   # confirm only intended files changed
 ```
 

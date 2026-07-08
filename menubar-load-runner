@@ -28,7 +28,7 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--width <slots:1..4>] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
   MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--width <slots:1..4>] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
 
 Presets:
@@ -36,6 +36,9 @@ Presets:
   dog-black   Built-in running dog (black)
   horse-black  Built-in running horse (black)
   horse-white   Built-in running horse (white, default)
+  chihiro  Built-in walking Chihiro (color)
+  chihiro-white  Built-in walking Chihiro (white silhouette)
+  chihiro-black  Built-in walking Chihiro (black silhouette)
   totoro  Built-in running Totoro
   totoro-group-white  Built-in Totoro group GIF (white, transparent)
   totoro-group-black  Built-in Totoro group GIF (black, transparent)
@@ -59,6 +62,9 @@ Examples:
   $APP_CMD_NAME dog-black
   $APP_CMD_NAME horse-black
   $APP_CMD_NAME horse-white
+  $APP_CMD_NAME chihiro
+  $APP_CMD_NAME chihiro-white
+  $APP_CMD_NAME chihiro-black
   $APP_CMD_NAME totoro
   $APP_CMD_NAME totoro-group-white
   $APP_CMD_NAME totoro-group-black

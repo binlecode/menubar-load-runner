@@ -15,6 +15,9 @@ Current version: **1.0.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 - `gifs/running-dog-black.gif`: built-in black dog preset (transparent).
 - `gifs/running-horse-black.gif`: built-in black horse preset (Pinterest silhouette, transparent).
 - `gifs/running-horse-white.gif`: built-in white horse preset (transparent).
+- `gifs/chihiro-walk.gif`: built-in walking Chihiro preset (side-profile walk cycle, color, transparent).
+- `gifs/chihiro-walk-white.gif`: built-in walking Chihiro preset (white silhouette, transparent).
+- `gifs/chihiro-walk-black.gif`: built-in walking Chihiro preset (black silhouette, transparent).
 - `gifs/totoro.gif`: built-in Totoro preset (from Giphy).
 - `gifs/totoro-group-white.gif`: built-in white Totoro group preset (transparent).
 - `gifs/totoro-group-black.gif`: built-in black Totoro group preset (transparent).
@@ -83,6 +86,11 @@ Background Task Management behavior — are documented in `docs/DESIGN-system.md
 
 # Black horse preset (Pinterest silhouette, slightly wider slot scaling)
 ./menubar-load-runner horse-black
+
+# Chihiro walking preset (color, and white/black silhouettes)
+./menubar-load-runner chihiro
+./menubar-load-runner chihiro-white
+./menubar-load-runner chihiro-black
 
 # Totoro preset
 ./menubar-load-runner totoro

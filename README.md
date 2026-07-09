@@ -1,9 +1,9 @@
 # MenuBar Load Runner
 
 Small macOS menu bar app that renders an animated GIF in the status bar.
-Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, or disk — see Load source below).
+Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
 
-Current version: **1.2.2** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.3.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 ## Files
 
@@ -169,7 +169,7 @@ MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network ./menubar-load-runner
 ```
 
 `--load-source` (or the `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` env var) selects which system reader
-drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, or `disk`. Unknown values —
+drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, `disk`, or `fan`. Unknown values —
 or a source with no readable hardware on this machine — fall back to `cpu` (unavailable sources are
 disabled in the menu). It can also be switched live from the `Load Source` menu. All readers are
 unprivileged (no `sudo`); the app only ever *reads* load.
@@ -179,6 +179,7 @@ unprivileged (no `sudo`); the app only ever *reads* load.
 - **gpu**: GPU utilization.
 - **network**: total interface throughput (rx+tx, loopback excluded).
 - **disk**: total block-device throughput (read+write across all drives).
+- **fan**: fan speed as a thermal/cooling signal (RPM as a fraction of the fan's max; max across fans). A lagging signal that trails actual work and only ramps under sustained thermal load, but idle fans still spin — so it keeps some visible motion (a genuinely stopped fan still crawls at the preset's minimum speed). Unavailable on fanless Macs (e.g. MacBook Air, which have zero fans), which fall back to `cpu`.
 
 Without `--speed-multiplier`, animation speed adapts to the selected load source. Per-preset speed
 ranges are defined in `gifs/presets.json`; edit that file to change a range or add a preset (the app
@@ -206,10 +207,10 @@ If a detached instance won't stop or a launch silently fails, check `/tmp/menuba
 
 Click the menu bar item to open:
 
-- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`
+- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`
 - `Load Avg (1/5/15m)`
 - `Speed Multiplier` (shows the active load source, mode, and active range when auto)
-- `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
+- `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` status and `Width Options` (`auto`, `1`, `2`, `3`, `4` slots; preset minimum clamp applies)
 - `Overlay Text` (`Set Text...` with max 12 chars + bold toggle, `Clear`)
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`

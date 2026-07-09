@@ -26,6 +26,21 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.3.0] - 2026-07-09
+
+### Added
+
+- New **`fan`** load source — drives the animation from fan speed as a thermal/cooling signal.
+  Reads per-fan tachometers from the SMC (`AppleSMCKeysEndpoint`) unprivileged and read-only
+  (never touches fan-control keys), normalizing current RPM as a fraction of the fan's max (max
+  across fans). It's a lagging signal that trails actual work and only ramps under sustained
+  thermal load; idle fans keep some visible motion, and a genuinely stopped fan still crawls at
+  the preset's minimum speed rather than freezing. Fanless Macs (e.g. MacBook Air, which report
+  `FNum == 0`) have the source unavailable — it's disabled in the `Load Source` menu and a launch
+  request falls back to `cpu`, matching the gpu/disk availability contract. Selectable via
+  `--load-source fan`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE=fan`, or the `Load Source` menu, and
+  honors `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=fan` for QA.
+
 ## [1.2.2] - 2026-07-09
 
 ### Changed

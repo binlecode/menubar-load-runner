@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.2.2"
+    static let version = "1.3.0"
 }
 
 private enum Tuning {
@@ -96,6 +96,7 @@ private enum LoadSource: Int, CaseIterable {
     case gpu = 2
     case network = 3
     case disk = 4
+    case fan = 5
 
     var key: String {
         switch self {
@@ -104,6 +105,7 @@ private enum LoadSource: Int, CaseIterable {
         case .gpu: return "gpu"
         case .network: return "network"
         case .disk: return "disk"
+        case .fan: return "fan"
         }
     }
 
@@ -114,6 +116,7 @@ private enum LoadSource: Int, CaseIterable {
         case .gpu: return "GPU"
         case .network: return "Network"
         case .disk: return "Disk"
+        case .fan: return "Fan"
         }
     }
 
@@ -584,6 +587,208 @@ private final class GPULoadMonitor {
     }
 }
 
+// Fan speed as a 0…1 *thermal/cooling* load — a lagging signal (fans trail actual work by seconds and
+// ramp only under sustained thermal load), so this reads "how hard is cooling working," not
+// instantaneous compute. Ported from actop's SMCReader (~/workspace_fullstack/actop): opens
+// AppleSMCKeysEndpoint unprivileged and read-only (never writes fan-control keys F{n}Tg/F{n}Md,
+// which need root), discovers per-fan actual/max RPM keys (F{n}Ac / F{n}Mx, SMC type "flt ", 4-byte
+// little-endian float) via the FNum fan count. Fanless Macs (MacBook Air, most M-series laptops)
+// report FNum == 0 → isAvailable false → the source disables and launch falls back to CPU. Bounded
+// per-machine, so it maps through as a percentage (max across fans of actual/max) — NOT via
+// ThroughputScaler (that's only for unbounded byte/sec rates). actual/max (rather than the
+// min-anchored (actual-min)/(max-min)) is deliberate: idle RPM ≈ min sits well above 0, so the
+// animation keeps some visible motion even when the fans are barely spinning. `nil`, never a
+// fabricated 0, on any read failure. This is the only reader using the *undocumented* 80-byte
+// SMCKeyData struct layout (the stable, reverse-engineered layout every fan tool uses); we guard on
+// its computed stride == 80 and disable the source if a future toolchain lays it out differently.
+@MainActor
+private final class FanLoadMonitor {
+    private(set) var currentUtilization: Double = 0
+    // Max current RPM across fans (for the menu readout; the utilization drives the animation).
+    private(set) var currentRPM: Double = 0
+    private(set) var hasSample = false
+
+    // --- SMC KeyData struct (natural C alignment; total stride must be 80 to match the kernel) ---
+    private typealias SMCBytes = (
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8
+    )
+    private struct SMCVersion { var major: UInt8 = 0; var minor: UInt8 = 0; var build: UInt8 = 0; var reserved: UInt8 = 0; var release: UInt16 = 0 }
+    private struct SMCPLimitData { var version: UInt16 = 0; var length: UInt16 = 0; var cpuPLimit: UInt32 = 0; var gpuPLimit: UInt32 = 0; var memPLimit: UInt32 = 0 }
+    // The three trailing pad bytes are load-bearing: C rounds this member up to a 12-byte stride,
+    // but Swift would otherwise pack the next field (`result`) into keyInfo's tail padding at offset
+    // 37 instead of 40, shifting everything after it and making the struct 76 bytes — the kernel call
+    // then fails with kIOReturnBadArgument. Explicit padding forces size == stride == 12, so the full
+    // struct is the required 80 bytes. (See the stride == 80 guard in ensureOpen.)
+    private struct SMCKeyInfoData { var dataSize: UInt32 = 0; var dataType: UInt32 = 0; var dataAttributes: UInt8 = 0; var pad0: UInt8 = 0; var pad1: UInt8 = 0; var pad2: UInt8 = 0 }
+    private struct SMCKeyData {
+        var key: UInt32 = 0
+        var vers = SMCVersion()
+        var pLimitData = SMCPLimitData()
+        var keyInfo = SMCKeyInfoData()
+        var result: UInt8 = 0
+        var status: UInt8 = 0
+        var data8: UInt8 = 0
+        var data32: UInt32 = 0
+        var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    }
+
+    private static let selector: UInt32 = 2      // kernel selector for SMC struct calls
+    private static let cmdReadKeyInfo: UInt8 = 9
+    private static let cmdReadBytes: UInt8 = 5
+    private static let typeFLT = fourCharCode("flt ")
+
+    // A discovered SMC key with its cached size/type, so reads skip the key-info round trip.
+    private struct KeyInfo { let key: UInt32; let size: UInt32; let type: UInt32 }
+    // One fan's discovered keys: actual RPM (always present) and max RPM (may be absent).
+    private struct FanKeys { let ac: KeyInfo; let mx: KeyInfo? }
+
+    private var connection: io_connect_t = 0
+    private var fanKeys: [FanKeys] = []
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool { ensureOpen() }
+
+    func sampleUsage() -> Double? {
+        guard ensureOpen() else { hasSample = false; return nil }
+        var bestFraction: Double?
+        var bestRPM: Double = 0
+        for fan in fanKeys {
+            guard let acVal = readFloat(fan.ac) else { continue }
+            let current = Double(acVal)
+            guard let mxKey = fan.mx, let mxVal = readFloat(mxKey), Double(mxVal) > 0 else { continue }
+            // actual/max, not (actual-min)/(max-min): idle RPM sits well above 0, so this keeps
+            // visible motion when the fans are barely spinning (a redline fan still reads ~1). A
+            // genuinely stopped fan reads 0 → the speed path floors it at the preset's min speed,
+            // so the animation still crawls rather than freezing.
+            let clamped = min(max(current / Double(mxVal), 0), 1)
+            bestFraction = max(bestFraction ?? 0, clamped)
+            bestRPM = max(bestRPM, current)
+        }
+        guard let fraction = bestFraction else { hasSample = false; return nil }
+        currentUtilization = fraction
+        currentRPM = bestRPM
+        hasSample = true
+        return fraction
+    }
+
+    // Lazily open the SMC connection and discover fan keys; cache the result. Guard the struct
+    // layout up front — if the toolchain ever lays SMCKeyData out at != 80 bytes the kernel call
+    // would corrupt memory, so we disable the source instead.
+    private func ensureOpen() -> Bool {
+        if availabilityChecked { return available }
+        availabilityChecked = true
+        guard MemoryLayout<SMCKeyData>.stride == 80, let conn = openSMC() else {
+            available = false
+            return false
+        }
+        connection = conn
+        fanKeys = discoverFanKeys()
+        available = !fanKeys.isEmpty
+        return available
+    }
+
+    private func openSMC() -> io_connect_t? {
+        guard let matching = IOServiceMatching("AppleSMC") else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            var nameBuf = [CChar](repeating: 0, count: 128)
+            IORegistryEntryGetName(service, &nameBuf)
+            let name = String(cString: nameBuf)
+            if name.contains("AppleSMCKeysEndpoint") {
+                var conn: io_connect_t = 0
+                let kr = IOServiceOpen(service, mach_task_self_, 0, &conn)
+                IOObjectRelease(service)
+                if kr == KERN_SUCCESS { return conn }
+            } else {
+                IOObjectRelease(service)
+            }
+            service = IOIteratorNext(iterator)
+        }
+        return nil
+    }
+
+    // Read FNum (fan count), then probe F{n}Ac / F{n}Mx for each fan. A fan with no readable
+    // actual-RPM key is skipped; a missing max key is kept as nil (that fan is then ignored in
+    // sampleUsage, which needs a max to normalize).
+    private func discoverFanKeys() -> [FanKeys] {
+        guard let fnum = readKeyInfo(Self.fourCharCode("FNum")),
+              let raw = readBytes(key: fnum.key, size: fnum.size, type: fnum.type),
+              let count = raw.first else { return [] }
+        var result: [FanKeys] = []
+        for i in 0..<Int(count) {
+            guard let ac = discoverFloatKey("F\(i)Ac") else { continue }
+            result.append(FanKeys(ac: ac, mx: discoverFloatKey("F\(i)Mx")))
+        }
+        return result
+    }
+
+    private func discoverFloatKey(_ keyStr: String) -> KeyInfo? {
+        let key = Self.fourCharCode(keyStr)
+        guard let info = readKeyInfo(key), info.type == Self.typeFLT, info.size == 4 else { return nil }
+        return KeyInfo(key: key, size: info.size, type: info.type)
+    }
+
+    private func readKeyInfo(_ key: UInt32) -> (key: UInt32, size: UInt32, type: UInt32)? {
+        var input = SMCKeyData()
+        input.key = key
+        input.data8 = Self.cmdReadKeyInfo
+        guard let out = smcCall(&input) else { return nil }
+        return (key, out.keyInfo.dataSize, out.keyInfo.dataType)
+    }
+
+    private func readBytes(key: UInt32, size: UInt32, type: UInt32) -> [UInt8]? {
+        var input = SMCKeyData()
+        input.key = key
+        input.data8 = Self.cmdReadBytes
+        input.keyInfo.dataSize = size
+        input.keyInfo.dataType = type
+        guard let out = smcCall(&input) else { return nil }
+        let n = Int(min(size, 32))
+        return withUnsafeBytes(of: out.bytes) { Array($0.prefix(n)) }
+    }
+
+    private func readFloat(_ ki: KeyInfo) -> Float? {
+        guard let raw = readBytes(key: ki.key, size: ki.size, type: ki.type), raw.count >= 4 else { return nil }
+        // SMC "flt " values are little-endian; both Apple architectures are LE, so a raw copy of
+        // the first 4 bytes reproduces Python's struct.unpack("<f", …).
+        var value: Float = 0
+        withUnsafeMutableBytes(of: &value) { $0.copyBytes(from: raw.prefix(4)) }
+        return value
+    }
+
+    private func smcCall(_ input: inout SMCKeyData) -> SMCKeyData? {
+        guard connection != 0 else { return nil }
+        var output = SMCKeyData()
+        var outputSize = MemoryLayout<SMCKeyData>.stride
+        let kr = IOConnectCallStructMethod(
+            connection, Self.selector,
+            &input, MemoryLayout<SMCKeyData>.stride,
+            &output, &outputSize
+        )
+        guard kr == KERN_SUCCESS else { return nil }
+        return output
+    }
+
+    // 4-char SMC key → big-endian UInt32 (first char in the high byte), matching the kernel's
+    // packing (Python's struct.unpack(">I", key)).
+    private static func fourCharCode(_ s: String) -> UInt32 {
+        var result: UInt32 = 0
+        for byte in s.utf8.prefix(4) { result = (result << 8) | UInt32(byte) }
+        return result
+    }
+}
+
 // Network throughput as a 0…1 load. Cumulative interface byte counters (getifaddrs → if_data) are
 // differenced over real elapsed wall time into bytes/sec (counter-delta, warms up one tick like CPU),
 // then normalized by the shared adaptive ThroughputScaler. Only AF_LINK entries carry valid if_data,
@@ -915,6 +1120,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var gpuMonitor = GPULoadMonitor()
     private var networkMonitor = NetworkLoadMonitor()
     private var diskMonitor = DiskLoadMonitor()
+    private var fanMonitor = FanLoadMonitor()
     private var activeLoadSource: LoadSource
     // Last memory-pressure level seen from the dispatch source. Cached because — unlike
     // thermalState/isLowPowerModeEnabled — there is NO synchronous getter for memory pressure;
@@ -1395,6 +1601,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .gpu: return gpuMonitor.sampleUsage()
         case .network: return networkMonitor.sampleUsage(elapsed: elapsed)
         case .disk: return diskMonitor.sampleUsage(elapsed: elapsed)
+        case .fan: return fanMonitor.sampleUsage()
         }
     }
 
@@ -1414,6 +1621,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .gpu: return gpuMonitor.hasSample
         case .network: return networkMonitor.hasSample
         case .disk: return diskMonitor.hasSample
+        case .fan: return fanMonitor.hasSample
         }
     }
 
@@ -1427,6 +1635,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .gpu: return gpuMonitor.currentUtilization
         case .network: return networkMonitor.currentLoad
         case .disk: return diskMonitor.currentLoad
+        case .fan: return fanMonitor.currentUtilization
         }
     }
 
@@ -1520,6 +1729,24 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 usageItem.title = "Disk: warming up..."
                 stateItem.title = "Disk State: warming up..."
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring disk load")
+            }
+        case .fan:
+            if fanMonitor.hasSample {
+                usageItem.title = String(
+                    format: "Fan: %.0f RPM (%.0f%%)",
+                    fanMonitor.currentRPM,
+                    fanMonitor.currentUtilization * Tuning.percentScale
+                )
+                stateItem.title = "Fan State: \(cpuStateText(for: fanMonitor.currentUtilization))"
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — fan %.0f RPM, %@",
+                    fanMonitor.currentRPM,
+                    cpuStateText(for: fanMonitor.currentUtilization)
+                ))
+            } else {
+                usageItem.title = "Fan: warming up..."
+                stateItem.title = "Fan State: warming up..."
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring fan load")
             }
         }
 
@@ -1618,6 +1845,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .gpu: return gpuMonitor.isAvailable
         case .network: return networkMonitor.isAvailable
         case .disk: return diskMonitor.isAvailable
+        case .fan: return fanMonitor.isAvailable
         }
     }
 

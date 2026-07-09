@@ -189,7 +189,7 @@
   .sechead .n{font-family:var(--mono); font-size:12px; color:var(--fg-soft); letter-spacing:.1em}
 
   /* ---------- load sources ---------- */
-  .sources{display:grid; grid-template-columns:repeat(5,1fr); gap:14px}
+  .sources{display:grid; grid-template-columns:repeat(6,1fr); gap:14px}
   .src{
     background:var(--surface); border:1px solid var(--hair); border-radius:14px; padding:16px 15px;
     display:flex; flex-direction:column; gap:9px; transition:transform .18s, border-color .18s;
@@ -302,7 +302,7 @@
     <h1>Something small is <em>running</em> in your&nbsp;menu&nbsp;bar.</h1>
     <p class="lede">A dog, a horse, a soot sprite, Totoro. It trots when the machine is calm and
       <b>breaks into a sprint when the system is under load</b> — a live, ambient read on CPU,
-      memory, GPU, network, or disk, tucked into the status bar you already stare at.</p>
+      memory, GPU, network, disk, or fan, tucked into the status bar you already stare at.</p>
 
     <!-- interactive: load → tempo mapping, the app's whole idea -->
     <div class="demo">
@@ -331,7 +331,7 @@
 
   <section id="sources">
     <div class="sechead">
-      <h2>Five ways to feel the machine</h2>
+      <h2>Six ways to feel the machine</h2>
       <span class="n">Load sources</span>
     </div>
     <div class="sources">
@@ -359,6 +359,11 @@
         <div class="top"><span class="mark"><svg viewBox="0 0 24 24" fill="none"><ellipse cx="12" cy="6" rx="8" ry="3" stroke="var(--river)" stroke-width="1.5"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" stroke="var(--river)" stroke-width="1.5"/></svg></span></div>
         <div class="name">Disk</div>
         <div class="desc">Read + write bytes/sec across every block device.</div>
+      </div>
+      <div class="src">
+        <div class="top"><span class="mark"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="2" stroke="var(--ember)" stroke-width="1.5"/><path d="M12 10c0-4 1-6 3-6s2 3-1 5M14 12c4 0 6 1 6 3s-3 2-5-1M12 14c0 4-1 6-3 6s-2-3 1-5M10 12c-4 0-6-1-6-3s3-2 5 1" stroke="var(--ember)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+        <div class="name">Fan</div>
+        <div class="desc">Fan RPM as a share of its max — a lagging read on cooling effort.</div>
       </div>
     </div>
     <p class="heroBar cap">Unbounded rates (network / disk / swap) auto-scale to a btop-style adaptive ceiling. Every reader is unprivileged — the app only ever <b>reads</b> load, never adds to it.</p>

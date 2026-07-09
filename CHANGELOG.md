@@ -26,6 +26,35 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.2.1] - 2026-07-09
+
+### Changed
+
+- Dog preset (`dog-white` / `dog-black`) art re-rendered from a higher-resolution source so the menu
+  bar downsamples it instead of upscaling — edges are smoother rather than blocky. GIF stores only
+  1-bit transparency, so a preset looks crisp only when its source out-resolves the ~40 px render
+  height; the dog was 72×34 (below it) and is now 288×136. No keyword, timing, or manifest change.
+
+### Added
+
+- `docs/cover.html` design/marketing cover page, published to Cloudflare Pages
+  (`menubar-load-runner.pages.dev`) while the repo stays private.
+- `docs/RUNBOOK-pages-publish.md` — runbook to build the cover bundle and deploy it via `wrangler`.
+- `.claude/skills/build-visuals/` — reusable skill + scripts for smoothing preset GIFs and generating
+  white/black silhouette variants.
+
+### Removed
+
+- `docs/RUNBOOK-oss-release.md` — the repo is staying private; open-sourcing is no longer the plan.
+
+## [1.2.0] - 2026-07-07
+
+### Added
+
+- Chihiro walking presets: `chihiro` (full-color walk cycle), `chihiro-white`, and `chihiro-black`
+  silhouettes (293×621, 21 frames, shared "chihiro" speed profile). Wired through `gifs/presets.json`,
+  the launcher help, and README.
+
 ## [1.1.3] - 2026-07-07
 
 ### Fixed

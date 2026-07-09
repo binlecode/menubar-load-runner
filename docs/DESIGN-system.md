@@ -1,7 +1,7 @@
 # DESIGN-system.md
 
-Ground truth for this document: `menubar-load-runner` (zsh launcher, 173 lines) and
-`MenuBarLoadRunner.swift` (1256 lines), plus the auxiliary login-item scripts under `scripts/`
+Ground truth for this document: `menubar-load-runner` (zsh launcher, 181 lines) and
+`MenuBarLoadRunner.swift` (2221 lines), plus the auxiliary login-item scripts under `scripts/`
 (§19). Every claim below is derived from the source and was re-verified against it.
 
 **Anchoring convention.** Each section/subsection names the exact Swift/shell **symbol** it maps to
@@ -35,10 +35,11 @@ Derived from `Config.printUsage()` and the CPU-driven speed logic
 > usage, sampled every `Tuning.loadSampleInterval` seconds.
 
 Fixed-speed mode (`--speed-multiplier`) is a supported deviation from the auto-speed mission:
-when `config.speedMultiplierOverride != nil`, the CPU-to-speed mapping in
-`sampleSystemLoad()` (line 530: `if config.speedMultiplierOverride == nil`) is skipped
-entirely — `speedMultiplier` becomes a constant, clamped once at startup to
-`Tuning.speedOverrideMin...Tuning.speedOverrideMax` (lines 432-434).
+when `config.speedMultiplierOverride != nil`, the load-to-speed mapping in
+`sampleSystemLoad()` (line 1346: `if isAutoSpeed`, where `isAutoSpeed` is
+`config.speedMultiplierOverride == nil`) is skipped entirely — `speedMultiplier` becomes a
+constant, clamped once at startup to `Tuning.speedOverrideMin...Tuning.speedOverrideMax`
+(lines 1125-1127).
 
 ---
 
@@ -50,38 +51,41 @@ Two processes, two languages, executed in sequence per invocation:
 user shell
    └── menubar-load-runner (zsh script, this repo's entrypoint)
           ├── resolves its own script directory (resolve_script_dir, lines 6-26)
-          ├── parses CLI args into: launch_detached, allow_extra, passthrough_args (lines 90-108)
+          ├── parses CLI args into: launch_detached, allow_extra, passthrough_args (lines 98-114)
           ├── forwards the positional arg (preset keyword or path) unchanged; only intercepts
-          │      its own -h/--help (lines 110-120) — keyword→path resolution and the default
+          │      its own -h/--help (lines 120-127) — keyword→path resolution and the default
           │      preset moved to the Swift side (Config/init)
-          ├── decides swiftc vs swift execution (lines 123-137):
+          ├── decides swiftc vs swift execution (lines 135-144):
           │      - if MenuBarLoadRunner binary missing or older than MenuBarLoadRunner.swift:
           │            try `swiftc -O` to (re)build the binary
           │            on swiftc failure, fall back to `swift -module-cache-path ... <src>` (interpreted)
           │      - else: run the existing compiled binary directly
-          ├── enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` unless --extra (lines 139-155)
+          ├── enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` unless --extra (lines 147-163)
           └── launches the resolved command, either:
-                 - detached: nohup + disown, stdout/stderr -> log file, script exits 0 (lines 207-216)
-                 - foreground: exec (replaces the shell process) (lines 218-219)
+                 - detached: nohup + disown, stdout/stderr -> log file, script exits 0 (lines 165-174)
+                 - foreground: exec (replaces the shell process) (lines 176-177)
                      └── MenuBarLoadRunner (compiled Swift binary OR `swift` interpreter session)
                             = NSApplication process running MenuBarLoadRunnerApp as its delegate
-                            (bottom of MenuBarLoadRunner.swift, lines 1067-1077)
+                            (bottom of MenuBarLoadRunner.swift, lines 2210-2220)
 ```
 
 Environment variables read by the launcher and passed to the Swift process:
-- `SWIFT_MODULE_CACHE` (launcher-side only, default `/tmp/swift-module-cache`, line 93)
-- `MENUBAR_LOAD_RUNNER_LOG_FILE` (launcher-side only, default `/tmp/menubar-load-runner.log`, line 208)
+- `SWIFT_MODULE_CACHE` (launcher-side only, default `/tmp/swift-module-cache`, line 95)
+- `MENUBAR_LOAD_RUNNER_LOG_FILE` (launcher-side only, default `/tmp/menubar-load-runner.log`, line 166)
 - `MENUBAR_LOAD_RUNNER_BIN_NAME` (set by launcher to `menubar-load-runner/menubar-load-runner`,
-  lines 210, 218; read by the Swift process in `Config.printUsage()`, line 147, for its own
+  lines 168, 176; read by the Swift process in `Config.printUsage()`, line 246, for its own
   `--help` text)
-- `MENUBAR_LOAD_RUNNER_PATH` (read only by the Swift process, `Config.parse()` line 127, as a
+- `MENUBAR_LOAD_RUNNER_PATH` (read only by the Swift process, `Config.parse()` line 212, as a
   fallback GIF path when no positional argument was given)
 
 ### 2.1 Module dependency map (Swift binary)
 
-Four top-level declarations. Arrows = "depends on / calls". `Tuning` is a pure leaf; `CPULoadMonitor`
-is the one cleanly-extracted collaborator; `MenuBarLoadRunnerApp` is the hub that owns everything
-else (the size/shape consequence is tracked in the anti-patterns TODO; see Appendix B).
+Top-level declarations. Arrows = "depends on / calls". `Tuning` is a pure leaf; `CPULoadMonitor`
+is joined by the sibling load-source readers `MemoryLoadMonitor`/`GPULoadMonitor`/
+`NetworkLoadMonitor`/`DiskLoadMonitor` and the shared `ThroughputScaler` value type (§7.5–§7.9),
+plus the `LoadHistoryView` trace chart; `MenuBarLoadRunnerApp` is the hub that owns everything
+else (the size/shape consequence is tracked in the anti-patterns TODO; see Appendix B). The
+diagram below shows only `CPULoadMonitor` for legibility; the other readers slot in beside it.
 
 ```
                          ┌───────────────────────────────┐
@@ -149,10 +153,11 @@ conformances (`applicationDidFinishLaunching`, `applicationWillTerminate`, `menu
          └─────────────────────────┴─── read-only derivation ────────┘
                                         ▼
  ┌───────────────────────────────────────────────────────────────────────────────┐
- │ PURE READ-ONLY HELPERS (no mutation): currentPresetScale/Kind ·                 │
+ │ PURE READ-ONLY HELPERS (no mutation): currentPresetScale · isAutoSpeed ·        │
  │ currentSpeedProfile · effectiveWidthSlots · minimumSlotsForCurrentPreset ·      │
  │ effectiveOverlayText · speedMultiplier(forUsage:) · isUnderPowerPressure ·      │
- │ cpuStateText · readSystemLoadAverages   +  collaborators: loadMonitor, allPresets│
+ │ cpuStateText · readSystemLoadAverages  + collaborators: cpu/memory/gpu/network/ │
+ │ disk monitors, allPresets                                                       │
  └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -170,26 +175,27 @@ Resolves the script's own real directory by following symlinks (`readlink` loop,
 19-23), using zsh's `${(%):-%x}` expansion to get its own path (line 9), falling back to
 `command -v` if invoked by bare name without a `/` in it (lines 11-17).
 
-### 3.2 `print_help()` (lines 28-73)
-Static text block (docs only — the launcher no longer maps keywords to paths). Lists the 9
-preset keywords (`dog-white`, `dog-black`, `horse-black`, `horse-white`, `totoro`,
-`totoro-group-white`, `totoro-group-black`, `totoro-white`, `totoro-black`) and 7
-flags (`--width`, `--speed-multiplier`, `--overlay-text`, `--foreground`/`--no-detach`,
-`--detach`, `--extra`, `-h`/`--help`). The former `horse`→`horse-black` alias was removed;
-callers use canonical names. These keywords are documentation of what the Swift side
-(`allPresets`) accepts, not a launcher-side mapping.
+### 3.2 `print_help()` (lines 28-80)
+Static text block (docs only — the launcher no longer maps keywords to paths). Lists the 12
+preset keywords (`dog-white`, `dog-black`, `horse-black`, `horse-white`, `chihiro`,
+`chihiro-white`, `chihiro-black`, `totoro`, `totoro-group-white`, `totoro-group-black`,
+`totoro-white`, `totoro-black`) and 8 flags (`--width`, `--speed-multiplier`, `--load-source`,
+`--overlay-text`, `--foreground`/`--no-detach`, `--detach`, `--extra`, `-h`/`--help`). The former
+`horse`→`horse-black` alias was removed; callers use canonical names. These keywords are
+documentation of what the Swift side (`allPresets`, sourced from `gifs/presets.json`) accepts, not
+a launcher-side mapping.
 
-### 3.3 `main()` (lines 75-171)
+### 3.3 `main()` (lines 82-180)
 
-**Preflight** (lines 76-81): exits 127 if `swift` is not on `PATH`.
+**Preflight** (lines 83-86): exits 127 if `swift` is not on `PATH`.
 
-**Flag scan** (lines 90-108): single pass over `$@`; `--foreground`/`--no-detach` set
+**Flag scan** (lines 98-114): single pass over `$@`; `--foreground`/`--no-detach` set
 `launch_detached=0`; `--detach` sets `launch_detached=1`; `--extra` sets `allow_extra=1`;
 everything else is pushed into `passthrough_args` unchanged (including unrecognized flags and
 the positional preset keyword / GIF path — the launcher validates none of them; that is left
 to `Config.parse()` / `MenuBarLoadRunnerApp.init` in the Swift binary).
 
-**Positional passthrough** (lines 110-120): the launcher no longer resolves preset keywords or
+**Positional passthrough** (lines 120-127): the launcher no longer resolves preset keywords or
 supplies a default. It forwards the positional arg (preset keyword *or* raw path *or* nothing)
 to the Swift binary verbatim, only intercepting its own `-h`/`--help` (print help, exit 0).
 Keyword→path resolution and the `horse-white` default now live Swift-side (see §8.1, §9;
@@ -197,11 +203,11 @@ Keyword→path resolution and the `horse-white` default now live Swift-side (see
 This removed the launcher's former 10-entry path table, the keyword `case` switch, and the
 default injection — collapsing the preset mapping to a single language.
 
-**Build-or-reuse decision** (lines 122-137): compares mtimes of
+**Build-or-reuse decision** (lines 135-144): compares mtimes of
 `MenuBarLoadRunner.swift` and `MenuBarLoadRunner` (the compiled binary); rebuilds with
 `swiftc -O` only when missing or stale; falls back to interpreted `swift` on compile failure.
 
-**Singleton enforcement** (lines 139-155): `pgrep -f "/MenuBarLoadRunner( |$)"` — matches a
+**Singleton enforcement** (lines 147-163): `pgrep -f "/MenuBarLoadRunner( |$)"` — matches a
 process whose command line contains the compiled binary's path segment `/MenuBarLoadRunner`
 followed by a space (it has args) or end-of-line (env-var mode, no positional). The pattern
 had to change from the old `"MenuBarLoadRunner.*\.gif"`: now that Swift resolves preset
@@ -213,7 +219,7 @@ singleton-guarded. `pgrep -f` excludes its own process, and the lowercase launch
 `menubar-load-runner` never matches. If any PID is found and `--extra` was not passed, the
 launcher prints an error to stderr and exits 1 without ever invoking the Swift process.
 
-**Launch** (lines 158-170):
+**Launch** (lines 165-177):
 - Detached: `nohup ... >>"$log_file" 2>&1 </dev/null &`, `disown`, prints
   `pid=... log=...`, exits 0. The launcher process itself terminates; the Swift process is
   reparented and continues running.
@@ -224,26 +230,37 @@ launcher prints an error to stderr and exits 1 without ever invoking the Swift p
 
 ## 4. Swift binary — top-level structure
 
-`MenuBarLoadRunner.swift` has four top-level declarations plus a script-level entry point:
+`MenuBarLoadRunner.swift` has twelve top-level declarations plus a script-level entry point:
 
 | # | Declaration | Lines | Kind |
 |---|---|---|---|
-| 1 | `Tuning` | ~7-73 | `enum` (namespace of `static let` constants only) |
-| 2 | `Config` | ~75-173 | `struct` (CLI/env parsing + usage text) |
-| 3 | `CPULoadMonitor` | ~177 | `@MainActor final class` (CPU sampling) |
-| 4 | `MenuBarLoadRunnerApp` | ~248 | `@MainActor final class`, `NSObject`, conforms to `NSApplicationDelegate`, `NSMenuDelegate` |
-| — | entry point | (end of file) | top-level `switch` on `Config.parse()` |
+| 1 | `AppInfo` | 10-12 | `enum` (single `version` `static let`) |
+| 2 | `Tuning` | 14-88 | `enum` (namespace of `static let` constants only) |
+| 3 | `LoadSource` | 93-124 | `enum Int, CaseIterable` (load-source registry: key + menu title) |
+| 4 | `Config` | 126-256 | `struct` (CLI/env parsing + usage text) |
+| 5 | `ThroughputScaler` | 266-319 | `struct` (adaptive 0…1 normalizer for unbounded rates) |
+| 6 | `CPULoadMonitor` | 321-390 | `@MainActor final class` (CPU sampling) |
+| 7 | `MemoryLoadMonitor` | 399-502 | `@MainActor final class` (memory + swap) |
+| 8 | `GPULoadMonitor` | 509-570 | `@MainActor final class` (GPU utilization) |
+| 9 | `NetworkLoadMonitor` | 576-626 | `@MainActor final class` (network throughput) |
+| 10 | `DiskLoadMonitor` | 631-694 | `@MainActor final class` (disk I/O throughput) |
+| 11 | `LoadHistoryView` | 701-792 | `@MainActor final class`, `NSView` (menu trace chart) |
+| 12 | `MenuBarLoadRunnerApp` | 794-2208 | `@MainActor final class`, `NSObject`, conforms to `NSApplicationDelegate`, `NSMenuDelegate` |
+| — | entry point | 2210-2220 | top-level `switch` on `Config.parse()` |
 
-**Concurrency posture.** Both classes are annotated `@MainActor`, and the launcher builds with
+**Concurrency posture.** All six classes (`CPULoadMonitor`, `MemoryLoadMonitor`, `GPULoadMonitor`,
+`NetworkLoadMonitor`, `DiskLoadMonitor`, `LoadHistoryView`, `MenuBarLoadRunnerApp`) are annotated
+`@MainActor`, and the launcher builds with
 `swiftc -O -strict-concurrency=complete` (interpreted fallback: `swift -strict-concurrency=complete`)
 in Swift 5 mode — so any future data-race violation surfaces as a *warning*, not a hard build break.
-The build is warning-clean. The only sites that needed help reaching the `@MainActor`-isolated
-methods from `NotificationCenter` callbacks are the four observer closures registered on `queue:
-.main` (the screen-parameters, power-state, thermal-state, and occlusion observers): each of the four
-wraps its call in `MainActor.assumeIsolated { ... }`, safe precisely because those observers are
-registered to fire on the main queue.
+The build is warning-clean. The sites that needed help reaching the `@MainActor`-isolated
+methods from `queue: .main` callbacks are the four `NotificationCenter` observer closures (the
+screen-parameters, power-state, thermal-state, and occlusion observers), the memory-pressure
+`DispatchSource` event handler, and the `MENUBAR_LOAD_RUNNER_EXIT_AFTER` `asyncAfter` closure: each
+wraps its body in `MainActor.assumeIsolated { ... }`, safe precisely because each is registered to
+fire on the main queue.
 
-### 4.1 Entry point (end of file, ~1231-1241)
+### 4.1 Entry point (end of file, 2210-2220)
 ```
 switch Config.parse() {
 case .config(let config): builds NSApplication.shared, sets its delegate to
@@ -253,16 +270,19 @@ case nil:                  exit(1)
 }
 ```
 `Config.parse()` itself already printed usage text (via `printUsage()`) for both the `.help`
-and `nil` (error) outcomes before returning, at each of its early-return sites (lines 82-83,
-90-93, 97-100, 104-107, 111-113, 119-122, 131-134).
+and `nil` (error) outcomes before returning, at each of its early-return sites (the `--help`
+return at lines 159-161, and the `printUsage()`+`return nil` guards at lines 168-171, 174-178,
+181-191, 194-198, 204-207).
 
 ---
 
-## 5. `Tuning` — constant inventory (~lines 7-73)
+## 5. `Tuning` — constant inventory (lines 14-88)
 
 All values are `private` to the file, `static let`, grouped by the enum's declaration order
 (not by category — the groupings below are for lookup only; the source has no section
-comments dividing them):
+comments dividing them). **Per-preset speed ranges and slot scales are no longer here** —
+they moved to `gifs/presets.json` (decoded via `PresetManifest`, §8); `Tuning` keeps only a
+single neutral `fallbackSlotScale` for the no-active-preset case.
 
 **Frame timing**
 - `defaultGifFrameDelay: TimeInterval = 0.1`
@@ -272,21 +292,26 @@ comments dividing them):
 - `maxFrameAdvanceDelta: TimeInterval = 1.0` — inter-tick gaps larger than this (display sleep,
   app occlusion, clock jump) resync instead of replaying every skipped frame (see §13.2 step 3)
 
-**CPU sampling / speed mapping**
+**Load sampling / speed mapping**
 - `cpuSmoothingAlpha: Double = 0.2`
 - `loadSampleInterval: TimeInterval = 2.0`
 - `speedUpdateHysteresis: Double = 0.08`
 - `constrainedSpeedCeilingFraction: Double = 0.5` — midpoint cap applied to auto speed under power/thermal pressure (§12.1, §12.2)
 - `cpuStateLowThreshold: Double = 0.30`
 - `cpuStateMediumThreshold: Double = 0.70`
-- `dogSpeedMin/Max: Double = 0.5 / 2.5`
-- `horseSpeedMin/Max: Double = 0.45 / 2.3`
-- `totoroSpeedMin/Max: Double = 0.5 / 2.6`
-- `totoroGroupSpeedMin/Max: Double = 0.2 / 2.0`
-- `linearSpeedCurveExponent: Double = 1.0`
+- `loadHistoryCapacity: Int = 30` — samples retained by the menu trace chart (30 × 2s ≈ 60s of history)
 - `speedOverrideMin/Max: Double = 0.1 / 5.0`
 - `initialSpeedMultiplier: Double = 1.0`
 - `percentScale: Double = 100.0`
+
+**Adaptive throughput scaling (`ThroughputScaler`, §7.9)**
+- `scalerWindow: Int = 5`
+- `scalerRescaleCount: Int = 5`
+- `scalerHeadroomUp: Double = 1.3`
+- `scalerHeadroomDown: Double = 3.0`
+- `networkFloorBytesPerSec: Double = 1 * 1_048_576` (1 MiB/s)
+- `diskFloorBytesPerSec: Double = 4 * 1_048_576` (4 MiB/s)
+- `swapFloorBytesPerSec: Double = 1 * 1_048_576` (1 MiB/s)
 
 **Rendering geometry**
 - `renderVerticalInset: CGFloat = 4`
@@ -294,10 +319,8 @@ comments dividing them):
 - `renderHorizontalInset: CGFloat = 2`
 - `minAspect: CGFloat = 0.01`
 - `minBaseSlotWidth: CGFloat = 18`
-- `horseSlotScale: CGFloat = 1.2`
-- `totoroSlotScale: CGFloat = 1.25`
-- `totoroGroupSlotScale: CGFloat = 4.0`
-- `dogSlotScale: CGFloat = 1.0`
+- `fallbackSlotScale: CGFloat = 1.0` — neutral slot-scale / aspect fallback when there is no
+  active preset (custom GIF) or a frame's real aspect is unavailable
 
 **System/format constants**
 - `loadAverageSampleCount = 3`, `loadAverage1mIndex/5mIndex/15mIndex = 0/1/2`
@@ -314,59 +337,68 @@ comments dividing them):
 
 ---
 
-## 6. `Config` — CLI/env interface (~lines 75-173)
+## 6. `Config` — CLI/env interface (lines 126-256)
 
-### 6.1 Fields (lines 83-91)
+### 6.1 Fields (lines 136-146)
 ```swift
-static let defaultPreset = "horse-white"   // used when no positional arg / env override
-let presetOrPath: String                    // preset keyword OR GIF path; tilde-expanded, non-empty
+let presetOrPath: String                    // preset keyword OR GIF path; tilde-expanded, "" = none
 let widthSlots: Int?                        // nil = auto; else 1...4
-let speedMultiplierOverride: Double?        // nil = auto (CPU-driven); else fixed, > 0
+let speedMultiplierOverride: Double?        // nil = auto (load-driven); else fixed, > 0
 let overlayText: String?                    // nil = no overlay; else 1...12 trimmed chars
+let loadSource: LoadSource                  // which reader drives speed; resolved here (unknown → .cpu)
+let exitAfterSeconds: TimeInterval?         // MENUBAR_LOAD_RUNNER_EXIT_AFTER test hook; nil = run until quit
 ```
 `presetOrPath` is stored verbatim — it may be a built-in preset **keyword** (e.g.
-`horse-white`) or a GIF path. Keyword→path resolution is deferred to
-`MenuBarLoadRunnerApp.init` (§9), so `Config` carries no preset-table knowledge.
+`horse-white`) or a GIF path, or `""` when no arg/env was given. Keyword→path resolution and the
+default-preset fallback are deferred to `MenuBarLoadRunnerApp.init` (§9), so `Config` carries no
+preset-table knowledge (there is no longer a `Config.defaultPreset` static). `loadSource` is
+resolved from `--load-source`/`MENUBAR_LOAD_RUNNER_LOAD_SOURCE` here (unknown/absent → `.cpu`, with
+a stderr warning, never a launch failure — §7.10). `exitAfterSeconds` is a debug/test hook that
+self-terminates the app after N seconds so a smoke test can exit 0 without an external kill.
 
-### 6.2 `ParseResult` (lines 76-79)
+### 6.2 `ParseResult` (lines 127-130)
 ```swift
 enum ParseResult { case config(Config); case help }
 ```
 `Config.parse() -> ParseResult?` — `nil` return means a parse error already reported to
 stderr (usage already printed at the failing call site).
 
-### 6.3 Argument grammar (lines 93-163)
+### 6.3 Argument grammar (lines 148-243)
 Single forward pass over `CommandLine.arguments.dropFirst()` via a manual iterator
 (`iterator.next()` consumes the flag's value token, so `--width 2` is two consumed tokens):
 
 | Token(s) | Effect | Validation | Lines |
 |---|---|---|---|
-| `--help`, `-h` | prints usage, returns `.help` | none | 103-105 |
-| `--width`, `-w` | sets `widthSlots` | next token must parse as `Int` in `1...4` | 106-116 |
-| `--speed-multiplier` | sets `speedMultiplierOverride` | next token must parse as `Double > 0` | 117-123 |
-| `--overlay-text` | sets `overlayText` | next token, trimmed, must be `1...12` chars after trim | 124-136 |
-| anything else, first occurrence | sets `presetOrPath` | — | 137-139 |
-| anything else, second+ occurrence | fatal parse error ("Unexpected argument") | — | 140-143 |
+| `--help`, `-h` | prints usage, returns `.help` | none | 159-161 |
+| `--width`, `-w` | sets `widthSlots` | next token must parse as `Int` in `1...4` | 162-172 |
+| `--speed-multiplier` | sets `speedMultiplierOverride` | next token must parse as `Double > 0` | 173-179 |
+| `--overlay-text` | sets `overlayText` | next token, trimmed, must be `1...12` chars after trim | 180-192 |
+| `--load-source` | captures the raw source string (resolved below) | next token must exist (value validated later) | 193-199 |
+| anything else, first occurrence | sets `presetOrPath` | — | 200-202 |
+| anything else, second+ occurrence | fatal parse error ("Unexpected argument") | — | 203-207 |
 
-**Positional resolution + default** (lines 148-153): if no positional arg was consumed, falls
+**Positional resolution + default** (lines 211-216): if no positional arg was consumed, falls
 back to `ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_PATH"]`; if *that* is also
-absent/empty, falls back to `Config.defaultPreset` (`horse-white`) — so parsing no longer fails
-on a missing arg (the old "Missing GIF path" error path is gone). The resolved value is passed
-through `NSString(string:).expandingTildeInPath` before being stored (a no-op for a bare
-keyword) — this is the only normalization applied; no symlink resolution, no
-`standardizingPath`.
+absent/empty, the stored value becomes the empty string `""` — the manifest's `defaultPreset` is
+then resolved in `init` (§9.1), so parsing no longer fails on a missing arg (the old "Missing GIF
+path" error path is gone). The resolved value is passed through
+`NSString(string:).expandingTildeInPath` before being stored (a no-op for a bare keyword or `""`)
+— this is the only normalization applied; no symlink resolution, no `standardizingPath`.
+**Load-source resolution** (lines 218-225): falls back to `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`, then
+`LoadSource.from(key:) ?? .cpu`, logging a warning for an unknown non-empty value.
 
-### 6.4 `printUsage()` (lines 165-173)
+### 6.4 `printUsage()` (lines 245-255)
 Reads `MENUBAR_LOAD_RUNNER_BIN_NAME` env var for the binary name shown in usage text,
-falling back to `CommandLine.arguments[0]`'s last path component (lines 147-148). All
-speed-range numbers shown are read live from `Tuning` (line 153), so this text cannot drift
-from the actual `Tuning` values.
+falling back to `CommandLine.arguments[0]`'s last path component (lines 246-247). It prints
+`AppInfo.version`, the two usage lines (including `--load-source` with `LoadSource.allCases`
+keys), and states that per-preset speed ranges are defined in `gifs/presets.json` (line 254) —
+so unlike the earlier version it no longer inlines `Tuning` speed numbers.
 
 ---
 
-## 7. `CPULoadMonitor` — CPU sampling module (~lines 172-241)
+## 7. `CPULoadMonitor` — CPU sampling module (lines 321-390)
 
-### 7.1 State (lines 158-163)
+### 7.1 State (lines 323-328)
 ```swift
 private var lastTotalTicks: UInt64?
 private var lastIdleTicks: UInt64?
@@ -376,9 +408,9 @@ private let smoothingAlpha: Double = Tuning.cpuSmoothingAlpha   // 0.2
 var hasSample: Bool { hasSmoothedUsage }
 ```
 
-### 7.2 `sampleUsage() -> Double?` (lines 165-175)
+### 7.2 `sampleUsage() -> Double?` (lines 330-340)
 Calls `currentUsage()`. First successful sample seeds `smoothedUsage` directly (no
-smoothing applied to the first value, lines 167-170). Every subsequent sample applies an
+smoothing applied to the first value, lines 332-336). Every subsequent sample applies an
 exponential moving average:
 ```
 smoothedUsage = (0.2 * usage) + (0.8 * smoothedUsage)
@@ -386,112 +418,113 @@ smoothedUsage = (0.2 * usage) + (0.8 * smoothedUsage)
 Returns `nil` if `currentUsage()` returns `nil` (i.e. no update to `smoothedUsage` happens on
 a failed sample).
 
-### 7.3 `currentUsage() -> Double?` (lines 177-224)
+### 7.3 `currentUsage() -> Double?` (lines 342-389)
 1. Calls `host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &cpuCount, &cpuInfo,
    &cpuInfoCount)` (Mach API). Returns `nil` if the call doesn't return `KERN_SUCCESS` or
-   `cpuInfo` is `nil` (line 189).
-2. `defer`s a `vm_deallocate` of the returned `cpuInfo` buffer (lines 191-194).
+   `cpuInfo` is `nil` (line 354).
+2. `defer`s a `vm_deallocate` of the returned `cpuInfo` buffer (lines 356-359).
 3. Sums `user + system + nice + idle` ticks across all CPUs into `totalTicks`, and `idle`
-   ticks into `idleTicks` (loop, lines 200-209), using `CPU_STATE_MAX` as the per-CPU stride
+   ticks into `idleTicks` (loop, lines 365-374), using `CPU_STATE_MAX` as the per-CPU stride
    and `CPU_STATE_USER`/`SYSTEM`/`NICE`/`IDLE` as offsets within each CPU's slice.
 4. `defer`s storing the current `totalTicks`/`idleTicks` into `lastTotalTicks`/`lastIdleTicks`
-   for the next call, unconditionally (lines 211-214) — this runs even if the function is
-   about to return `nil` at line 217 (first-ever call has no previous sample) or line 222
+   for the next call, unconditionally (lines 376-379) — this runs even if the function is
+   about to return `nil` at lines 381-383 (first-ever call has no previous sample) or line 387
    (degenerate delta).
 5. Requires a previous sample to exist (`lastTotalTicks`/`lastIdleTicks` both non-nil) to
-   compute anything; otherwise returns `nil` (line 216-218) — this is why `CPULoadMonitor`
+   compute anything; otherwise returns `nil` (lines 381-383) — this is why `CPULoadMonitor`
    needs two `sampleUsage()` calls before it produces its first real value (first call stores
    ticks and returns `nil` from `currentUsage()`, but note `sampleUsage()` itself only calls
    `currentUsage()` once and returns whatever it gets — so `sampleUsage()`'s first call
-   returns `nil` too, per line 166's guard).
-6. Delta computation uses wrapping subtraction (`&-`, lines 220-221) and requires
-   `deltaTotal > 0 && deltaIdle <= deltaTotal` (line 222) before returning
+   returns `nil` too, per line 331's guard).
+6. Delta computation uses wrapping subtraction (`&-`, lines 385-386) and requires
+   `deltaTotal > 0 && deltaIdle <= deltaTotal` (line 387) before returning
    `(deltaTotal - deltaIdle) / deltaTotal` — i.e. the fraction of ticks since the last sample
    that were *not* idle.
 
 ### 7.4 Call sites
-Only called from `MenuBarLoadRunnerApp.sampleSystemLoad()` (line 543:
-`loadMonitor.sampleUsage()`), which runs on `Tuning.loadSampleInterval` (2s) via
+Only called from `MenuBarLoadRunnerApp.sampleActiveSource(elapsed:)` (line 1363:
+`case .cpu: return loadMonitor.sampleUsage()`), reached once per tick from `sampleSystemLoad()`
+(§12) when `.cpu` is the active source, which runs on `Tuning.loadSampleInterval` (2s) via
 `loadTimer`.
 
 The remaining subsections below (7.5-7.14) cover the memory/GPU/network/disk readers, the
 shared adaptive-scaling and load-source-selector machinery, and the durable design principles
 those readers were built against — all of which landed after §7.1-7.4 above were written and are
 documented here for the first time. Every line number below was re-verified against the current
-1256+-line source with `grep -n`/`Read`, independent of the "approximate, may have drifted"
+2221-line source with `grep -n`/`Read`, independent of the "approximate, may have drifted"
 caveat in the doc header that applies to the older §1-§18 numbers.
 
-### 7.5 `MemoryLoadMonitor` — memory + swap module (lines 402-504)
+### 7.5 `MemoryLoadMonitor` — memory + swap module (lines 399-502)
 
 A *mixed-domain* sibling of `CPULoadMonitor`: one reader exposing both an **instantaneous**
 percentage and a **counter-delta** rate, composited into a single driver value.
 
-- **State** (lines 403-420): `currentUsedFraction`/`hasSample` (instantaneous), `swapUsedBytes`/
+- **State** (lines 401-418): `currentUsedFraction`/`hasSample` (instantaneous), `swapUsedBytes`/
   `swapTotalBytes`/`hasSwapSample` (instantaneous, display-only), `currentSwapRateBytesPerSec`/
   `hasSwapRateSample` (counter-delta), `currentMemoryLoad` (the composite driver value),
   `lastSwapEvents: UInt64?` (previous-tick baseline for the delta), and its own
   `swapScaler = ThroughputScaler(floor: Tuning.swapFloorBytesPerSec)` (§7.9).
-- **`sampleUsage(elapsed:) -> Double?`** (lines 427-436): calls `readVMSample()`; returns `nil`
+- **`sampleUsage(elapsed:) -> Double?`** (lines 425-434): calls `readVMSample()`; returns `nil`
   only if that instantaneous read fails (a failed swap read degrades just the swap
   display/rate, never the fraction — see §7.12 principle 4). On success: sets
   `currentUsedFraction`/`hasSample`, calls `readSwapUsage()` (swap capacity, display-only),
   calls `updateSwapRate(swapEvents:elapsed:)`, then computes
   `currentMemoryLoad = max(sample.usedFraction, swapLoad)` where `swapLoad` is
   `swapScaler.normalize(speed: currentSwapRateBytesPerSec)` gated on `hasSwapRateSample` (else
-  `0`) — the composite formula named in the class comment (lines 394-400).
-- **`updateSwapRate(swapEvents:elapsed:)`** (lines 441-452): a textbook counter-delta — `defer`s
+  `0`) — the composite formula named in the class comment (lines 392-398).
+- **`updateSwapRate(swapEvents:elapsed:)`** (lines 439-450): a textbook counter-delta — `defer`s
   storing `lastSwapEvents = swapEvents` unconditionally; if `elapsed` is `nil` (first tick, or a
   source-switch re-sample per §7.10) or there is no `lastSwapEvents` baseline yet, reports no
   rate (`hasSwapRateSample = false`) rather than dividing by a stale/nominal interval. Otherwise
   `currentSwapRateBytesPerSec = deltaBytes / elapsed` (real wall-clock seconds, §7.11).
-- **`readVMSample()`** (lines 463-490): one `host_statistics64(HOST_VM_INFO64)` call yields both
+- **`readVMSample()`** (lines 461-488): one `host_statistics64(HOST_VM_INFO64)` call yields both
   values used here — `used = 1 - (free + purgeable + external) * pageSize / physicalMemory` (a
   documented approximation, not Activity Monitor's exact algorithm, per the comment at lines
-  454-462) and the cumulative `swapins + swapouts` page count (in bytes) returned as
+  452-460) and the cumulative `swapins + swapouts` page count (in bytes) returned as
   `swapEvents` — i.e. the swap-rate counter costs zero extra syscalls, it's a second field off
   the same read. Page size comes from `host_page_size`, not the mutable `vm_kernel_page_size`
   global, to stay `-strict-concurrency=complete`-clean. Returns `nil` on non-`KERN_SUCCESS` or a
   zero `physicalMemory`/page-size read.
-- **`readSwapUsage()`** (lines 493-503): `sysctlbyname("vm.swapusage")`, unprivileged,
+- **`readSwapUsage()`** (lines 491-501): `sysctlbyname("vm.swapusage")`, unprivileged,
   instantaneous, no lifecycle; sets `swapUsedBytes`/`swapTotalBytes`/`hasSwapSample`, or leaves
   `hasSwapSample = false` on failure without touching the other fields.
 
 **Memory-pressure tri-state** (a separate mechanism, owned by `MenuBarLoadRunnerApp`, not
 `MemoryLoadMonitor`, but feeding the same self-throttle path as memory load):
-- `memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal` (line 781) and
-  `memoryPressureSource: DispatchSourceMemoryPressure?` (line 782) — cached because, unlike
+- `memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal` (line 907) and
+  `memoryPressureSource: DispatchSourceMemoryPressure?` (line 908) — cached because, unlike
   `thermalState`/`isLowPowerModeEnabled`, memory pressure has **no synchronous getter**; it is
   event-only.
-- Constructed in `applicationDidFinishLaunching` (lines 1003-1016):
+- Constructed in `applicationDidFinishLaunching` (lines 1167-1180):
   `DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue:
   .main)` — the mask **must** include `.normal`, or the cached level can never fall back out of
   `.warning`/`.critical` once raised. Its event handler updates `memoryPressureLevel`, then calls
   `reevaluateSpeedForCurrentConditions()` and `refreshMenuMetrics()` immediately (bypassing the
-  2s tick, same as the power/thermal observers, §12.2). `pressureSource.resume()` (line 1016)
+  2s tick, same as the power/thermal observers, §12.2). `pressureSource.resume()` (line 1180)
   starts delivery — dispatch sources start suspended. It is torn down in
-  `applicationWillTerminate` via `memoryPressureSource?.cancel()` (lines 1049-1051), **not**
+  `applicationWillTerminate` via `memoryPressureSource?.cancel()` (lines 1214-1215), **not**
   `NotificationCenter.removeObserver` — a distinct lifecycle from the four notification observers
   torn down just above it.
-- Read by `isUnderPowerPressure` (lines 1629-1642): `true` if Low Power Mode is on, or
+- Read by `isUnderPowerPressure` (lines 1849-1862): `true` if Low Power Mode is on, or
   `thermalState` is `.serious`/`.critical`, **or** `memoryPressureLevel.contains(.warning)` /
   `.contains(.critical)` — memory pressure is the third input into the same self-throttle
   computed property documented in §12.2, joining low-power/thermal rather than replacing them.
-  `memoryPressureText()` (lines 1305-1309) renders it as `"Normal"`/`"Warning"`/`"Critical"` for
+  `memoryPressureText()` (lines 1520-1524) renders it as `"Normal"`/`"Warning"`/`"Critical"` for
   the menu's `Memory Pressure:` state line (§7.10).
 
-### 7.6 `GPULoadMonitor` — GPU utilization module (lines 512-572)
+### 7.6 `GPULoadMonitor` — GPU utilization module (lines 509-570)
 
 Unprivileged-tier, instantaneous, point-read — the simplest of the four new readers.
 
-- `isAvailable` (lines 519-525): probes once (`readUtilization() != nil`) and caches the result
+- `isAvailable` (lines 517-523): probes once (`readUtilization() != nil`) and caches the result
   (`availabilityChecked`/`available`) — this is the "cache expensive setup" principle (§7.12 #6)
   applied to a probe rather than a subscription, since there's nothing else here to cache.
-- `sampleUsage() -> Double?` (lines 527-535): no `elapsed:` parameter — this is a pure point
+- `sampleUsage() -> Double?` (lines 525-533): no `elapsed:` parameter — this is a pure point
   read, unlike the counter-delta readers below. Sets `hasSample = false` and returns `nil` on
   failure (never a fabricated `0`).
-- `readUtilization()` (lines 540-545) tries `IOServiceMatching("IOAccelerator")` first, then
+- `readUtilization()` (lines 538-543) tries `IOServiceMatching("IOAccelerator")` first, then
   falls back to `"AGXAccelerator"` (the Apple Silicon-specific IOClass) since the accelerator's
-  concrete class is hardware-specific. `readUtilization(matching:)` (lines 547-571) iterates every
+  concrete class is hardware-specific. `readUtilization(matching:)` (lines 545-569) iterates every
   matched `io_service_t`, reads its `"PerformanceStatistics"` registry property, and takes the
   max `"Device Utilization %"` (0…100) across matches, scaled by `Tuning.percentScale` (÷100) and
   clamped to `0...1`. Because the value is natively bounded 0…1 after that division, it is
@@ -499,54 +532,54 @@ Unprivileged-tier, instantaneous, point-read — the simplest of the four new re
   through, per §7.12 principle 3. GPU *power/energy* is a different, unimplemented tier — see
   §7.14.
 
-### 7.7 `NetworkLoadMonitor` — network throughput module (lines 579-628)
+### 7.7 `NetworkLoadMonitor` — network throughput module (lines 576-626)
 
-- `isAvailable` (line 588): hardcoded `true` — `getifaddrs` is always present on macOS, unlike
+- `isAvailable` (line 586): hardcoded `true` — `getifaddrs` is always present on macOS, unlike
   the IORegistry-probed GPU/disk sources.
-- `sampleUsage(elapsed:) -> Double?` (lines 590-608): counter-delta over cumulative interface
+- `sampleUsage(elapsed:) -> Double?` (lines 588-606): counter-delta over cumulative interface
   byte counters. `defer`s storing `lastBytes = total` unconditionally (mirroring
   `MemoryLoadMonitor.updateSwapRate`'s pattern); if `elapsed` is `nil` or there's no `lastBytes`
   baseline, reports no sample (first tick / source-switch re-sample warm-up, §7.10/§7.11).
   Otherwise `currentThroughputBytesPerSec = deltaBytes / elapsed`, then normalizes through its
   own `scaler = ThroughputScaler(floor: Tuning.networkFloorBytesPerSec)` (§7.9) into `currentLoad`
   — the value actually returned and used to drive speed.
-- `readTotalBytes()` (lines 610-627): `getifaddrs` → walks the linked list, keeping only entries
+- `readTotalBytes()` (lines 608-625): `getifaddrs` → walks the linked list, keeping only entries
   where `ifa_addr.sa_family == AF_LINK` (only those carry a populated `if_data`) and skipping
   `"lo0"` (loopback) so local traffic doesn't inflate the reading; sums `ifi_ibytes + ifi_obytes`
   across the remaining interfaces.
 
-### 7.8 `DiskLoadMonitor` — disk I/O throughput module (lines 634-696)
+### 7.8 `DiskLoadMonitor` — disk I/O throughput module (lines 631-694)
 
 Structurally a twin of `NetworkLoadMonitor` (§7.7) over a different IORegistry class.
 
-- `isAvailable` (lines 643-649): probed once and cached (`readTotalBytes() != nil`), like
+- `isAvailable` (lines 641-647): probed once and cached (`readTotalBytes() != nil`), like
   `GPULoadMonitor.isAvailable` — a machine with no readable `IOBlockStorageDriver` disables the
   source.
-- `sampleUsage(elapsed:) -> Double?` (lines 651-667): same counter-delta shape as
+- `sampleUsage(elapsed:) -> Double?` (lines 649-665): same counter-delta shape as
   `NetworkLoadMonitor.sampleUsage(elapsed:)` — `defer`-stores `lastBytes`, requires `elapsed` and
   a prior baseline, divides the byte delta by `elapsed`, normalizes through
   `scaler = ThroughputScaler(floor: Tuning.diskFloorBytesPerSec)` into `currentLoad`.
-- `readTotalBytes()` (lines 669-695): `IOServiceMatching("IOBlockStorageDriver")` → for every
+- `readTotalBytes()` (lines 667-693): `IOServiceMatching("IOBlockStorageDriver")` → for every
   matched entry, reads its `"Statistics"` registry dictionary's `"Bytes (Read)"` and
   `"Bytes (Write)"` keys (defaulting a missing key to `0`, not failing the whole read) and sums
   across all drivers found; returns `nil` (via `found` staying `false`) only if zero drivers
   matched at all.
 
-### 7.9 `ThroughputScaler` — shared adaptive-scaling value type (lines 268-321)
+### 7.9 `ThroughputScaler` — shared adaptive-scaling value type (lines 266-319)
 
 A `private struct` (a pure value type, not `@MainActor` — it has no shared mutable global state,
 just per-owner instance state), ported from btop's `Net::collect` auto-scale (`Tuning` comment,
-lines 45-51). Three unbounded rate signals share this same normalization: `MemoryLoadMonitor`'s
+lines 47-53). Three unbounded rate signals share this same normalization: `MemoryLoadMonitor`'s
 swap rate (§7.5), `NetworkLoadMonitor`'s throughput (§7.7), and `DiskLoadMonitor`'s throughput
 (§7.8) — each owns its own scaler instance seeded with a different `floor` (`Tuning.
-swapFloorBytesPerSec`/`networkFloorBytesPerSec`/`diskFloorBytesPerSec`, 1/1/4 MiB/s, lines 58-60).
+swapFloorBytesPerSec`/`networkFloorBytesPerSec`/`diskFloorBytesPerSec`, 1/1/4 MiB/s, lines 60-62).
 
-- **State** (lines 269-274): `floor` (fixed at init), `ceiling` (the adaptive normalization
+- **State** (lines 267-272): `floor` (fixed at init), `ceiling` (the adaptive normalization
   denominator, seeded to `floor`), `seeded`, a `recent: [Double]` ring of the last
   `Tuning.scalerWindow` (5) samples, and `overCount`/`underCount` hysteresis counters.
-- **`normalize(speed:) -> Double`** (lines 282-315):
+- **`normalize(speed:) -> Double`** (lines 280-313):
   1. First call only: seeds `ceiling = max(speed * Tuning.scalerHeadroomUp, floor)` so the very
-     first sample doesn't peg at `1.0` against a bare `floor` (comment, lines 283-284).
+     first sample doesn't peg at `1.0` against a bare `floor` (comment, lines 281-282).
   2. Appends `speed` to `recent`, trimming to `Tuning.scalerWindow` (5) entries.
   3. Hysteresis: increments `overCount` (and decays `underCount`) when `speed > ceiling`;
      increments `underCount` (and decays `overCount`) when `speed < ceiling / 10` — a single
@@ -577,56 +610,57 @@ through the active preset's min/max/exponent, never the range itself. There is n
   case-insensitive lookup used by both the CLI parser and the env fallback. A single registry —
   same pattern as `PresetDescriptor` (§8.1) — so the CLI keyword, env var, menu item, and
   selection-state check all derive from one source of truth.
-- **CLI/env wiring in `Config`**: `let loadSource: LoadSource` field (line 145); `--load-source`
-  parsed at lines 196-202 (stores the raw string, deferring resolution); falls back to
-  `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` (line 222) when no flag was given; resolves via
-  `LoadSource.from(key:) ?? .cpu` (line 225) — unknown/absent values fall back to `.cpu` with a
-  logged warning (lines 226-228), never a launch failure (§7.12 principle 2/4). `printUsage()`
-  documents the flag and lists all known keys (lines 251-253).
-- **`activeLoadSource: LoadSource`** (line 777, mutable): initialized from `config.loadSource`
-  in `init` (line 797); mutated only by `selectLoadSource(_:)` (below).
+- **CLI/env wiring in `Config`**: `let loadSource: LoadSource` field (line 142); `--load-source`
+  parsed at lines 193-199 (stores the raw string, deferring resolution); falls back to
+  `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` (line 219) when no flag was given; resolves via
+  `LoadSource.from(key:) ?? .cpu` (line 222) — unknown/absent values fall back to `.cpu` with a
+  logged warning (lines 223-225), never a launch failure (§7.12 principle 2/4). `printUsage()`
+  documents the flag and lists all known keys (lines 249-251).
+- **`activeLoadSource: LoadSource`** (line 903, mutable): initialized from `config.loadSource`
+  in `init` (line 923); mutated only by `selectLoadSource(_:)` (below).
 - **The three speed-path helpers — the only read sites for "what drives the animation"**:
-  - `sampleActiveSource(elapsed:) -> Double?` (lines 1161-1169): a `switch` dispatching to
+  - `sampleActiveSource(elapsed:) -> Double?` (lines 1361-1369): a `switch` dispatching to
     exactly one reader's `sampleUsage()`/`sampleUsage(elapsed:)`, called once per tick from
-    `sampleSystemLoad()` (line 1145) — this is what makes sampling **active-only**: the four
+    `sampleSystemLoad()` (line 1344) — this is what makes sampling **active-only**: the four
     inactive monitors are never polled while another source drives.
-  - `activeSourceHasSample: Bool` (lines 1172-1180): mirrors the switch, reading each monitor's
+  - `activeSourceHasSample: Bool` (lines 1380-1388): mirrors the switch, reading each monitor's
     `hasSample`.
-  - `activeSourceCurrentUsage: Double` (lines 1185-1193): mirrors the switch again, reading each
+  - `activeSourceCurrentUsage: Double` (lines 1393-1401): mirrors the switch again, reading each
     monitor's last driving value without re-sampling (`loadMonitor.smoothedUsage`,
     `memoryMonitor.currentMemoryLoad`, `gpuMonitor.currentUtilization`,
     `networkMonitor.currentLoad`, `diskMonitor.currentLoad`) — used by
     `reevaluateSpeedForCurrentConditions()` (§12.2) to recompute speed immediately without
     waiting for the next tick's sample.
-- **Source-conditional `refreshMenuMetrics()`** (lines 1203-1279, superseding the single-source
+- **Source-conditional `refreshMenuMetrics()`** (lines 1411-1518, superseding the single-source
   description in §10.3): a `switch activeLoadSource` with one case per source, each setting
   `usageItem.title`/`stateItem.title`/the accessibility label from *only* that source's monitor
   (e.g. `.memory` shows `"Memory Pressure: ..."` from `memoryPressureText()` plus
-  `memoryUsageLineText()`/swap rate, lines 1222-1236; `.network`/`.disk` show a human MB/s figure
-  via `networkUsageLineText()`/`diskUsageLineText()`, lines 1334-1340, rather than the
+  `memoryUsageLineText()`/swap rate, lines 1437-1451; `.network`/`.disk` show a human MB/s figure
+  via `networkUsageLineText()`/`diskUsageLineText()`, lines 1549-1555, rather than the
   scaler-normalized 0…1 value that actually drives speed). The inactive sources' lines are never
   shown, matching active-only sampling. `speedMultiplierItem.title` additionally names
-  `activeLoadSource.menuTitle` (lines 1284-1293) so the dashboard always states *what* is
+  `activeLoadSource.menuTitle` (lines 1496-1511) so the dashboard always states *what* is
   driving the animation.
-- **`Load Source` radio submenu**: built in `applicationDidFinishLaunching` (lines 869-879) — one
+- **`Load Source` radio submenu**: built in `applicationDidFinishLaunching` (lines 1033-1043) — one
   `NSMenuItem` per `LoadSource.allCases`, `tag = source.rawValue`, action
   `selectLoadSource(_:)`, appended to `loadSourceMenuItems`. Selection state is refreshed by
-  `refreshLoadSourceSelectionState()` (lines 1353-1360): `.state = .on` iff
+  `refreshLoadSourceSelectionState()` (lines 1568-1575): `.state = .on` iff
   `item.tag == activeLoadSource.rawValue`; `.isEnabled = isSourceAvailable(source)` — the same
   radio-group + enablement shape as the width/preset menus (§10.4/§10.5).
-- **`selectLoadSource(_:)`** (lines 1427-1441, `@objc`): no-ops if the tapped source is already
-  active; otherwise sets `activeLoadSource`, immediately calls `sampleActiveSource(elapsed: nil)`
-  to seed the new monitor (an on-demand resample has no meaningful interval, so counter-delta
-  readers just store a baseline here), resets `lastSampleUptime = nil` (§7.11) so the next tick
-  doesn't divide by a stale gap, calls `reevaluateSpeedForCurrentConditions()` to re-derive speed
-  immediately (bypassing the 2s hysteresis, mirroring preset switches), then refreshes both the
-  load-source selection state and the menu metrics.
-- **`isSourceAvailable(_:)`** (lines 1367-1377): `.cpu`/`.memory` are always `true` (core
+- **`selectLoadSource(_:)`** (lines 1641-1661, `@objc`): no-ops if the tapped source is already
+  active; otherwise sets `activeLoadSource`, clears the trace-chart history buffer (a mixed-source
+  history would be meaningless), immediately calls `sampleActiveSource(elapsed: nil)` to seed the
+  new monitor (an on-demand resample has no meaningful interval, so counter-delta readers just
+  store a baseline here) and records that seed if usable, resets `lastSampleUptime = nil` (§7.11)
+  so the next tick doesn't divide by a stale gap, calls `reevaluateSpeedForCurrentConditions()` to
+  re-derive speed immediately (bypassing the 2s hysteresis, mirroring preset switches), then
+  refreshes both the load-source selection state and the menu metrics.
+- **`isSourceAvailable(_:)`** (lines 1582-1592): `.cpu`/`.memory` are always `true` (core
   Mach/sysctl, never absent); `.gpu`/`.network`/`.disk` defer to each monitor's own `isAvailable`
   probe. Also checks a debug-only `forcedUnavailableSources` env override
-  (`MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`, lines 1379-1385) so QA can exercise the
+  (`MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`, lines 1594-1600) so QA can exercise the
   disabled-menu-item and fallback path on hardware where every reader actually works.
-  **Launch-time fallback** (lines 881-887, right after the submenu is built): if the
+  **Launch-time fallback** (lines 1045-1051, right after the submenu is built): if the
   configured `activeLoadSource` isn't available, logs a warning to stderr and forces `.cpu` —
   the one enforcement point where an unavailable *requested* source is corrected, versus the
   per-tick case where a reader going dark just yields `nil` for that tick and the animation holds
@@ -638,12 +672,12 @@ The mechanism that makes every counter-delta *rate* reader (as opposed to CPU's 
 *ratio*, which needs no wall-clock division at all — see the distinction below) divide by real
 time rather than the nominal 2s tick interval.
 
-- `lastSampleUptime: Double?` (lines 770-771, comment explicitly calls out
+- `lastSampleUptime: Double?` (lines 894-897, comment explicitly calls out
   `ProcessInfo.systemUptime` over `Date` for immunity to wall-clock changes).
-- Captured once per tick in `sampleSystemLoad()` (lines 1136-1141): `now =
+- Captured once per tick in `sampleSystemLoad()` (lines 1338-1340): `now =
   ProcessInfo.processInfo.systemUptime`; `elapsed = lastSampleUptime.map { now - $0 }` (`nil` on
   the very first tick); `lastSampleUptime = now`. This single `elapsed` value is threaded into
-  `sampleActiveSource(elapsed:)` (line 1145, §7.10), which forwards it to whichever reader's
+  `sampleActiveSource(elapsed:)` (line 1344, §7.10), which forwards it to whichever reader's
   `sampleUsage(elapsed:)` needs it that tick.
 - **Consumers**: `MemoryLoadMonitor.updateSwapRate` (§7.5), `NetworkLoadMonitor.sampleUsage`
   (§7.7), `DiskLoadMonitor.sampleUsage` (§7.8) — each divides its byte delta by `elapsed`
@@ -655,7 +689,7 @@ time rather than the nominal 2s tick interval.
   This is the "instantaneous vs. counter-delta, bounded vs. unbounded" distinction (§7.12
   principle 3) in concrete form: CPU is counter-delta but bounded (a ratio); memory swap/network/
   disk are counter-delta *and* unbounded (a rate), which is what actually requires `elapsed:`.
-- **Reset on source switch**: `selectLoadSource(_:)` (§7.10, line 1437) sets
+- **Reset on source switch**: `selectLoadSource(_:)` (§7.10, line 1657) sets
   `lastSampleUptime = nil` so the newly-active reader's first real sample after a switch is
   correctly treated as a warm-up tick (`elapsed = nil`) instead of dividing by however long the
   *previous* source had been active.
@@ -706,12 +740,12 @@ exercise — the selector plumbing (§7.10) already exists:
 2. **Reader** — a `sampleUsage()`/`sampleUsage(elapsed:) -> Double?` returning a normalized
    0…1 value (`nil` = unavailable/warming up), on a peer `@MainActor` monitor class (§7.5-§7.8).
 3. **Wire into the three helpers** — add a branch each to `sampleActiveSource(elapsed:)`,
-   `activeSourceHasSample`, `activeSourceCurrentUsage` (lines 1161-1193, §7.10). These are the
+   `activeSourceHasSample`, `activeSourceCurrentUsage` (lines 1361-1401, §7.10). These are the
    *only* speed-path read sites.
-4. **Menu line** — add a source-conditional branch to `refreshMenuMetrics()` (lines 1203-1279).
+4. **Menu line** — add a source-conditional branch to `refreshMenuMetrics()` (lines 1411-1518).
 5. **Availability** — expose `isAvailable` on the reader (probed once and cached, like
    `GPULoadMonitor`/`DiskLoadMonitor`) and add a case to `isSourceAvailable(_:)`
-   (lines 1367-1377); the disabled-menu-item and launch-fallback behavior follow automatically.
+   (lines 1582-1592); the disabled-menu-item and launch-fallback behavior follow automatically.
 6. **`elapsed:` threading** — if the reader is a counter-delta *rate* (not CPU's tick-ratio
    shape, §7.11), accept `elapsed: Double?` and divide the byte/event delta by it, never by the
    nominal `Tuning.loadSampleInterval`.
@@ -734,49 +768,62 @@ picked up.
 
 ---
 
-## 8. `MenuBarLoadRunnerApp` — state inventory (~lines 244-319)
+## 8. `MenuBarLoadRunnerApp` — state inventory (~lines 794-917)
 
 All properties are `private` unless noted; all are on the single `MenuBarLoadRunnerApp`
-instance created once at the bottom of the file.
+instance created once at the bottom of the file. The `PresetKind` enum was removed when preset
+profiles were externalized to `gifs/presets.json` — preset identity is now data, decoded via the
+`PresetManifest` Codable structs, not a hardcoded enum.
 
 **Nested types**
 ```swift
-private enum PresetKind { case dog, horse, totoro, totoroGroup, custom }                  // lines 228-234
-private struct SpeedProfile { let label: String; let min, max, responseExponent: Double }  // lines 237-242
-private struct PresetDescriptor {                                                          // lines 244-251
-    let key: String            // internal id, e.g. "dog-white" — not CLI-facing
+private struct SpeedProfile { let label: String; let min, max, responseExponent: Double }  // lines 796-801
+private struct PresetDescriptor {                                                          // lines 803-809
+    let key: String            // preset keyword, e.g. "dog-white" — matches gifs/presets.json
     let menuTitle: String
-    let path: String           // absolute path, resolved once in init() from scriptDirURL
-    let kind: PresetKind
+    let path: String           // absolute path, resolved once in init() from scriptDirURL + gifs/<file>
     let slotScale: CGFloat
     let speedProfile: SpeedProfile
 }
-static let customSpeedProfile = SpeedProfile(       // lines 253-258
-    label: "custom", min: Tuning.dogSpeedMin, max: Tuning.dogSpeedMax,
-    responseExponent: Tuning.linearSpeedCurveExponent
-)                                                    // i.e. dog's numeric range, under the label "custom"
+private struct PresetManifest: Decodable {          // lines 814-832 — Codable mirror of gifs/presets.json
+    let defaultPreset: String
+    let presets: [Entry]                            // Entry: {key, menuTitle, file, slotScale, speed}
+    // struct Speed: {label, min, max, responseExponent}
+}
+private static let customSpeedProfile = SpeedProfile(   // lines 837-842 — literal, self-contained
+    label: "custom", min: 0.5, max: 2.5, responseExponent: 1.0
+)   // last-resort profile only when there is neither an active preset nor a manifest default to borrow
 ```
 
-**Immutable, set in `init` (lines 296-328)**
+**Immutable, set in `init` (lines 844-851, populated by `init` lines 919-986)**
 ```swift
 let config: Config
-let allPresets: [PresetDescriptor]   // the 10 built-in presets; single source of truth (see §8.1)
+let allPresets: [PresetDescriptor]   // the 12 built-in presets, decoded from gifs/presets.json (see §8.1)
+let defaultDescriptor: PresetDescriptor?  // the manifest's declared default (horse-white); profile fallback for a custom GIF
+let startupError: String?            // set if presets.json couldn't be loaded/decoded → applicationDidFinishLaunching shows it and quits
 ```
-Each preset's `path` is `#filePath`'s directory + `"gifs/<name>.gif"`, resolved via a local
-`resolvedPath(_:)` helper (lines 301-304) — i.e. relative to the *source file's* location.
-`allPresets` is now the **sole** owner of the key→path mapping: the launcher no longer keeps a
-parallel `gifs_dir` path table (it was deleted with anti-pattern #6), so the cross-language
-duplication that this note previously described is gone.
+Each preset's `path` is `scriptDirURL + "gifs/<file>"`, where `scriptDirURL` is chosen (init lines
+934-940) as the first of `[Bundle.main.executableURL?.deletingLastPathComponent(), #filePath's
+directory]` that actually contains `gifs/presets.json` — the running executable's directory is
+preferred so a login-item launch with `CWD=/` still resolves resources (the `#filePath` directory
+is the interpreted-`swift <file>` dev fallback). `allPresets` is decoded from the manifest and is
+the **sole** owner of the key→path mapping: the launcher no longer keeps a parallel `gifs_dir` path
+table (deleted with anti-pattern #6), so the former cross-language duplication is gone.
 
-**Mutable, mutated over the app's lifetime**
+**Mutable, mutated over the app's lifetime** (lines 852-917)
 ```swift
-var activePreset: PresetDescriptor?               // init: keyword match (allPresets.first { $0.key == config.presetOrPath }) else path match; changed by switchToGif(to:descriptor:)
-var activeGifPath: String                         // init: matched preset's path, else config.presetOrPath verbatim; changed by switchToGif(to:descriptor:)
+var activePreset: PresetDescriptor?               // init: keyword match (allPresets.first { $0.key == requested }) else path match; changed by switchToGif(to:descriptor:)
+var activeGifPath: String                         // init: matched preset's path, else the requested path verbatim; changed by switchToGif(to:descriptor:)
 var statusItem: NSStatusItem!                     // set once, applicationDidFinishLaunching
 var infoMenu: NSMenu!                             // set once
-var cpuUsageItem, loadAverageItem, cpuStateItem,
-    speedMultiplierItem, widthStatusItem,
-    widthMenuItem, widthAutoItem: NSMenuItem!      // set once; .title mutated by refresh*() methods
+var historyMenuItem: NSMenuItem!                  // disabled item hosting the trace chart view (set once)
+var loadHistoryView: LoadHistoryView!             // the trace-chart NSView (set once)
+var loadHistory: [Double] = []                    // ring buffer of the active source's recent 0…1 fractions (cap Tuning.loadHistoryCapacity); cleared on source switch
+var usageItem, loadAverageItem, stateItem,
+    speedMultiplierItem, loadSourceMenuItem,
+    widthStatusItem, widthMenuItem,
+    widthAutoItem: NSMenuItem!                     // set once; .title/.state mutated by refresh*() methods (usageItem/stateItem are source-conditional, §7.10)
+var loadSourceMenuItems: [NSMenuItem] = []        // populated once, one per LoadSource.allCases (tag == rawValue)
 var widthSlotItems: [NSMenuItem] = []             // populated once (4 items, tags 1...4)
 var overlayStatusItem, overlayMenuItem,
     overlaySetItem, overlayClearItem: NSMenuItem! // set once; mutated by refreshOverlaySelectionState()
@@ -790,8 +837,16 @@ var fallbackTimer: Timer?                          // 60Hz Timer game loop drive
 var lastTickTime: TimeInterval = 0                // clock at last advanceFrames tick (link.timestamp, or systemUptime on fallback); 0 = resync sentinel
 var accumulatedFrameTime: TimeInterval = 0        // carry-over time not yet consumed by a frame advance
 var renderedFrames: [NSImage] = []                // frames pre-composited to current size + overlay; replaced by updateRenderedFrames()
-var loadTimer: Timer?                             // 2s CPU-sampling driver
+var loadTimer: Timer?                             // 2s load-sampling driver
+var lastSampleUptime: Double?                     // systemUptime at previous tick, for counter-delta rate sources (§7.11)
 var loadMonitor = CPULoadMonitor()                // owns EMA CPU state
+var memoryMonitor = MemoryLoadMonitor()           // memory + swap (§7.5)
+var gpuMonitor = GPULoadMonitor()                 // GPU utilization (§7.6)
+var networkMonitor = NetworkLoadMonitor()         // network throughput (§7.7)
+var diskMonitor = DiskLoadMonitor()               // disk I/O throughput (§7.8)
+var activeLoadSource: LoadSource                  // which reader drives speed; init from config.loadSource (§7.10)
+var memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal  // cached; event-only, no synchronous getter (§7.5)
+var memoryPressureSource: DispatchSourceMemoryPressure?  // dispatch source; cancel() on terminate, not removeObserver
 var speedMultiplier: Double = Tuning.initialSpeedMultiplier  // current playback speed factor
 var requestedWidthSlots: Int?                     // nil = auto; else 1...4, set via CLI or menu
 var requestedOverlayText: String?                 // nil = no overlay; set via CLI or menu prompt
@@ -810,105 +865,124 @@ are implicitly-unwrapped optionals assigned exactly once inside `applicationDidF
 lifetime, never accessed before launch. A source comment above the property block records the same
 invariant.
 
-### 8.1 Preset registry — `allPresets` (built in `init`, lines 312-323)
+### 8.1 Preset registry — `allPresets` (decoded from `gifs/presets.json` in `init`, lines 948-968)
 
-Single source of truth for every built-in preset, replacing what used to be 10 independent
-path constants plus parallel if-chains in multiple functions. Order = menu order = array index
-= `NSMenuItem.tag`:
+Single source of truth for every built-in preset. As of the manifest refactor these profiles are
+**data** (`gifs/presets.json`), decoded into `PresetDescriptor`s at startup — the Swift code holds
+no hardcoded preset list. Order = manifest order = menu order = array index = `NSMenuItem.tag`:
 
-| # | `key` | `menuTitle` | `kind` | `slotScale` | speed profile (label, min, max, exponent) |
-|---|---|---|---|---|---|
-| 0 | `dog-white` | Dog (White) | `.dog` | 1.0 | dog, 0.5, 2.5, 1.0 |
-| 1 | `dog-black` | Dog (Black) | `.dog` | 1.0 | dog, 0.5, 2.5, 1.0 |
-| 2 | `horse-black` | Horse (Black) | `.horse` | 1.2 | horse, 0.45, 2.3, 1.0 |
-| 3 | `horse-white` | Horse (White) | `.horse` | 1.2 | horse, 0.45, 2.3, 1.0 |
-| 4 | `totoro` | Totoro | `.totoro` | 1.25 | totoro, 0.5, 2.6, 1.0 |
-| 5 | `totoro-group-white` | Totoro (Group, White) | `.totoroGroup` | 4.0 | totoro-group, 0.2, 2.0, 1.0 |
-| 6 | `totoro-group-black` | Totoro (Group, Black) | `.totoroGroup` | 4.0 | totoro-group, 0.2, 2.0, 1.0 |
-| 7 | `totoro-white` | Totoro (White) | `.totoro` | 1.25 | totoro, 0.5, 2.6, 1.0 |
-| 8 | `totoro-black` | Totoro (Black) | `.totoro` | 1.25 | totoro, 0.5, 2.6, 1.0 |
+| # | `key` | `menuTitle` | `slotScale` | speed profile (label, min, max, exponent) |
+|---|---|---|---|---|
+| 0 | `dog-white` | Dog (White) | 1.0 | dog, 0.5, 2.5, 1.0 |
+| 1 | `dog-black` | Dog (Black) | 1.0 | dog, 0.5, 2.5, 1.0 |
+| 2 | `horse-black` | Horse (Black) | 1.2 | horse, 0.45, 2.3, 1.0 |
+| 3 | `horse-white` | Horse (White) | 1.2 | horse, 0.45, 2.3, 1.0 |
+| 4 | `chihiro` | Chihiro (Walking) | 1.0 | chihiro, 0.5, 2.5, 1.0 |
+| 5 | `chihiro-white` | Chihiro (Walking, White) | 1.0 | chihiro, 0.5, 2.5, 1.0 |
+| 6 | `chihiro-black` | Chihiro (Walking, Black) | 1.0 | chihiro, 0.5, 2.5, 1.0 |
+| 7 | `totoro` | Totoro | 1.25 | totoro, 0.5, 2.6, 1.0 |
+| 8 | `totoro-group-white` | Totoro (Group, White) | 4.0 | totoro-group, 0.2, 2.0, 1.0 |
+| 9 | `totoro-group-black` | Totoro (Group, Black) | 4.0 | totoro-group, 0.2, 2.0, 1.0 |
+| 10 | `totoro-white` | Totoro (White) | 1.25 | totoro, 0.5, 2.6, 1.0 |
+| 11 | `totoro-black` | Totoro (Black) | 1.25 | totoro, 0.5, 2.6, 1.0 |
 
-A custom/user-supplied GIF whose path matches none of these leaves `activePreset == nil`;
-every accessor (§15, §16) falls back to `.custom`/`Tuning.dogSlotScale`/`Self.customSpeedProfile`
-in that case. `PresetDescriptor.key` is now the CLI-facing preset keyword as well as an
-internal identifier: `init` matches `config.presetOrPath` against `key` first (§9.1), and the
-same `key` drives `refreshPresetSelectionState`'s equality check and `makeMenuAlertIcon`'s
-lookup. The launcher no longer resolves keywords (anti-pattern #6) — it forwards the keyword and
-`allPresets` is the single place it becomes a path (§18).
+The manifest's `defaultPreset` is `horse-white`. A custom/user-supplied GIF whose path matches
+none of these leaves `activePreset == nil`; every accessor (§15, §16) then borrows
+`defaultDescriptor`'s `slotScale`/`speedProfile` (or `Self.customSpeedProfile`/
+`Tuning.fallbackSlotScale` if the manifest itself failed to load). `PresetDescriptor.key` is the
+CLI-facing preset keyword as well as an internal identifier: `init` matches the requested arg
+against `key` first (§9.1), and the same `key` drives `refreshPresetSelectionState`'s equality
+check and `makeMenuAlertIcon`'s lookup. The launcher no longer resolves keywords (anti-pattern #6)
+— it forwards the keyword and `allPresets` is the single place it becomes a path (§18).
 
 ---
 
 ## 9. `MenuBarLoadRunnerApp` — lifecycle sequence
 
-### 9.1 `init(config:)` (lines 325-366)
+### 9.1 `init(config:)` (lines 919-986)
 Stores `config`, `requestedWidthSlots = config.widthSlots`, `requestedOverlayText =
-config.overlayText`. Builds `allPresets` (10 `PresetDescriptor` literals, §8.1) via a local
-`resolvedPath(_:)` helper closing over `scriptDirURL` (lines 330-347), then resolves the
-positional arg (lines 354-365) — **this is the single place a preset keyword becomes a path**,
-having moved here from the launcher (anti-pattern #6):
-- If `config.presetOrPath` matches a preset's `key` (`allPresets.first { $0.key == ... }`) →
+config.overlayText`, `activeLoadSource = config.loadSource` (lines 920-923). Resolves the resource
+base directory `scriptDirURL` (lines 934-940, preferring the running executable's directory over
+`#filePath`'s), then loads and JSON-decodes `gifs/presets.json` into `PresetManifest` and maps its
+entries into `allPresets` (`PresetDescriptor`s, lines 948-968); on any failure it leaves the
+registry empty and records `startupError` (line 967). Sets `defaultDescriptor` (the entry whose
+`key == manifest.defaultPreset`) and `startupError` (lines 970-972). Then resolves the requested
+arg (lines 976-985) — **this is the single place a preset keyword becomes a path**, having moved
+here from the launcher (anti-pattern #6):
+- `requested = config.presetOrPath.isEmpty ? (manifestDefaultKey ?? "") : config.presetOrPath` —
+  an empty arg falls back to the manifest's default preset.
+- If `requested` matches a preset's `key` (`presets.first { $0.key == requested }`) →
   `activeGifPath = matched.path`, `activePreset = matched`.
-- Otherwise treat it as a GIF path: `activeGifPath = config.presetOrPath`, and still
-  `activePreset = allPresets.first { $0.path == config.presetOrPath }` so a raw path pointing
+- Otherwise treat it as a GIF path: `activeGifPath = requested`, and still
+  `activePreset = presets.first { $0.path == requested }` so a raw path pointing
   at a built-in GIF adopts that preset's profile; `activePreset` is `nil` for a genuine custom
   GIF.
 
 No AppKit objects are touched here.
 
-### 9.2 `applicationDidFinishLaunching(_:)` (lines 368-465) — exact order of operations
-1. `NSApp.setActivationPolicy(.accessory)` (line 331) — no Dock icon, no app switcher entry.
-2. Create `statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`;
+### 9.2 `applicationDidFinishLaunching(_:)` (lines 988-1203) — exact order of operations
+1. `NSApp.setActivationPolicy(.accessory)` (line 989) — no Dock icon, no app switcher entry.
+2. If `startupError` is set (manifest load failure, §9.1), `showStartupErrorAndQuit(startupError)`
+   and `return` (lines 991-994).
+3. Create `statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)`;
    if `.button` is `nil`, call `showStartupErrorAndQuit("Unable to create NSStatusItem button.")`
-   and `return` — a graceful quit consistent with the GIF-decode-failure path (step 10), **not**
-   a `fatalError`/crash.
-3. `button.imagePosition = .imageOnly`; `button.imageScaling` set based on whether
-   `requestedWidthSlots` is `nil` (`.scaleProportionallyUpOrDown`) or set
-   (`.scaleAxesIndependently`); `button.toolTip = activeGifPath`;
-   `button.setAccessibilityLabel("MenuBar Load Runner")` — a static VoiceOver base label, later
-   enriched with live CPU load by `refreshMenuMetrics()` (§10.3).
-4. Build `infoMenu` (`NSMenu`), set `self` as its delegate (lines 342-343).
-5. Append, in this exact order, to `infoMenu` (lines 345-417):
-   `CPU Usage: --` → `Load Avg (1/5/15m): -- / -- / --` → `CPU State: --` →
-   `Speed Multiplier: --` → `Width: --` → `Width Options` (submenu: `Auto (preset)`,
-   separator, `1 slot`..`4 slots`) → `Overlay Text: --` → `Overlay Text` (submenu:
-   `Set Text... (max 12)`, `Clear`) → separator → disabled `Presets` header → one menu item
-   per `allPresets` entry, built by a `for (index, preset) in allPresets.enumerated()` loop
-   (lines 407-413) that sets `item.tag = index` and appends each item to `presetMenuItems` (so
-   the 10 preset titles are generated from the registry, not listed as 10 separate literal
-   `NSMenuItem` constructions) → separator → `About` → `Exit` (key equivalent `q`).
-6. `infoMenu.items.forEach { $0.target = self }` (line 418) — sets every item's target to
-   `self`, including the ones that already had `target = self` set individually and the
-   disabled/no-action ones (this is a blanket overwrite, applied after individual
-   `.target = self` assignments earlier in the block).
-7. `presetsHeaderItem.isEnabled = false` (line 419) — disables the section header via the
-   local variable captured when it was created (line 404), not a title-string lookup.
-8. `statusItem.menu = infoMenu` (line 420).
-9. `refreshPresetSelectionState()`, `refreshWidthSelectionState()`,
-   `refreshOverlaySelectionState()` (lines 421-423) — populate initial `.state`/`.title`
-   text before first display.
-10. `loadFrames(from: activeGifPath)` — if it returns `false`, call
-    `showStartupErrorAndQuit(...)` and `return` immediately (lines 425-428), skipping every
-    step below.
-11. `applySizing()` then `renderCurrentFrame()` (lines 430-431).
-12. If `config.speedMultiplierOverride` is set, clamp it into
-    `Tuning.speedOverrideMin...Max` and assign to `speedMultiplier` (lines 432-434).
-13. `startLoadMonitoring()`, `startGameLoop()`, `refreshMenuMetrics()` (lines 435-437).
-14. Register four `NotificationCenter` observers, all on `queue: .main` (each callback wraps its
+   and `return` (lines 996-1000) — a graceful quit consistent with the GIF-decode-failure path
+   (step 11), **not** a `fatalError`/crash.
+4. `button.imagePosition = .imageOnly` (line 1002); `button.imageScaling` is **not** set here —
+   it is set by `applySizing()` (step 12; §13.4); `button.toolTip = activeGifPath` (line 1004);
+   `button.setAccessibilityLabel("MenuBar Load Runner")` (line 1006) — a static VoiceOver base
+   label, later enriched with live load by `refreshMenuMetrics()` (§10.3).
+5. Build `infoMenu` (`NSMenu`), set `self` as its delegate (lines 1008-1009).
+6. Append, in this exact order, to `infoMenu` (lines 1011-1109):
+   `Load History` (disabled item hosting `loadHistoryView`, the trace chart — lines 1011-1015) →
+   `CPU Usage: --` (`usageItem`) → `Load Avg (1/5/15m): -- / -- / --` → `CPU State: --`
+   (`stateItem`) → `Speed Multiplier: --` → `Load Source` (submenu: one item per
+   `LoadSource.allCases`, `tag = rawValue`, appended to `loadSourceMenuItems` — lines 1033-1043) →
+   `Width: --` → `Width Options` (submenu: `Auto (preset)`, separator, `1 slot`..`4 slots`) →
+   `Overlay Text: --` → `Overlay Text` (submenu: `Set Text... (max 12)`, `Clear`) → separator →
+   disabled `Presets` header → one menu item per `allPresets` entry, built by a
+   `for (index, preset) in allPresets.enumerated()` loop (lines 1099-1105) that sets
+   `item.tag = index` and appends each item to `presetMenuItems` (so the 12 preset titles are
+   generated from the registry) → separator → `About` → `Exit` (key equivalent `q`).
+7. **Load-source availability fallback** (lines 1045-1051, right after the Load Source submenu is
+   built): if the configured `activeLoadSource` isn't available on this hardware, log a warning and
+   force `activeLoadSource = .cpu` (§7.10).
+8. `infoMenu.items.forEach { $0.target = self }` (line 1110) — a blanket target overwrite applied
+   after the individual `.target = self` assignments earlier in the block.
+9. `presetsHeaderItem.isEnabled = false` (line 1111) — disables the section header via the
+   local variable captured when it was created (line 1096), not a title-string lookup.
+   `statusItem.menu = infoMenu` (line 1112).
+10. `refreshPresetSelectionState()`, `refreshWidthSelectionState()`,
+    `refreshOverlaySelectionState()`, `refreshLoadSourceSelectionState()` (lines 1113-1116) —
+    populate initial `.state`/`.title` text before first display.
+11. `loadFrames(from: activeGifPath)` — if it returns `false`, call
+    `showStartupErrorAndQuit(...)` and `return` immediately (lines 1118-1121).
+12. `applySizing()` then `renderCurrentFrame()` (lines 1123-1124).
+13. If `config.speedMultiplierOverride` is set, clamp it into
+    `Tuning.speedOverrideMin...Max` and assign to `speedMultiplier` (lines 1125-1127).
+14. `startLoadMonitoring()`, `startGameLoop()`, `refreshMenuMetrics()` (lines 1128-1130).
+15. Register four `NotificationCenter` observers, all on `queue: .main` (each callback wraps its
     body in `MainActor.assumeIsolated`, §4):
-    - `screenObserver` — `NSApplication.didChangeScreenParametersNotification` → `applySizing()` +
-      `renderCurrentFrame()`.
-    - `powerStateObserver` — `.NSProcessInfoPowerStateDidChange` (Low Power Mode toggled) →
+    - `screenObserver` (lines 1132-1143) — `NSApplication.didChangeScreenParametersNotification` →
+      `applySizing()` + `renderCurrentFrame()`.
+    - `powerStateObserver` (lines 1147-1153) — `.NSProcessInfoPowerStateDidChange` (Low Power Mode
+      toggled) → `reevaluateSpeedForCurrentConditions()` (§12.2).
+    - `thermalStateObserver` (lines 1154-1160) — `ProcessInfo.thermalStateDidChangeNotification` →
       `reevaluateSpeedForCurrentConditions()` (§12.2).
-    - `thermalStateObserver` — `ProcessInfo.thermalStateDidChangeNotification` →
-      `reevaluateSpeedForCurrentConditions()` (§12.2).
-    - `occlusionObserver` — `NSWindow.didChangeOcclusionStateNotification` on the status button's
-      window (registered only if that window exists) → `updateAnimationForOcclusion()` (§13.6).
+    - `occlusionObserver` (lines 1185-1193) — `NSWindow.didChangeOcclusionStateNotification` on the
+      status button's window (registered only if that window exists) →
+      `updateAnimationForOcclusion()` (§13.6).
+16. Construct and `resume()` the memory-pressure `DispatchSource` (lines 1167-1180, §7.5) — a
+    sibling lifecycle to the notification observers.
+17. If `config.exitAfterSeconds` is set, schedule an `asyncAfter` `NSApp.terminate` (lines
+    1197-1202) — the `MENUBAR_LOAD_RUNNER_EXIT_AFTER` smoke-test hook.
 
-### 9.3 `applicationWillTerminate(_:)`
+### 9.3 `applicationWillTerminate(_:)` (lines 1205-1216)
 Calls `stopGameLoop()` (tears down whichever of `displayLink`/`fallbackTimer` is live) and
-invalidates `loadTimer`; removes every registered observer
+invalidates `loadTimer`; removes every registered notification observer
 (`screenObserver`/`powerStateObserver`/`thermalStateObserver`/`occlusionObserver`) from
-`NotificationCenter.default`.
+`NotificationCenter.default`, then `memoryPressureSource?.cancel()` (its own dispatch-source
+lifecycle, not `removeObserver`).
 
 ---
 
@@ -918,38 +992,41 @@ invalidates `loadTimer`; removes every registered observer
 Built once in step 9.2.5 above; never rebuilt. Every visible menu title after that point is
 mutated in place by four `refresh*` methods (never by rebuilding items).
 
-### 10.2 `menuWillOpen(_:)` (lines 544-549, `NSMenuDelegate`)
+### 10.2 `menuWillOpen(_:)` (lines 1403-1409, `NSMenuDelegate`)
 Fired by AppKit immediately before the menu is displayed. Calls, in order:
 `refreshMenuMetrics()`, `refreshPresetSelectionState()`, `refreshWidthSelectionState()`,
-`refreshOverlaySelectionState()`. This is the *only* trigger for
-`refreshPresetSelectionState`/`refreshWidthSelectionState`/`refreshOverlaySelectionState`
-other than the direct calls made inline by the action methods that change the underlying
-state (e.g. `selectWidthAuto()` calls `refreshWidthSelectionState()` itself, line 632).
+`refreshOverlaySelectionState()`, `refreshLoadSourceSelectionState()`. This is the *only* trigger
+for those `refresh*SelectionState` methods other than the direct calls made inline by the action
+methods that change the underlying state (e.g. `selectWidthAuto()` calls
+`refreshWidthSelectionState()` itself, line 1668).
 
-### 10.3 `refreshMenuMetrics()` (lines 551-578)
-- `cpuUsageItem.title` / `cpuStateItem.title`: `"warming up..."` if
-  `!loadMonitor.hasSample`, else formatted from `loadMonitor.smoothedUsage` (via
-  `cpuStateText(for:)`, thresholds `Tuning.cpuStateLowThreshold` /
-  `cpuStateMediumThreshold`).
-- `speedMultiplierItem.title`: two formats depending on
-  `config.speedMultiplierOverride == nil` — auto mode shows `currentSpeedProfile()`'s label
-  and min/max; fixed mode shows `(fixed)`.
+### 10.3 `refreshMenuMetrics()` (lines 1411-1518)
+As of the load-source work this method is **source-conditional** — a `switch activeLoadSource`
+sets `usageItem`/`stateItem`/the accessibility label from *only* the active source's monitor;
+the fuller description lives in §7.10. In summary:
+- Pushes the active source's recent 0…1 fractions into `loadHistoryView` (label, warming-up flag,
+  samples) so the trace chart refreshes here (lines 1415-1417).
+- `usageItem.title` / `stateItem.title`: per-source metric + state (e.g. CPU% + CPU State from
+  `loadMonitor.smoothedUsage` via `cpuStateText(for:)`; Memory% + `Memory Pressure` from
+  `memoryPressureText()`; etc.), or `"warming up..."` until the active source has a sample.
+- `speedMultiplierItem.title` (lines 1496-1511): auto mode shows the active source's `menuTitle`,
+  `currentSpeedProfile()`'s label and min/max, and a `" [throttled: low power/thermal]"` suffix
+  when `isUnderPowerPressure`; fixed mode shows `(fixed)`.
 - `loadAverageItem.title`: `"unavailable"` if `cachedLoadAverages == nil`, else the 3 values
   formatted `%.2f`.
 - `statusItem.button?.setAccessibilityLabel(...)`: enriches the static launch-time label with live
-  state — `"MenuBar Load Runner — CPU NN%, <state>"` once `loadMonitor.hasSample`, else
-  `"MenuBar Load Runner — measuring CPU load"`. Because `refreshMenuMetrics()` runs on every 2s
-  `sampleSystemLoad()` tick (§12) and not only on `menuWillOpen`, the VoiceOver description tracks
-  current load without the menu being opened.
+  per-source state. Because `refreshMenuMetrics()` runs on every 2s `sampleSystemLoad()` tick (§12)
+  and not only on `menuWillOpen`, the VoiceOver description tracks current load without the menu
+  being opened.
 
-### 10.4 `refreshPresetSelectionState()` (lines 580-586)
+### 10.4 `refreshPresetSelectionState()` (lines 1557-1563)
 A single loop over `zip(presetMenuItems, allPresets)` (relies on both arrays being built
-together, same order, same length, in the `applicationDidFinishLaunching` loop, §9.2 step 5):
+together, same order, same length, in the `applicationDidFinishLaunching` loop, §9.2 step 6):
 `item.isEnabled = FileManager.default.fileExists(atPath: preset.path)`; `item.state =
 (activePreset?.key == preset.key) ? .on : .off`. Replaces what used to be 10 explicit
 `isEnabled` lines + 10 explicit `state` lines, one pair per built-in path constant.
 
-### 10.5 `refreshWidthSelectionState()` (lines 588-607)
+### 10.5 `refreshWidthSelectionState()` (lines 1602-1621)
 Reads `minimumSlotsForCurrentPreset()`, `requestedWidthSlots`, `effectiveWidthSlots()`.
 - `widthStatusItem.title`: if `requestedWidthSlots` is set and below the preset's minimum,
   shows `"... (requested X, min Y for preset)"`; if set and at/above minimum, shows just the
@@ -958,7 +1035,7 @@ Reads `minimumSlotsForCurrentPreset()`, `requestedWidthSlots`, `effectiveWidthSl
 - Each of `widthSlotItems` (tags 1-4): `.state = .on` iff `requestedWidthSlots != nil &&
   item.tag == effectiveWidthSlots()`.
 
-### 10.6 `refreshOverlaySelectionState()` (lines 609-618)
+### 10.6 `refreshOverlaySelectionState()` (lines 1623-1632)
 If `requestedOverlayText` is set: `overlayStatusItem.title = "Overlay Text: <text> (bold|regular)"`,
 `overlayClearItem.isEnabled = true`. Else: `"Overlay Text: off"`,
 `overlayClearItem.isEnabled = false`.
@@ -969,17 +1046,18 @@ If `requestedOverlayText` is set: `overlayStatusItem.title = "Overlay Text: <tex
 
 | Method | Lines | Effect |
 |---|---|---|
-| `selectPreset(_:)` | 620-625 | tag-indexes into `allPresets`, calls `switchToGif(to: preset.path, descriptor: preset)` — single method for all 10 built-in presets, replacing 10 near-identical `selectXPreset()` methods |
-| `selectWidthAuto` | 627-633 | `requestedWidthSlots = nil`; `applySizing()`; `renderCurrentFrame()`; `refreshWidthSelectionState()` |
-| `selectWidthSlot(_:)` | 635-641 | `requestedWidthSlots = clamp(sender.tag, 1, 4)`; same 3 follow-up calls |
-| `promptOverlayText` | 643-707 | see §11.1 |
-| `clearOverlayText` | 709-715 | `requestedOverlayText = nil`; `updateRenderedFrames()`; `renderCurrentFrame()`; `refreshOverlaySelectionState()` |
-| `showAbout` | 457-470 | modal `NSAlert` with static text + live speed-mode line |
-| `exitApp` | 472-475 | `NSApp.terminate(nil)` |
-| `sampleSystemLoad` | 525-542 | see §12 |
-| `displayLinkTick(_:)` / `fallbackTimerTick` → `advanceFrames(now:)` | 857-898 | see §13 |
+| `selectPreset(_:)` | 1634-1639 | tag-indexes into `allPresets`, calls `switchToGif(to: preset.path, descriptor: preset)` — single method for all built-in presets, replacing the former per-preset `selectXPreset()` methods |
+| `selectLoadSource(_:)` | 1641-1661 | switches the active load source; see §7.10 |
+| `selectWidthAuto` | 1663-1669 | `requestedWidthSlots = nil`; `applySizing()`; `renderCurrentFrame()`; `refreshWidthSelectionState()` |
+| `selectWidthSlot(_:)` | 1671-1677 | `requestedWidthSlots = clamp(sender.tag, 1, 4)`; same 3 follow-up calls |
+| `promptOverlayText` | 1679-1744 | see §11.1 |
+| `clearOverlayText` | 1746-1749 | delegates to `applyOverlayCleared()` (lines 1751-1756): `requestedOverlayText = nil`; `updateRenderedFrames()`; `renderCurrentFrame()`; `refreshOverlaySelectionState()` |
+| `showAbout` | 1218-1231 | modal `NSAlert` with static text + live speed-mode line |
+| `exitApp` | 1233-1236 | `NSApp.terminate(nil)` |
+| `sampleSystemLoad` | 1331-1357 | see §12 |
+| `displayLinkTick(_:)` / `fallbackTimerTick` → `advanceFrames(now:)` | 1931-1973 | see §13 |
 
-### 11.1 `promptOverlayText()` (lines 643-707)
+### 11.1 `promptOverlayText()` (lines 1679-1744)
 1. Builds an `NSAlert` with a custom `accessoryView` containing: a label (`"Overlay text"`),
    an `NSTextField` pre-filled with `requestedOverlayText ?? ""`, and an `NSButton`
    checkbox (`"Bold"`) pre-set to `requestedOverlayBold`.
@@ -991,48 +1069,49 @@ If `requestedOverlayText` is set: `overlayStatusItem.title = "Overlay Text: <tex
    once focused). Closures capture `field`/`alertWindow` weakly. (This replaced an earlier
    timing-dependent hack that fired the same closure three times at staggered 0/0.03/0.12s delays.)
 3. `alert.runModal()` — if the result isn't `.alertFirstButtonReturn` (i.e. "Cancel" or the
-   window was closed), returns with no state change (line 686).
-4. On "Apply": `requestedOverlayBold = boldToggle.state == .on` (line 688) always happens
+   window was closed), returns with no state change (line 1726).
+4. On "Apply": `requestedOverlayBold = boldToggle.state == .on` (line 1728) always happens
    first, regardless of the text field's content.
-5. If the trimmed field text is empty: `requestedOverlayText = nil`, then
-   `updateRenderedFrames()` + `renderCurrentFrame()` + `refreshOverlaySelectionState()`,
-   return (lines 690-696).
+5. If the trimmed field text is empty: calls `applyOverlayCleared()` (which nils
+   `requestedOverlayText` then `updateRenderedFrames()` + `renderCurrentFrame()` +
+   `refreshOverlaySelectionState()`) and returns (lines 1730-1733).
 6. If the trimmed text exceeds `Tuning.overlayMaxChars` (12): `showRuntimeError(...)` and
-   return *without* changing `requestedOverlayText` (lines 698-701) — the bold-toggle change
+   return *without* changing `requestedOverlayText` (lines 1735-1738) — the bold-toggle change
    from step 4 is still committed even though the text change is rejected.
-7. Otherwise: `requestedOverlayText = input`, then the same three follow-up calls
-   (lines 703-706).
+7. Otherwise: `requestedOverlayText = input`, then `updateRenderedFrames()` +
+   `renderCurrentFrame()` + `refreshOverlaySelectionState()` (lines 1740-1743).
 
-### 11.2 `switchToGif(to:descriptor:)` (lines 717-752)
+### 11.2 `switchToGif(to:descriptor:)` (lines 1758-1793)
 Signature: `switchToGif(to path: String, descriptor: PresetDescriptor?)` — takes both an
 explicit path and the resolved `PresetDescriptor` (or `nil`) for that path, called only from
-`selectPreset(_:)` (line 624, always passing a non-nil descriptor for one of the 10 built-in
+`selectPreset(_:)` (line 1638, always passing a non-nil descriptor for one of the built-in
 presets today; the `nil` case exists for a hypothetical future custom-path menu action, not
 currently exercised by any call site).
-1. Expands `~` in the given path; no-ops if it equals `activeGifPath` already (line 719).
+1. Expands `~` in the given path; no-ops if it equals `activeGifPath` already (line 1760).
 2. Saves `previousPath`, `previousPreset`, `previousFrames`, `previousDurations`,
-   `previousFrameIndex` (lines 721-725) — `frameAspects` is **not** saved/restored here.
+   `previousFrameIndex` (lines 1762-1766) — `frameAspects` is **not** saved/restored here.
 3. Calls `loadFrames(from: expanded)`. On failure: restores `activeGifPath`, `activePreset`,
    `frames`, `baseDurations`, `frameIndex` from the saved values, shows a runtime error alert,
-   calls `refreshPresetSelectionState()`, and returns (lines 727-736) — `frameAspects` is left
+   calls `refreshPresetSelectionState()`, and returns (lines 1768-1777) — `frameAspects` is left
    as whatever `loadFrames` mutated it to before failing (see §14 — `loadFrames` only assigns
    `frameAspects` on full success, so in practice it is unchanged on failure, but this is a
    property of `loadFrames`'s internal ordering, not of anything `switchToGif` does).
 4. On success: `activeGifPath = expanded`, `activePreset = descriptor`, `frameIndex = 0`,
-   `statusItem.button?.toolTip = activeGifPath` (lines 738-741).
+   `statusItem.button?.toolTip = activeGifPath` (lines 1779-1782).
 5. `applySizing()`, `renderCurrentFrame()`, `refreshWidthSelectionState()`,
-   `refreshOverlaySelectionState()` (lines 743-746).
-6. Calls `resetGameLoopTiming()` (§13.1c) — re-syncs the **running** driver's clock rather than
-   tearing it down and recreating it, since the frame source changed but the display link's
-   button/screen has not. (Previously this invalidated and recreated the driver on every switch.)
-7. `refreshPresetSelectionState()` (line 751).
+   `refreshOverlaySelectionState()` (lines 1784-1787).
+6. Calls `resetGameLoopTiming()` (§13.1c, line 1791) — re-syncs the **running** driver's clock
+   rather than tearing it down and recreating it, since the frame source changed but the display
+   link's button/screen has not. (Previously this invalidated and recreated the driver on every
+   switch.)
+7. `refreshPresetSelectionState()` (line 1792).
 
 ---
 
-## 12. Load-sampling sequence — `sampleSystemLoad()` (~lines 590-605)
+## 12. Load-sampling sequence — `sampleSystemLoad()` (lines 1331-1357)
 
 Invoked every `Tuning.loadSampleInterval` (2.0s) by `loadTimer` (started in
-`startLoadMonitoring()`, lines 512-523, registered on `RunLoop.main` in `.common` mode).
+`startLoadMonitoring()`, lines 1318-1329, registered on `RunLoop.main` in `.common` mode).
 
 `loadTimer` uses the classic `Timer(target: self, selector:)` form, which strongly retains `self`
 while `self` retains the timer — a retain cycle. This is intentionally accepted, not a leak in
@@ -1040,11 +1119,14 @@ practice: the `MenuBarLoadRunnerApp` delegate lives for the entire process and o
 `NSApp.terminate`, so nothing is ever waiting to be freed. (The game-loop driver does not have this
 concern — `displayLink`/`fallbackTimer` are held directly and torn down in `stopGameLoop()`, §13.1b.)
 
-1. `cachedLoadAverages = readSystemLoadAverages()` (line 527) — always attempted,
+1. `cachedLoadAverages = readSystemLoadAverages()` (line 1333) — always attempted,
    independent of anything below.
-2. `loadMonitor.sampleUsage()` — if it returns a non-`nil` `usage`:
-   - Only if `config.speedMultiplierOverride == nil` (line 530):
-     - `candidate = speedMultiplier(forUsage: usage)` (line 531, see §12.1).
+2. Captures the real elapsed wall-clock since the last tick (`lastSampleUptime`/`elapsed`, lines
+   1338-1340, §7.11), then `sampleActiveSource(elapsed:)` (line 1344, §7.10) — samples **only** the
+   active source. If it returns a non-`nil` `usage`:
+   - `recordLoadSample(usage)` (line 1345) appends it to the trace-chart ring buffer.
+   - Only if `isAutoSpeed` (line 1346, i.e. `config.speedMultiplierOverride == nil`):
+     - `candidate = speedMultiplier(forUsage: usage)` (line 1347, see §12.1).
      - If `abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis` (0.08): assigns
        `speedMultiplier = candidate` and nothing else. The game-loop driver reads
        `speedMultiplier` live through the accumulator (§13.2 step 5), so the new speed takes
@@ -1052,11 +1134,11 @@ concern — `displayLink`/`fallbackTimer` are held directly and torn down in `st
        recreated the driver on every hysteresis-crossing change — an unnecessary teardown that
        also reset `lastTickTime`/`accumulatedFrameTime`; removed with the CADisplayLink migration.)
    - If `speedMultiplierOverride` is set, `speedMultiplier` is never touched here.
-   - If `usage` is `nil` (not enough samples yet), nothing in this block runs.
-3. `refreshMenuMetrics()` (line 541) — always called, regardless of whether step 2 changed
+   - If `usage` is `nil` (not enough samples yet / source unavailable), nothing in this block runs.
+3. `refreshMenuMetrics()` (line 1356) — always called, regardless of whether step 2 changed
    anything.
 
-### 12.1 `speedMultiplier(forUsage:)` (lines 789-795)
+### 12.1 `speedMultiplier(forUsage:)` (lines 1834-1844)
 ```swift
 let profile = currentSpeedProfile()
 let clampedUsage = min(max(usage, 0), 1)
@@ -1079,21 +1161,24 @@ The app only ever *reads* system power/thermal state; it never mutates it and ca
 system or any other process. "Self-throttling" means it reduces **its own** animation work (fewer
 frame advances/redraws) so the load indicator doesn't add to the load it visualizes.
 
-- `isUnderPowerPressure` (a computed `Bool`): `true` when `ProcessInfo.isLowPowerModeEnabled` is on
-  **or** `thermalState` is `.serious`/`.critical`. Read-only, getters only.
+- `isUnderPowerPressure` (a computed `Bool`, lines 1849-1862): `true` when
+  `ProcessInfo.isLowPowerModeEnabled` is on, `thermalState` is `.serious`/`.critical`, **or** the
+  cached `memoryPressureLevel` contains `.warning`/`.critical` (§7.5). Read-only, getters only.
 - When true, `speedMultiplier(forUsage:)` (§12.1) caps this app's auto speed at the midpoint of the
   active preset's range (`Tuning.constrainedSpeedCeilingFraction`). The menu's Speed Multiplier line
   appends `" [throttled: low power/thermal]"` whenever `isUnderPowerPressure` is true — i.e. it is
-  keyed on the pressure state, not on whether the value actually hit the ceiling, so at low CPU
-  usage (where the computed value is already below the midpoint) the suffix still shows even though
+  keyed on the pressure state, not on whether the value actually hit the ceiling, so at low load
+  (where the computed value is already below the midpoint) the suffix still shows even though
   no clamping occurred (§10.3 shows the base format).
-- `reevaluateSpeedForCurrentConditions()`: recomputes `speedMultiplier` from the latest smoothed
-  usage **immediately, bypassing the 2s-tick hysteresis** (guarded by `speedMultiplierOverride == nil`
-  && `loadMonitor.hasSample`), then calls `refreshMenuMetrics()`. Invoked from the `powerStateObserver`
-  and `thermalStateObserver` (§9.2 step 14) so the cap engages/lifts without waiting up to 2s.
+- `reevaluateSpeedForCurrentConditions()` (lines 1870-1874): recomputes `speedMultiplier` from the
+  **active source's** latest sample (`activeSourceCurrentUsage`) **immediately, bypassing the
+  2s-tick hysteresis** (guarded by `isAutoSpeed && activeSourceHasSample`), then calls
+  `refreshMenuMetrics()`. Invoked from the `powerStateObserver`/`thermalStateObserver` (§9.2 step
+  15), the memory-pressure dispatch source (§7.5), and `selectLoadSource` (§7.10) so the cap
+  engages/lifts — or a new source takes over — without waiting up to 2s.
 - Disabled entirely in fixed-speed mode (`--speed-multiplier`), like all auto-speed logic.
 
-### 12.3 `readSystemLoadAverages()` (lines 766-777)
+### 12.3 `readSystemLoadAverages()` (lines 1811-1822)
 Calls `getloadavg(&samples, 3)` (POSIX API) into a 3-element buffer. Returns `nil` if the
 call returns fewer than 3 samples; otherwise returns the tuple indexed by
 `Tuning.loadAverage1mIndex/5mIndex/15mIndex` (`0/1/2`).
@@ -1114,7 +1199,7 @@ accumulator on every tick, so a speed change takes effect on the next callback w
 restart** (see §12 — the old invalidate/recreate dance was removed). A single driver instance
 persists across preset switches; only its timing is re-synced (§13.1c).
 
-### 13.1a `startGameLoop()` (lines 821-840)
+### 13.1a `startGameLoop()` (lines 1896-1915)
 Calls `stopGameLoop()` then `resetGameLoopTiming()`, then installs the driver:
 - **macOS 14+ and `statusItem.button` non-nil**: `button.displayLink(target: self, selector:
   #selector(displayLinkTick(_:)))` → stored in `displayLink`, added to `RunLoop.main` in `.common`
@@ -1124,24 +1209,24 @@ Calls `stopGameLoop()` then `resetGameLoopTiming()`, then installs the driver:
   target: self, selector: #selector(fallbackTimerTick), repeats: true)` → stored in
   `fallbackTimer`, added to `RunLoop.main` in `.common`.
 
-### 13.1b `stopGameLoop()` (lines 842-847)
+### 13.1b `stopGameLoop()` (lines 1917-1922)
 Invalidates and nils **both** `displayLink` and `fallbackTimer` (only one is ever live, but
 teardown is unconditional). Called by `startGameLoop()`, `applicationWillTerminate` (§9.3), and
 `updateAnimationForOcclusion()` when the item becomes occluded (§13.6).
 
-### 13.1c `resetGameLoopTiming()` (lines 851-855)
+### 13.1c `resetGameLoopTiming()` (lines 1926-1929)
 Sets `lastTickTime = 0` (resync sentinel — see §13.2 step 2) and `accumulatedFrameTime = 0`.
 Called by `startGameLoop()` and by `switchToGif` on a frame-source change (§11.2) — the latter
 re-syncs the *running* driver instead of tearing it down, since the link's button/screen is
 unchanged and only the frames/durations differ (§11.2 step 6).
 
-### 13.2 `displayLinkTick(_:)` / `fallbackTimerTick()` → `advanceFrames(now:)` (lines 857-898)
+### 13.2 `displayLinkTick(_:)` / `fallbackTimerTick()` → `advanceFrames(now:)` (lines 1931-1973)
 Two thin `@objc` shims select the clock source and call the shared core:
 - `displayLinkTick(_ link:)` (macOS 14+) passes `link.timestamp`.
 - `fallbackTimerTick()` passes `ProcessInfo.processInfo.systemUptime`.
 
 `advanceFrames(now:)`:
-1. No-ops if `baseDurations` or `renderedFrames` is empty (line 866).
+1. No-ops if `baseDurations` or `renderedFrames` is empty (line 1941).
 2. **Resync sentinel**: if `lastTickTime == 0`, latch `lastTickTime = now` and return without
    advancing (first tick after any (re)start or `resetGameLoopTiming()`).
 3. `delta = now - lastTickTime`; `lastTickTime = now`. Guard: if `delta <= 0` (backwards clock) or
@@ -1158,32 +1243,30 @@ Two thin `@objc` shims select the clock source and call the shared core:
 6. If any advance happened, call `renderCurrentFrame()` — a tick with no advance does not touch the
    displayed image at all.
 
-### 13.3 `renderCurrentFrame()`
+### 13.3 `renderCurrentFrame()` (lines 1975-1978)
 No-ops if `statusItem.button` is `nil`, `renderedFrames` is empty, or `frameIndex` is out of
-bounds (guard). Sets `button.imageScaling` based on `requestedWidthSlots != nil`
-(`.scaleAxesIndependently`) vs `nil` (`.scaleProportionallyUpOrDown`) — this is evaluated on
-*every* frame render, not just on sizing changes (redundant with the same assignment already
-made in step 9.2.3; `updateRenderedFrames()` does **not** set `imageScaling`, so this per-frame
-re-assignment and the launch-time one are the only two sites). Sets
-`button.image = renderedFrames[frameIndex]`.
+bounds (guard). Sets `button.image = renderedFrames[frameIndex]` and nothing else. `imageScaling`
+is **not** set here — it was moved off the per-frame hot path into `applySizing()` (§13.4; the
+resolved anti-pattern #4, Appendix B).
 
-### 13.4 `applySizing()` (lines 911-920)
-No-ops if `frames` is empty. `baseSlotWidth = max(NSStatusBar.system.thickness,
-Tuning.minBaseSlotWidth)`. Sets `statusItem.length` to `ceil(baseSlotWidth *
-effectiveWidthSlots())` if `requestedWidthSlots != nil`, else `ceil(baseSlotWidth *
-currentPresetScale())` — the product is rounded **up** to a whole point in both branches.
-Always calls `updateRenderedFrames()` at the end.
+### 13.4 `applySizing()` (lines 2051-2064)
+No-ops if `frames` is empty. Sets `button.imageScaling` based on `requestedWidthSlots != nil`
+(`.scaleAxesIndependently`) vs `nil` (`.scaleProportionallyUpOrDown`) — here rather than per frame,
+since it depends only on auto-vs-fixed width (line 2056). `baseSlotWidth =
+max(NSStatusBar.system.thickness, Tuning.minBaseSlotWidth)`. Sets `statusItem.length` to
+`ceil(baseSlotWidth * effectiveWidthSlots())` if `requestedWidthSlots != nil`, else
+`ceil(baseSlotWidth * currentPresetScale())` — the product is rounded **up** to a whole point in
+both branches. Always calls `updateRenderedFrames()` at the end.
 
-### 13.5 `updateRenderedFrames()` (lines 846-909)
+### 13.5 `updateRenderedFrames()` (lines 1986-2049)
 No-ops (sets `renderedFrames = []`) if `frames` is empty.
 1. `availableHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)`;
-   `availableWidth = max(statusItem.length - Tuning.renderHorizontalInset, 1)`.
+   `availableWidth = max(statusItem.length - Tuning.renderHorizontalInset, 1)` (lines 1992-1993).
 2. `overlayText = effectiveOverlayText()` — `requestedOverlayText` trimmed, or `nil` if
-   empty after trim (lines 840-844).
+   empty after trim (`effectiveOverlayText()` at lines 1980-1984).
 3. For each raw frame `i`:
-   - `aspect = frameAspects[i]` if in range, else `Tuning.dogSlotScale` (used as a fallback
-     numeric value here, not as a "slot scale" concept — this is a literal fallback constant
-     reuse, line 860).
+   - `aspect = frameAspects[i]` if in range, else `Tuning.fallbackSlotScale` (a neutral 1.0
+     fallback numeric value, line 2000).
    - If `requestedWidthSlots != nil`: `targetSize = (availableWidth, availableHeight)`
      (stretch to fill the slot exactly, no aspect preservation).
    - Else: `targetHeight = min(max(availableHeight, 12), max(availableWidth, 12) /
@@ -1196,10 +1279,10 @@ No-ops (sets `renderedFrames = []`) if `frames` is empty.
      negative stroke width), centered/truncating-tail paragraph style, drawn into a rect
      inset by `overlayHorizontalInset`/`overlayVerticalInset` and vertically centered.
    - `rendered.isTemplate = false` (explicit — not left to the `NSImage` default).
-4. Assigns the full array to `renderedFrames` (line 979) — every frame is regenerated on
+4. Assigns the full array to `renderedFrames` (line 2048) — every frame is regenerated on
    every call; there is no per-frame caching/memoization across calls.
 
-### 13.6 Occlusion pause — `updateAnimationForOcclusion()`
+### 13.6 Occlusion pause — `updateAnimationForOcclusion()` (lines 1879-1888)
 Driven by the `occlusionObserver` (`NSWindow.didChangeOcclusionStateNotification` on the status
 button's window, §9.2 step 14). When the button's window is **not** `.visible` (behind the notch /
 menu-bar overflow, on another Space, or the display is off), calls `stopGameLoop()` — no point
@@ -1215,52 +1298,52 @@ but the machine is under pressure.
 
 ---
 
-## 14. GIF decode pipeline — `loadFrames(from:)` (~lines 1109-1167)
+## 14. GIF decode pipeline — `loadFrames(from:)` (lines 2088-2146)
 
 1. `FileManager.default.fileExists(atPath:)` check; fails (returns `false`, logs to stderr)
-   if absent (lines 947-950).
+   if absent (lines 2090-2093).
 2. `CGImageSourceCreateWithURL` — fails if the file isn't a decodable image source
-   (lines 952-955).
-3. `CGImageSourceGetCount(src)` — fails if `0` (lines 957-961).
+   (lines 2095-2098).
+3. `CGImageSourceGetCount(src)` — fails if `0` (lines 2100-2104).
 4. For each frame index `0..<count`:
    - `CGImageSourceCreateImageAtIndex` — on failure, `continue` (skip this frame silently,
-     lines 971-973; does not abort the whole load).
+     lines 2114-2116; does not abort the whole load).
    - `trimTransparentPadding(from:)` (§14.1) applied to the decoded `CGImage`.
    - `frameDuration(from:frameIndex:)` (§14.2) — appended to `nextDurations`.
    - Wraps the trimmed `CGImage` in an `NSImage` sized to the trimmed pixel dimensions,
      appended to `nextFrames`.
-   - Aspect ratio `= width/height` (or `Tuning.dogSlotScale` if height is `0`), clamped to
-     `>= Tuning.minAspect`, appended to `nextAspects`.
+   - Aspect ratio `= width/height` (or `Tuning.fallbackSlotScale` if height is `0`), clamped to
+     `>= Tuning.minAspect`, appended to `nextAspects` (line 2129).
 5. Final guard: `!nextFrames.isEmpty && nextFrames.count == nextDurations.count &&
    nextFrames.count == nextAspects.count` — since every append happens together per
    iteration (no `continue` between the three appends once past the decode-failure check),
    this guard can only fail via the `nextFrames.isEmpty` branch in practice (all three arrays
    are always appended to in lockstep after that point). Fails with a stderr message if not
-   met (lines 990-997).
+   met (lines 2133-2140).
 6. On success, assigns `frames = nextFrames`, `frameAspects = nextAspects`, `baseDurations =
-   nextDurations`, returns `true` (lines 999-1002).
+   nextDurations`, returns `true` (lines 2142-2145).
 
 Note: this method never touches `renderedFrames` — callers (`applicationDidFinishLaunching`,
 `switchToGif`) always follow a successful `loadFrames` call with `applySizing()` (which
 internally calls `updateRenderedFrames()`).
 
-### 14.1 `trimTransparentPadding(from:)` (lines 1005-1050)
+### 14.1 `trimTransparentPadding(from:)` (lines 2148-2193)
 1. Wraps the `CGImage` in an `NSBitmapImageRep`; returns the image unchanged if it has no
-   alpha channel or `bitmapData` is `nil` (line 1007).
+   alpha channel or `bitmapData` is `nil` (line 2150).
 2. Returns unchanged if `width/height <= 0` or `samplesPerPixel < 4`
-   (`Tuning.minAlphaPixelComponents`) (line 1013).
+   (`Tuning.minAlphaPixelComponents`) (line 2156).
 3. Determines the alpha byte's offset within a pixel from `image.alphaInfo`:
    `.alphaOnly/.first/.premultipliedFirst/.noneSkipFirst` → offset `0`;
    `.last/.premultipliedLast/.noneSkipLast` → offset `bytesPerPixel - 1`; any other case
-   (e.g. `.none`) → returns the image unchanged (lines 1015-1023).
+   (e.g. `.none`) → returns the image unchanged (lines 2158-2166).
 4. Scans every pixel; tracks the bounding box (`minX/maxX/minY/maxY`) of pixels whose alpha
-   byte is `> Tuning.alphaVisibleThreshold` (3) (lines 1025-1041).
+   byte is `> Tuning.alphaVisibleThreshold` (3) (lines 2168-2184).
 5. Returns unchanged if no pixel exceeded the threshold — the guard is `maxX >= minX && maxY >=
    minY` (both axes checked) — or if the bounding box already covers the full image.
 6. Otherwise crops to the bounding box via `CGImage.cropping(to:)`, falling back to the
-   original image if cropping itself fails (line 1049).
+   original image if cropping itself fails (line 2192).
 
-### 14.2 `frameDuration(from:frameIndex:)` (lines 1052-1064)
+### 14.2 `frameDuration(from:frameIndex:)` (lines 2195-2207)
 Reads `CGImageSourceCopyPropertiesAtIndex` → `kCGImagePropertyGIFDictionary` →
 `kCGImagePropertyGIFUnclampedDelayTime`, falling back to `kCGImagePropertyGIFDelayTime`,
 falling back to `Tuning.defaultGifFrameDelay` (0.1) if neither property/dictionary is
@@ -1270,19 +1353,20 @@ present. Final value is floored at `Tuning.minGifFrameDelay` (0.02) via `max(val
 
 ## 15. Sizing model
 
-### 15.1 `currentPresetScale() -> CGFloat` (lines 933-935)
-`activePreset?.slotScale ?? Tuning.dogSlotScale` — a direct read of the descriptor resolved
-once by `switchToGif`/`init` (§8.1), rather than re-deriving identity from a path comparison
-on every call. Values are the same as before: `Tuning.horseSlotScale` (1.2),
-`totoroGroupSlotScale` (4.0), `totoroSlotScale` (1.25), or `dogSlotScale` (1.0) for dog/custom
-(`activePreset == nil`).
+### 15.1 `currentPresetScale() -> CGFloat` (lines 2077-2079)
+`activePreset?.slotScale ?? defaultDescriptor?.slotScale ?? Tuning.fallbackSlotScale` — a direct
+read of the descriptor resolved once by `switchToGif`/`init` (§8.1), rather than re-deriving
+identity from a path comparison on every call. `slotScale` values come from `gifs/presets.json`
+(§8.1): e.g. horse `1.2`, totoro `1.25`, totoro-group `4.0`, dog/chihiro `1.0`; a custom GIF
+(`activePreset == nil`) borrows `defaultDescriptor`'s scale, or the neutral `1.0`
+`Tuning.fallbackSlotScale` if the manifest failed to load.
 
-### 15.2 `minimumSlotsForCurrentPreset() -> Int` (lines 928-931)
-`clamp(Int(ceil(currentPresetScale())), Tuning.minWidthSlots, Tuning.maxWidthSlots)` — e.g.
-`totoroGroupSlotScale = 4.0` → minimum `4` slots; `horseSlotScale = 1.2` → `ceil = 2` →
-minimum `2` slots; `dogSlotScale = 1.0` → minimum `1` slot.
+### 15.2 `minimumSlotsForCurrentPreset() -> Int` (lines 2072-2075)
+`clamp(Int(ceil(currentPresetScale())), Tuning.minWidthSlots, Tuning.maxWidthSlots)` — e.g. a
+`4.0` slot scale (totoro-group) → minimum `4` slots; `1.2` (horse) → `ceil = 2` →
+minimum `2` slots; `1.0` (dog/chihiro) → minimum `1` slot.
 
-### 15.3 `effectiveWidthSlots() -> Int` (lines 922-926)
+### 15.3 `effectiveWidthSlots() -> Int` (lines 2066-2070)
 `clamp(requestedWidthSlots ?? minimumSlotsForCurrentPreset(), minimumSlotsForCurrentPreset(),
 Tuning.maxWidthSlots)`.
 
@@ -1290,22 +1374,23 @@ Tuning.maxWidthSlots)`.
 
 ## 16. Speed-profile model
 
-### 16.1 `currentPresetKind() -> PresetKind` (lines 941-943)
-`activePreset?.kind ?? .custom` — direct descriptor read, same pattern as §15.1. As of this
-refactor, `currentPresetKind()` has no remaining internal callers (`currentSpeedProfile()`
-below reads `activePreset?.speedProfile` directly instead of round-tripping through
-`PresetKind`); it's kept as a small public-shaped accessor since `PresetKind` remains a
-meaningful domain concept.
+### 16.1 `currentPresetKind()` / `PresetKind` — removed
+Both the `PresetKind` enum and the `currentPresetKind()` accessor were removed when preset
+profiles moved into `gifs/presets.json` (§8): preset identity is now the `key`/`speedProfile`
+data on `PresetDescriptor`, not a Swift enum, so there is no per-kind `switch` and nothing left to
+map through `PresetKind`. `currentSpeedProfile()` (§16.2) reads `activePreset?.speedProfile`
+directly. (Appendix B #1 noted the `currentPresetKind()` deletion; the `PresetKind` enum itself
+was subsequently removed as well.)
 
-### 16.2 `currentSpeedProfile() -> SpeedProfile` (lines 937-939)
-`activePreset?.speedProfile ?? Self.customSpeedProfile`. Each built-in preset's
-`SpeedProfile` is constructed once in `init` (lines 306-310) from the same `Tuning`
-`(label, min, max, responseExponent)` tuples enumerated in §5's "CPU sampling / speed
-mapping" group, and stored on its `PresetDescriptor` (§8.1) — there is no longer a `switch`
-over `PresetKind` computing this per call. `Self.customSpeedProfile` (lines 253-258) reuses
-`dogSpeedMin`/`dogSpeedMax`/`linearSpeedCurveExponent` under the label `"custom"` — i.e. any
-non-built-in GIF path (`activePreset == nil`) still gets the dog preset's numeric speed range,
-only differing in the label shown in the menu.
+### 16.2 `currentSpeedProfile() -> SpeedProfile` (lines 2081-2083)
+`activePreset?.speedProfile ?? defaultDescriptor?.speedProfile ?? Self.customSpeedProfile`. Each
+built-in preset's `SpeedProfile` is decoded from `gifs/presets.json` in `init` (lines 948-968) and
+stored on its `PresetDescriptor` (§8.1) — there is no longer a `switch` over any preset enum
+computing this per call. `Self.customSpeedProfile` (lines 837-842) is a self-contained literal
+(`label "custom"`, `min 0.5`, `max 2.5`, `responseExponent 1.0`) used only as a last resort when
+there is neither an active preset nor a manifest default to borrow from (i.e. a custom GIF loaded
+while the manifest itself failed); in the normal path a custom GIF inherits `defaultDescriptor`'s
+profile.
 
 ---
 
@@ -1313,17 +1398,22 @@ only differing in the label shown in the menu.
 
 | Method | Lines | `alertStyle` | Triggers app exit? |
 |---|---|---|---|
-| `showAbout()` | 457-470 | `.informational` | no |
-| `showStartupErrorAndQuit(_:)` | 497-508 | `.critical` | yes — `NSApp.terminate(nil)` after modal dismissed |
-| `showRuntimeError(_:)` | 754-764 | `.warning` | no — also calls `NSSound.beep()` first |
+| `showAbout()` | 1218-1231 | `.informational` | no |
+| `showStartupErrorAndQuit(_:)` | 1299-1314 | `.critical` | yes — `NSApp.terminate(nil)` after modal dismissed |
+| `showRuntimeError(_:)` | 1795-1809 | `.warning` | no — also calls `NSSound.beep()` first |
 
-`makeMenuAlertIcon()` (lines 477-495): looks up the `"horse-black"` entry in `allPresets` by
-key (`allPresets.first(where: { $0.key == "horse-black" })?.path`, replacing the old direct
-`builtInHorseBlackPath` constant reference) and loads that path as an `NSImage`, redraws it
-into a fresh 48x48 `NSImage` via `lockFocus()`/`unlockFocus()`, returns `nil` if either the
-lookup or the image load fails. Used as the `.icon` on all three alert types above
-(conditionally, `if let icon = ...`) — i.e. every alert in the app uses the black-horse GIF
-as its icon regardless of the currently active preset.
+All three (and `promptOverlayText`'s alert) route through `suppressModalAlerts` (line 1297,
+`config.exitAfterSeconds != nil`): under the `MENUBAR_LOAD_RUNNER_EXIT_AFTER` test hook they
+report to stderr (and, for the startup path, terminate) instead of blocking on a modal.
+
+`makeMenuAlertIcon()` (lines 1238-1291): looks up the `"horse-black"` entry in `allPresets` by
+key (`allPresets.first(where: { $0.key == "horse-black" })?.path`) and loads that path as an
+`NSImage`, then aspect-fits it (the art is ~3:2) into a 48x48 box backed by an
+`NSBitmapImageRep` at the display's `backingScaleFactor` with high-quality interpolation (drawn
+via an `NSGraphicsContext`, not `lockFocus`/`unlockFocus`); returns `nil` if either the lookup or
+the image load fails. Used as the `.icon` on all three alert types above (conditionally,
+`if let icon = ...`) — i.e. every alert in the app uses the black-horse GIF as its icon regardless
+of the currently active preset.
 
 ---
 
@@ -1331,8 +1421,8 @@ as its icon regardless of the currently active preset.
 
 | Launcher passes | `Config.parse()` consumes |
 |---|---|
-| The positional arg **unchanged** — a preset keyword (e.g. `horse-white`), a raw GIF path, or nothing at all | `presetOrPath` (positional, or `MENUBAR_LOAD_RUNNER_PATH` env fallback, or `Config.defaultPreset`); keyword→path resolution deferred to `init` (§9.1) |
-| `--width`/`-w`, `--speed-multiplier`, `--overlay-text`, `-h`/`--help` passed through verbatim as `passthrough_args` | same flags, parsed as documented in §6.3 |
+| The positional arg **unchanged** — a preset keyword (e.g. `horse-white`), a raw GIF path, or nothing at all | `presetOrPath` (positional, or `MENUBAR_LOAD_RUNNER_PATH` env fallback, else `""`); keyword→path resolution and the manifest `defaultPreset` fallback deferred to `init` (§9.1) |
+| `--width`/`-w`, `--speed-multiplier`, `--load-source`, `--overlay-text`, `-h`/`--help` passed through verbatim as `passthrough_args` | same flags, parsed as documented in §6.3 |
 | `--foreground`/`--no-detach`/`--detach`/`--extra` — consumed by the launcher itself, never forwarded | not present in `Config` — the Swift binary has no knowledge of detach/singleton behavior; those are exclusively launcher-level concerns |
 
 Since anti-pattern #6, the launcher no longer resolves preset keywords or supplies a default —
@@ -1420,9 +1510,14 @@ Grounded characterization of the code's *shape*, derived from the diagrams in §
   Since anti-pattern #6 the launcher forwards the positional arg unchanged — preset identity lives
   entirely Swift-side. Detach/singleton concerns live entirely launcher-side and are invisible to
   the binary — a clean split.
-- **Internal collaborator boundary**: `CPULoadMonitor` is the only sub-responsibility factored into
-  its own type; it exposes a 2-method + 2-property surface (`sampleUsage()`, `smoothedUsage`,
-  `hasSample`) and hides all Mach detail. `Tuning` is a pure constant namespace with no behavior.
+- **Internal collaborator boundary**: the load-source readers (`CPULoadMonitor`,
+  `MemoryLoadMonitor`, `GPULoadMonitor`, `NetworkLoadMonitor`, `DiskLoadMonitor`) are the
+  sub-responsibilities factored into their own types, each exposing a small
+  `sampleUsage(...)` + `hasSample` + last-value surface and hiding all Mach/IORegistry/sysctl
+  detail; they share the `ThroughputScaler` value type for unbounded rates (§7.9), and
+  `LoadHistoryView` is a self-contained drawing view. `Tuning` is a pure constant namespace with no
+  behavior. (The single-type extraction note that once said "`CPULoadMonitor` is the only
+  collaborator" predates the additional readers.)
 - **Two decoupled data pipelines** meet only at `frameIndex`/`renderedFrames`: the raw-decode
   pipeline (`loadFrames` → `frames`/`frameAspects`/`baseDurations`) and the render pipeline
   (`updateRenderedFrames` → `renderedFrames`), as documented in §13–§14.
@@ -1434,7 +1529,9 @@ were tracked in a since-deleted TODO (`TODO-20260706-2303-antipatterns-from-desi
 and closed out on 2026-07-07. Outcomes, recorded here so the rationale survives:
 
 **Applied** (the sections above already reflect these):
-- **#1 — dead `currentPresetKind()`**: deleted (zero callers); `enum PresetKind` retained.
+- **#1 — dead `currentPresetKind()`**: deleted (zero callers). `enum PresetKind` was retained at
+  the time, but has since been removed entirely along with the move of preset profiles to
+  `gifs/presets.json` (§8, §16.1).
 - **#2 — `isAutoSpeed`**: extracted the 4× `config.speedMultiplierOverride == nil` predicate
   into one computed property.
 - **#3 — overlay-clear dedup**: `clearOverlayText` and `promptOverlayText`'s empty-input branch

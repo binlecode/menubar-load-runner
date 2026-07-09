@@ -38,6 +38,19 @@ _Nothing yet._
   morphological opening) so the dog floats like the other silhouettes. 12 frames, delay 3, infinite
   loop, transparent background unchanged; no keyword, timing, or manifest change.
 
+### Added
+
+- CLI forgiveness for common argument mix-ups — neither now triggers the fatal startup error box:
+  - A load-source keyword (`cpu` / `memory` / `gpu` / `network` / `disk`) given in the **positional**
+    (preset) slot is interpreted as `--load-source` and the default preset is used, with a stderr
+    note. An explicit `--load-source` always wins (the positional is then ignored).
+  - An unknown positional **bareword** (not a known preset keyword and not an existing file) falls
+    back to the default preset with a stderr warning. An explicit GIF **path** (contains `/` or ends
+    `.gif`) that doesn't exist still fails fast with the fatal "GIF file not found" — the QA §4a
+    contract is preserved, since naming a specific missing file is worth surfacing.
+- README "The menu (live dashboard)" section documenting the status-item menu's trace chart and
+  numeric readouts.
+
 ## [1.2.1] - 2026-07-09
 
 ### Changed

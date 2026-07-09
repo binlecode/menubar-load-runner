@@ -219,9 +219,24 @@ private struct Config {
             loadSourceArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOAD_SOURCE"]
         }
         // Unknown/absent → .cpu (today's behavior). Never a launch failure, per spec.
-        let loadSource = LoadSource.from(key: loadSourceArg) ?? .cpu
+        var loadSource = LoadSource.from(key: loadSourceArg) ?? .cpu
         if let requested = loadSourceArg, LoadSource.from(key: requested) == nil, !requested.isEmpty {
             fputs("Unknown --load-source \"\(requested)\"; falling back to cpu. Known: \(LoadSource.allCases.map(\.key).joined(separator: ", ")).\n", stderr)
+        }
+
+        // Forgiveness: a load-source keyword (cpu/memory/gpu/network/disk) typed in the POSITIONAL
+        // (preset) slot is a common mix-up with --load-source — and would otherwise be treated as a
+        // GIF path and fail to launch with a fatal error box. Interpret it as the load source and let
+        // the default preset stand in. An explicit --load-source always wins.
+        var positional = value
+        if let src = LoadSource.from(key: positional) {
+            if loadSourceArg == nil || loadSourceArg?.isEmpty == true {
+                loadSource = src
+                fputs("Interpreting positional \"\(positional)\" as --load-source \(src.key); using the default preset. (Pass a preset keyword or GIF path as the positional argument.)\n", stderr)
+            } else {
+                fputs("Ignoring positional \"\(positional)\" (looks like a load source, but --load-source \(loadSource.key) was given); using the default preset.\n", stderr)
+            }
+            positional = ""
         }
 
         var exitAfterSeconds: TimeInterval?
@@ -232,7 +247,7 @@ private struct Config {
 
         return .config(
             Config(
-                presetOrPath: NSString(string: value).expandingTildeInPath,
+                presetOrPath: NSString(string: positional).expandingTildeInPath,
                 widthSlots: widthSlots,
                 speedMultiplierOverride: speedMultiplierOverride,
                 overlayText: overlayText,
@@ -977,9 +992,24 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let matched = presets.first(where: { $0.key == requested }) {
             self.activeGifPath = matched.path
             self.activePreset = matched
+        } else if !requested.isEmpty,
+                  !requested.contains("/"),
+                  !requested.lowercased().hasSuffix(".gif"),
+                  !FileManager.default.fileExists(atPath: requested),
+                  let fallback = presets.first(where: { $0.key == manifestDefaultKey }) {
+            // A BAREWORD that is neither a known preset keyword nor a file on disk — a typo or a
+            // stray keyword. Fall back to the default preset with a stderr warning instead of
+            // quitting with a fatal error box, which users kept hitting. An explicit GIF PATH
+            // (contains "/" or ends ".gif") is deliberately NOT caught here: if it's missing,
+            // loadFrames still surfaces the fatal "GIF file not found", per the QA §4a contract —
+            // pointing at a specific file that isn't there is worth telling the user about.
+            fputs("\"\(requested)\" is not a known preset or an existing GIF file; using the default preset \"\(fallback.key)\". Run with --help to list presets.\n", stderr)
+            self.activeGifPath = fallback.path
+            self.activePreset = fallback
         } else {
-            // Not a known keyword — treat it as a (custom) GIF path. Still match by path so a
-            // raw path pointing at a built-in GIF adopts that preset's profile.
+            // A GIF path (has "/" or ".gif", or exists on disk), or no default to fall back to —
+            // treat it as a (custom) GIF path. Still match by path so a raw path pointing at a
+            // built-in GIF adopts its profile. A missing path fails later in loadFrames (fatal).
             self.activeGifPath = requested
             self.activePreset = presets.first { $0.path == requested }
         }

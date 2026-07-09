@@ -150,6 +150,17 @@ The effective width is clamped to each preset's minimum. For example, `totoro-gr
 `--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
 Overlay text is limited to 12 characters.
 
+## The menu (live dashboard)
+
+Clicking the status-bar creature opens a menu that doubles as a live readout of the active load
+source, refreshed while it's open:
+
+- **Trace chart** at the top — a small bar chart of the last ~60s of the source's 0–1 driving
+  fraction (the same value that maps to animation speed). Bars are colored by the same Low/Medium/High
+  thresholds as the state line below, so the chart and text agree. Switching source resets it.
+- **Numeric readouts** below — current usage, state, speed multiplier, and system load average.
+- Selectors for **Load Source**, **Width**, **Overlay Text**, and the **preset** list.
+
 ## Load source (what drives the animation)
 
 ```bash

@@ -1,2 +1,4 @@
 MenuBarLoadRunner
 tmp/
+.wrangler/
+.claude/settings.local.json

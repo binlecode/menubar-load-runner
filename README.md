@@ -78,6 +78,23 @@ Uninstall is the exact inverse and leaves no residue (deregisters the agent, del
 The mechanics — `--no-detach` supervision, `RunAtLoad` timing, the `bootout` reload race, and the
 Background Task Management behavior — are documented in `docs/DESIGN-system.md` §19.
 
+### Upgrading vs. reconfiguring the login item
+
+These are **independent** — a new release does *not* require a reinstall, and a reinstall is *only*
+for changing the baked-in args:
+
+- **Pick up a new release** — the LaunchAgent runs the launcher script (not a fixed binary), which
+  recompiles `MenuBarLoadRunner.swift` whenever it changes. So a new version is picked up the next
+  time the agent starts — just restart it (args are preserved, nothing to reinstall):
+  ```bash
+  launchctl kickstart -k "gui/$(id -u)/ai.bera.menubarloadrunner"   # or simply log out and back in
+  ```
+- **Change the preset or load source** — this is the *only* reason to reinstall. Re-run the installer
+  with the new args; it re-bakes the plist and restarts:
+  ```bash
+  ./scripts/install-login-item.sh dog-black --load-source fan
+  ```
+
 ## Built-in presets
 
 ```bash

@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.2.1"
+    static let version = "1.2.2"
 }
 
 private enum Tuning {
@@ -34,6 +34,9 @@ private enum Tuning {
     static let constrainedSpeedCeilingFraction: Double = 0.5
     static let cpuStateLowThreshold: Double = 0.30
     static let cpuStateMediumThreshold: Double = 0.70
+    // How many 0…1 load samples the menu's trace chart retains (one per loadSampleInterval tick).
+    // 30 × 2s ≈ 60s of visible history.
+    static let loadHistoryCapacity: Int = 30
     // Per-preset speed ranges and slot scales now live in gifs/presets.json (see PresetManifest),
     // not here — the manifest is the single source of truth for preset profiles.
     static let speedOverrideMin: Double = 0.1
@@ -690,6 +693,104 @@ private final class DiskLoadMonitor {
     }
 }
 
+// A compact bar-chart trace of the active load source's recent 0…1 driving fraction, shown as the
+// top item of the status menu (a live counterpart to the numeric readout lines below it). Newest
+// sample sits at the right edge; the buffer fills leftward until full, then scrolls. Bars are
+// colored by the same Low/Medium/High thresholds as the CPU/GPU State line so the chart and the
+// text agree. Non-interactive (hosted in a disabled NSMenuItem); it only ever draws.
+@MainActor
+private final class LoadHistoryView: NSView {
+    // Most-recent-last, 0…1, at most `capacity` entries.
+    var samples: [Double] = [] { didSet { needsDisplay = true } }
+    // Shown in the caption, e.g. "CPU". Set alongside samples on each refresh.
+    var sourceLabel: String = "" { didSet { needsDisplay = true } }
+    // True before the active source has produced a usable sample (empty chart → "measuring…").
+    var warmingUp: Bool = true { didSet { needsDisplay = true } }
+
+    private let capacity: Int
+
+    init(capacity: Int) {
+        self.capacity = capacity
+        super.init(frame: NSRect(x: 0, y: 0, width: 224, height: 46))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 224, height: 46) }
+
+    // Menu-item left gutter (checkmark column) + trailing padding, so bars line up under the text rows.
+    private let insetLeft: CGFloat = 21
+    private let insetRight: CGFloat = 14
+    private let insetTop: CGFloat = 5
+    private let insetBottom: CGFloat = 7
+    private let captionHeight: CGFloat = 13
+    private let barGap: CGFloat = 1.5
+
+    private func color(for value: Double) -> NSColor {
+        if value < Tuning.cpuStateLowThreshold { return .systemGreen }
+        if value < Tuning.cpuStateMediumThreshold { return .systemYellow }
+        return .systemRed
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let content = NSRect(
+            x: insetLeft,
+            y: insetBottom,
+            width: bounds.width - insetLeft - insetRight,
+            height: bounds.height - insetTop - insetBottom
+        )
+        guard content.width > 4, content.height > captionHeight else { return }
+
+        let windowSeconds = Int((Double(capacity) * Tuning.loadSampleInterval).rounded())
+        let caption: String
+        if warmingUp || samples.isEmpty {
+            caption = sourceLabel.isEmpty ? "measuring…" : "\(sourceLabel) · measuring…"
+        } else {
+            caption = "\(sourceLabel) · last \(windowSeconds)s"
+        }
+        let captionAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let captionSize = (caption as NSString).size(withAttributes: captionAttrs)
+        (caption as NSString).draw(
+            at: NSPoint(x: content.minX, y: content.maxY - captionSize.height),
+            withAttributes: captionAttrs
+        )
+
+        // Bars occupy everything under the caption.
+        let plot = NSRect(
+            x: content.minX,
+            y: content.minY,
+            width: content.width,
+            height: content.height - captionHeight
+        )
+        guard plot.height > 2 else { return }
+
+        // Faint baseline track so an empty/idle chart still reads as a chart.
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(rect: NSRect(x: plot.minX, y: plot.minY, width: plot.width, height: 1)).fill()
+
+        guard !samples.isEmpty else { return }
+
+        let slotWidth = plot.width / CGFloat(capacity)
+        let barWidth = max(1, slotWidth - barGap)
+        let count = min(samples.count, capacity)
+        let trailing = samples.suffix(count)
+        for (offset, value) in trailing.enumerated() {
+            let clamped = min(max(value, 0), 1)
+            // Right-align: oldest of the visible window starts at (capacity - count).
+            let slot = capacity - count + offset
+            let x = plot.minX + CGFloat(slot) * slotWidth
+            let h = max(1, CGFloat(clamped) * plot.height)
+            let rect = NSRect(x: x, y: plot.minY, width: barWidth, height: h)
+            color(for: clamped).withAlphaComponent(0.9).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 0.75, yRadius: 0.75).fill()
+        }
+    }
+}
+
 @MainActor
 private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct SpeedProfile {
@@ -756,6 +857,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
     private var infoMenu: NSMenu!
+    // Trace chart of the active source's recent driving fractions, and its ring buffer. The buffer
+    // holds only the active source's samples (cleared on a source switch, since a mixed-source
+    // history would be meaningless); recorded each tick in sampleSystemLoad, pushed to the view in
+    // refreshMenuMetrics (so it updates both on the 2s tick and on menuWillOpen).
+    private var historyMenuItem: NSMenuItem!
+    private var loadHistoryView: LoadHistoryView!
+    private var loadHistory: [Double] = []
     // Source-conditional: holds the active load source's primary metric (CPU% / Memory%) and
     // its state qualifier (CPU State Low/Med/High / Memory Pressure Normal/Warning/Critical).
     private var usageItem: NSMenuItem!
@@ -899,6 +1007,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         infoMenu = NSMenu()
         infoMenu.delegate = self
+
+        loadHistoryView = LoadHistoryView(capacity: Tuning.loadHistoryCapacity)
+        historyMenuItem = NSMenuItem(title: "Load History", action: nil, keyEquivalent: "")
+        historyMenuItem.isEnabled = false
+        historyMenuItem.view = loadHistoryView
+        infoMenu.addItem(historyMenuItem)
 
         usageItem = NSMenuItem(title: "CPU Usage: --", action: nil, keyEquivalent: "")
         usageItem.isEnabled = false
@@ -1228,6 +1342,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Sample only the active source (active-only, per the self-throttle ethos): the inactive
         // monitors aren't polled, so their menu lines aren't shown while another source drives.
         if let usage = sampleActiveSource(elapsed: elapsed) {
+            recordLoadSample(usage)
             if isAutoSpeed {
                 let candidate = speedMultiplier(forUsage: usage)
                 if abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis {
@@ -1250,6 +1365,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .gpu: return gpuMonitor.sampleUsage()
         case .network: return networkMonitor.sampleUsage(elapsed: elapsed)
         case .disk: return diskMonitor.sampleUsage(elapsed: elapsed)
+        }
+    }
+
+    // Append a 0…1 driving fraction to the trace-chart ring buffer, trimming to capacity.
+    private func recordLoadSample(_ usage: Double) {
+        loadHistory.append(min(max(usage, 0), 1))
+        if loadHistory.count > Tuning.loadHistoryCapacity {
+            loadHistory.removeFirst(loadHistory.count - Tuning.loadHistoryCapacity)
         }
     }
 
@@ -1286,6 +1409,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func refreshMenuMetrics() {
+        // Trace chart mirrors the active source's recent driving fractions (0…1), the same values
+        // that map to the speed multiplier. Pushed here so it refreshes both on the 2s tick (menu
+        // open or not) and on menuWillOpen.
+        loadHistoryView.sourceLabel = activeLoadSource.menuTitle
+        loadHistoryView.warmingUp = !activeSourceHasSample
+        loadHistoryView.samples = loadHistory
+
         // Source-conditional: usageItem/stateItem show the ACTIVE source's metric + state. The
         // inactive source isn't sampled (see sampleSystemLoad), so showing its stale line would
         // mislead — instead only the driver's figures appear. Load Avg stays (system-wide).
@@ -1518,7 +1648,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // rate) just store a baseline here and re-warm over the next tick. Reset lastSampleUptime so
         // that next tick treats the gap as a fresh start rather than dividing by a stale interval.
         // reevaluateSpeedForCurrentConditions no-ops until the source has a usable sample.
-        _ = sampleActiveSource(elapsed: nil)
+        // A mixed-source history would be meaningless, so drop the old source's trace; seed it with
+        // the on-demand resample if that source already has a usable value (e.g. CPU/GPU/memory).
+        loadHistory.removeAll(keepingCapacity: true)
+        if let seed = sampleActiveSource(elapsed: nil) {
+            recordLoadSample(seed)
+        }
         lastSampleUptime = nil
         reevaluateSpeedForCurrentConditions()
         refreshLoadSourceSelectionState()

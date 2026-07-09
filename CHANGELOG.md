@@ -26,6 +26,18 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.2.2] - 2026-07-09
+
+### Changed
+
+- Dog preset (`dog-white` / `dog-black`) re-rendered by **vector-tracing** the silhouette with
+  `potrace` instead of raster upscaling. Each frame's alpha mask is preprocessed (`mkbitmap`) and
+  traced to resolution-independent Bézier curves, then rasterized at 466×220, so the menu bar
+  downsamples clean curves rather than a fixed 72×34 pixel staircase — edges now read as smooth as
+  the horse preset. The stylistic ground/motion streak under the paws was removed (banded
+  morphological opening) so the dog floats like the other silhouettes. 12 frames, delay 3, infinite
+  loop, transparent background unchanged; no keyword, timing, or manifest change.
+
 ## [1.2.1] - 2026-07-09
 
 ### Changed

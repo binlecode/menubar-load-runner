@@ -3,7 +3,7 @@
 # Run from the repo root:  tests/qa.sh
 #
 # Coverage tiers (the boundary CI is built around — see README "Testing & CI"):
-#   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler.
+#   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler + semver.
 #             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
 #             a headless CI runner). This is the required gate.
 #   gui       §3 launch lifecycle · §4 error paths. These boot NSApplication + create an
@@ -62,6 +62,8 @@ $BIN --speed-multiplier -2 >/dev/null 2>&1;         chk "--speed-multiplier neg"
 $BIN --overlay-text "" >/dev/null 2>&1;             chk "--overlay-text empty" 1 $?
 $BIN --overlay-text THIRTEENCHARS >/dev/null 2>&1;  chk "--overlay-text >12" 1 $?
 $BIN --load-source >/dev/null 2>&1;                 chk "--load-source no value" 1 $?
+$BIN --no-update-check --help >/dev/null 2>&1;      chk "--no-update-check accepted" 0 $?
+$BIN --help 2>&1 | grep -q -- "--no-update-check" && { echo "  PASS --help lists --no-update-check"; pass=$((pass+1)); } || { echo "  FAIL --help missing --no-update-check"; fail=$((fail+1)); }
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?
 VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner.swift | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')
 $BIN --help 2>&1 | grep -q "MenuBar Load Runner $VER" && { echo "  PASS --help shows $VER"; pass=$((pass+1)); } || { echo "  FAIL --help missing $VER"; fail=$((fail+1)); }
@@ -113,6 +115,8 @@ section "§5 reader correctness [core]"
 swiftc tests/readers.swift -o tmp/readers 2>&1 && ./tmp/readers || total_fail=$((total_fail+1)); rm -f tmp/readers
 section "§5 adaptive scaler [core]"
 swiftc tests/scaler.swift -o tmp/scaler 2>&1 && ./tmp/scaler || total_fail=$((total_fail+1)); rm -f tmp/scaler
+section "§5 semver + update-tag parse [core]"
+swiftc tests/semver.swift -o tmp/semver 2>&1 && ./tmp/semver || total_fail=$((total_fail+1)); rm -f tmp/semver
 else
 skip "§5 readers + adaptive scaler [core]" "core tier not selected (--gui)"
 fi

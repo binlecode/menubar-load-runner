@@ -28,8 +28,8 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--no-update-check] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--no-update-check] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -50,6 +50,7 @@ Options:
   --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk, fan
                              (also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown/unavailable -> cpu)
   --overlay-text <text>      Overlay text (up to 12 chars; interactive limit adapts to width), drawn at runtime
+  --no-update-check          Skip the launch check for a newer release (also via MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0)
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)
   --extra                    Allow launching a new instance even if one is already running

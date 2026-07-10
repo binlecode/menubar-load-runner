@@ -9,14 +9,14 @@
   :root{
     color-scheme: light dark;
     /* — warm-biased neutrals, twilight ground — */
-    --paper:#F4EEE1;          /* light ground, warm */
-    --paper-2:#EAE2D1;        /* light panel */
+    --paper:#E6E4D5;          /* light ground — warm stone-sage, biased off butter-cream */
+    --paper-2:#DAD7C6;        /* light panel */
     --ink:#141821;            /* deep blue-black */
     --ink-2:#1C222E;          /* dark panel */
     --ink-3:#252C3A;          /* dark raised */
-    --text:#1E232D;           /* body text on paper */
-    --text-soft:#5A5346;      /* muted, warm */
-    --line:#D8CDB8;           /* hairline on paper */
+    --text:#21252C;           /* body text on paper */
+    --text-soft:#5C5749;      /* muted, warm */
+    --line:#CDC8B5;           /* hairline on paper */
     /* — accents (the tempo scale) — */
     --river:#4FA9A6;          /* cool teal — idle / low load */
     --lantern:#E7A23C;        /* warm amber — the accent */
@@ -29,7 +29,7 @@
     --bar-line:rgba(255,255,255,.10);
 
     --bg:var(--paper);
-    --surface:#FBF7EE;
+    --surface:#F0EDE1;
     --surface-2:var(--paper-2);
     --fg:var(--text);
     --fg-soft:var(--text-soft);
@@ -48,7 +48,7 @@
     }
   }
   :root[data-theme="light"]{
-    --bg:var(--paper); --surface:#FBF7EE; --surface-2:var(--paper-2);
+    --bg:var(--paper); --surface:#F0EDE1; --surface-2:var(--paper-2);
     --fg:var(--text); --fg-soft:var(--text-soft); --hair:var(--line);
   }
   :root[data-theme="dark"]{
@@ -113,15 +113,29 @@
   }
   .theme-toggle:hover{color:var(--fg); border-color:var(--lantern)}
   .theme-toggle:focus-visible{outline:2px solid var(--lantern); outline-offset:2px}
+  .nav{display:flex; align-items:center; gap:10px}
+  .gh-link{
+    font-family:var(--mono); font-size:12px; letter-spacing:.04em; text-decoration:none;
+    color:var(--fg); background:var(--surface); border:1px solid var(--hair);
+    padding:7px 12px; border-radius:999px; transition:color .2s,border-color .2s;
+  }
+  .gh-link:hover{color:var(--lantern-deep); border-color:var(--lantern)}
+  .gh-link:focus-visible{outline:2px solid var(--lantern); outline-offset:2px}
+  .badge.badge-link{text-decoration:none; transition:color .2s,border-color .2s}
+  .badge.badge-link:hover{color:var(--lantern-deep); border-color:var(--lantern)}
 
   /* ---------- hero ---------- */
   .hero{padding:38px 0 20px}
   .hero .kicker{margin-bottom:20px}
   .hero h1{
-    font-family:var(--serif); font-weight:600; letter-spacing:-.02em;
-    font-size:clamp(40px,7.4vw,78px); line-height:1.02;
+    font-family:var(--serif); font-weight:600; letter-spacing:-.028em;
+    font-size:clamp(40px,7.4vw,78px); line-height:1.015;
+    font-optical-sizing:auto;
   }
-  .hero h1 em{font-style:italic; color:var(--lantern)}
+  .hero h1 em{font-style:italic; color:var(--lantern-deep)}
+  @media (prefers-color-scheme:dark){ .hero h1 em{color:var(--lantern)} }
+  :root[data-theme="light"] .hero h1 em{color:var(--lantern-deep)}
+  :root[data-theme="dark"] .hero h1 em{color:var(--lantern)}
   .hero .lede{
     margin-top:22px; max-width:56ch; font-size:clamp(16px,2vw,19px); color:var(--fg-soft);
   }
@@ -184,9 +198,18 @@
 
   /* ---------- section frame ---------- */
   section{padding:56px 0; position:relative}
-  .sechead{display:flex; align-items:baseline; justify-content:space-between; gap:20px; margin-bottom:30px; border-top:1px solid var(--hair); padding-top:22px}
-  .sechead h2{font-family:var(--serif); font-weight:600; font-size:clamp(24px,3.4vw,34px); letter-spacing:-.015em}
-  .sechead .n{font-family:var(--mono); font-size:12px; color:var(--fg-soft); letter-spacing:.1em}
+  .sechead{display:flex; align-items:center; justify-content:space-between; gap:20px; margin-bottom:30px; border-top:1px solid var(--hair); padding-top:22px}
+  .sechead h2{font-family:var(--serif); font-weight:600; font-size:clamp(24px,3.4vw,34px); letter-spacing:-.02em}
+  /* section label = a little menu-bar chip: the app's home, threaded through the page */
+  .sechead .n{
+    font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+    color:rgba(255,255,255,.82); background:var(--bar); border:1px solid var(--bar-line);
+    padding:6px 12px 6px 10px; border-radius:999px; backdrop-filter:blur(6px);
+    display:inline-flex; align-items:center; gap:8px; white-space:nowrap;
+    box-shadow:0 8px 22px -14px rgba(0,0,0,.75);
+  }
+  .sechead .n::before{content:""; width:7px; height:7px; border-radius:50%;
+    background:var(--lantern); box-shadow:0 0 0 3px var(--glow)}
 
   /* ---------- load sources ---------- */
   .sources{display:grid; grid-template-columns:repeat(6,1fr); gap:14px}
@@ -279,7 +302,10 @@
   <header>
     <div class="topline">
       <div class="brand"><span class="dot"></span> MenuBar&nbsp;Load&nbsp;Runner</div>
-      <button class="theme-toggle" id="themeBtn" type="button" aria-label="Toggle color theme">◐ theme</button>
+      <div class="nav">
+        <a class="gh-link" href="https://github.com/binlecode/menubar-load-runner">GitHub&nbsp;↗</a>
+        <button class="theme-toggle" id="themeBtn" type="button" aria-label="Toggle color theme">◐ theme</button>
+      </div>
     </div>
 
     <!-- authentic macOS menu bar, creature running live -->
@@ -438,7 +464,8 @@
   <footer>
     <div class="foot">
       <div class="badges">
-        <span class="badge">v1.5.0</span>
+        <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
+        <span class="badge">v1.6.0</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
         <span class="badge">unprivileged · read-only</span>

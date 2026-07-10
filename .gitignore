@@ -3,4 +3,3 @@ tmp/
 .wrangler/
 .claude/settings.local.json
 docs/RESEARCH-2026-competitor-analysis.md
-docs/RUNBOOK-oss-quality.md

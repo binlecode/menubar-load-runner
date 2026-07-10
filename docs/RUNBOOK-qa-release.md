@@ -10,8 +10,10 @@ Run everything from the repo root.
 
 > **Executable harness.** Sections 1–6 below are also available as runnable scripts so you don't have
 > to copy-paste:
-> - `tests/qa.sh` — runs §1–5 (build, CLI parse + version, lifecycle, error paths, readers + scaler),
->   self-scoring, exit 0 only if all pass. Add `--launcher` to also run §6 (it stops running instances).
+> - `tests/qa.sh` — the tiered harness; self-scoring, exit 0 only if every section that ran passes.
+>   Default runs §1–5 (build, CLI parse + version, lifecycle, error paths, readers + scaler). Tier
+>   flags: `--core` = §1/§2/§5 only (no GUI — the headless / CI-safe subset), `--gui` = §3/§4 only,
+>   `--launcher` = also run §6 (it stops running instances). `--help` lists them.
 > - `tests/install-smoke.sh` — install/uninstall round-trip in a `tmp/` sandbox (never touches your
 >   real `~/.local` / LaunchAgents).
 > - `tests/readers.swift`, `tests/scaler.swift` — the §5 probes as standalone files.

@@ -9,6 +9,12 @@ import QuartzCore
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
     static let version = "1.6.0"
+    static let name = "MenuBar Load Runner"
+    static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
+    static let copyright = "© 2026 Bin Le"
+    static let license = "MIT License"
+    static let repositoryURL = "https://github.com/binlecode/menubar-load-runner"
+    static var releasesURL: String { "\(repositoryURL)/releases" }
 }
 
 // A strict three-component semantic version (major.minor.patch). Used to compare the compiled-in
@@ -1637,16 +1643,29 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     @objc
     private func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "About MenuBar Load Runner"
+        // messageText is the bold title; keep it the app + version, the way a standard macOS About
+        // panel reads. The body carries the tagline, live mode, and the OSS credits/copyright block.
+        alert.messageText = "\(AppInfo.name) \(AppInfo.version)"
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
         let speedMode = isAutoSpeed
-            ? "Speed adapts to \(activeLoadSource.menuTitle) load (switch source in the Load Source menu)."
-            : "Fixed speed multiplier: \(String(format: "%.2f", speedMultiplier))x."
-        alert.informativeText = "Version \(AppInfo.version)\nDisplays an animated GIF in the macOS menu bar.\n\(speedMode)"
+            ? "Speed adapts to \(activeLoadSource.menuTitle) load (change it in the Load Source menu)."
+            : "Fixed speed: \(String(format: "%.2f", speedMultiplier))×."
+        alert.informativeText = [
+            AppInfo.tagline,
+            speedMode,
+            "\(AppInfo.copyright) · \(AppInfo.license)",
+            "Preset artwork © its respective creators — see the repository for attribution.",
+        ].joined(separator: "\n\n")
         alert.alertStyle = .informational
-        alert.runModal()
+        // Standard OSS About affordance: a link out to the project. First button is the default
+        // (rightmost / Return); "View on GitHub" sits to its left and opens the repo.
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "View on GitHub")
+        if alert.runModal() == .alertSecondButtonReturn, let url = URL(string: AppInfo.repositoryURL) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc
@@ -1791,8 +1810,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Open Releases Page")   // first = default (Return)
         alert.addButton(withTitle: "Close")
-        if alert.runModal() == .alertFirstButtonReturn,
-           let url = URL(string: "https://github.com/binlecode/menubar-load-runner/releases") {
+        if alert.runModal() == .alertFirstButtonReturn, let url = URL(string: AppInfo.releasesURL) {
             NSWorkspace.shared.open(url)
         }
     }

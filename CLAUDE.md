@@ -1,6 +1,10 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+It is also the **canonical agent-instruction file for every tool**: `AGENTS.md` is a symlink to it
+(the cross-tool standard read by Codex, Copilot, Cursor, etc.), so edit *this* file only — never
+duplicate rules into `AGENTS.md`. Keep it lean and high-SNR; specialized or verbose rules live in
+`docs/` or `.claude/` with a one-line pointer here.
 
 ## What this is
 

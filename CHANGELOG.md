@@ -184,15 +184,11 @@ of the public API and may change in any release.
 
 ### Added
 
-- `docs/cover.html` design/marketing cover page, published to Cloudflare Pages
-  (`menubar-load-runner.pages.dev`) while the repo stays private.
-- `docs/RUNBOOK-pages-publish.md` — runbook to build the cover bundle and deploy it via `wrangler`.
+- `docs/cover.html` — design/marketing cover page for the project.
+- `docs/RUNBOOK-pages-publish.md` — runbook to build the cover bundle and deploy it to Cloudflare
+  Pages via `wrangler` direct upload.
 - `.claude/skills/build-visuals/` — reusable skill + scripts for smoothing preset GIFs and generating
   white/black silhouette variants.
-
-### Removed
-
-- `docs/RUNBOOK-oss-release.md` — the repo is staying private; open-sourcing is no longer the plan.
 
 ## [1.2.0] - 2026-07-07
 

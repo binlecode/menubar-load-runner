@@ -1,0 +1,45 @@
+# CI — runs the tiered QA harness (tests/qa.sh) on a real macOS runner.
+#
+# Coverage boundary (kept 1:1 with tests/qa.sh tiers and the README "Testing & CI" section):
+#   core  (REQUIRED)     §1 build warning-clean · §2 CLI/version · §5 readers + scaler.
+#                        Pure logic/CLI, no GUI — deterministic on any runner. Red = merge blocked.
+#   gui   (best-effort)  §3 launch lifecycle · §4 error paths. Boot NSApplication + NSStatusItem,
+#                        so they need a WindowServer session. Hosted runners are not guaranteed one,
+#                        so this job is informational (continue-on-error) — it never blocks merge.
+#   NOT in CI (manual)   §6 launcher/singleton (disruptive: pkill) and §7 interactive menu
+#                        spot-check. Run locally per docs/RUNBOOK-qa-release.md before a release.
+name: CI
+
+# Auto-triggers are DISABLED to conserve the free-tier Actions quota: macOS runners bill at a 10x
+# minute multiplier, so running on every push/PR drains it fast. For now the harness is run locally
+# (`tests/qa.sh` — see README "Testing & CI") and this workflow is manual-only: run it on demand via
+# the Actions tab → "CI" → "Run workflow".
+# To re-enable automatic runs, uncomment the push/pull_request block below.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: core (build + CLI + readers/scaler — required)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: QA core tier (headless-safe)
+        run: tests/qa.sh --core
+
+  gui:
+    name: gui (launch + error paths — best-effort, needs WindowServer)
+    runs-on: macos-14
+    continue-on-error: true   # hosted runners may be headless; do not block merge on this
+    steps:
+      - uses: actions/checkout@v4
+      - name: QA gui tier
+        run: tests/qa.sh --gui

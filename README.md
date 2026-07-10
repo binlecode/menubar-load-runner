@@ -280,6 +280,38 @@ Click the menu bar item to open:
 
 Metrics are refreshed every 2 seconds from the app's periodic sampler.
 
+## Testing & CI
+
+There's no unit-test framework — the checks are a single tiered QA harness, `tests/qa.sh`, the
+executable form of [`docs/RUNBOOK-qa-release.md`](docs/RUNBOOK-qa-release.md) §1–6. Run it from the
+repo root:
+
+```bash
+tests/qa.sh            # core + gui (local default)
+tests/qa.sh --core     # core only — the headless / CI-safe subset
+tests/qa.sh --gui      # build + the GUI sections only
+tests/qa.sh --launcher # also run the disruptive §6 launcher/singleton check
+tests/qa.sh --help
+```
+
+Coverage is split into explicit tiers around one question — **does the check boot the GUI?**
+
+| Tier | Sections | Needs a GUI session? | Role |
+|---|---|---|---|
+| `core` | §1 build (warning-clean) · §2 CLI/version · §5 readers + adaptive scaler | No | Primary gate — must pass before a release; headless-safe |
+| `gui` | §3 launch lifecycle · §4 error paths (boot `NSApplication` + a status item) | Yes (WindowServer) | Best-effort — needs a logged-in Mac; skipped on a headless host |
+| `launcher` / §7 | §6 launcher + singleton (disruptive `pkill`) · §7 interactive menu spot-check | — | Manual — run locally before a release |
+
+**All regression/QA currently runs locally** — `tests/qa.sh` is the source of truth. The §5
+readers/scaler checks are standalone `.swift` files (`tests/readers.swift`, `tests/scaler.swift`) —
+the closest thing to unit tests here.
+
+A GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) mirrors these tiers
+on `macos-14` (`core` job + best-effort `gui` job), but its automatic push/PR triggers are **disabled
+to conserve the free-tier Actions quota** (macOS runners bill at a 10× minute multiplier). It's
+manual-dispatch-only for now — run it on demand from the Actions tab, or re-enable auto-runs by
+uncommenting the trigger block in the workflow.
+
 ## License
 
 Source code: [MIT](LICENSE.md) © 2026 Bin Le. The bundled preset GIFs in `gifs/` are **not** covered

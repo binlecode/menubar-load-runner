@@ -404,7 +404,7 @@
         </div>
       </div>
     </div>
-    <p class="heroBar cap">…plus Horse (Black), Chihiro white/black, Totoro white/black, and a 4-slot-wide Totoro group. Drop in any <span class="mono">.gif</span> to make your own.</p>
+    <p class="heroBar cap">…plus Horse (Black), Chihiro white/black, Totoro white/black, and a wide Totoro group. Drop in any <span class="mono">.gif</span> to make your own.</p>
   </section>
 
   <section id="start">
@@ -421,8 +421,8 @@
 <span class="c"># pick a companion + drive it from GPU load</span>
 <span class="p">./menubar-load-runner</span> totoro <span class="f">--load-source</span> gpu
 
-<span class="c"># your own gif, 2 slots wide, with a label</span>
-<span class="p">./menubar-load-runner</span> ~/run.gif <span class="f">--width</span> 2 <span class="f">--overlay-text</span> CPU
+<span class="c"># your own gif (sizes to its aspect ratio), with a label</span>
+<span class="p">./menubar-load-runner</span> ~/run.gif <span class="f">--overlay-text</span> CPU
 
 <span class="c"># start at login — no root, no .app bundle</span>
 <span class="p">./scripts/install-login-item.sh</span> chihiro</pre>
@@ -430,7 +430,7 @@
       <div class="facts">
         <div class="fact"><h4>A single Swift source file</h4><p>The whole app is <b>one <span class="mono">.swift</span> file</b> compiled by a zsh launcher with <span class="mono">swiftc -O</span>. No Xcode project, no SwiftPM package, no build system to learn.</p></div>
         <div class="fact"><h4>Vsync-aligned game loop</h4><p>A <b>CADisplayLink</b> advances frames against real elapsed time and the screen's refresh rate — smooth at any speed, and it pauses itself entirely when the item is occluded.</p></div>
-        <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, slot width, and speed range all live in <b><span class="mono">presets.json</span></b>. Add a preset by editing data — zero Swift changes.</p></div>
+        <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, and speed range all live in <b><span class="mono">presets.json</span></b> (width comes from the GIF's own aspect ratio). Add a preset by editing data — zero Swift changes.</p></div>
       </div>
     </div>
   </section>

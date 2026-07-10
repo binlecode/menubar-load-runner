@@ -3,11 +3,46 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
 
-Current version: **1.5.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.6.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
+
+## Install
+
+macOS only. Requires the **Xcode Command Line Tools** (`git` + `swiftc`); the installer tells you
+to run `xcode-select --install` if they're missing. It compiles from source on your machine — no
+Apple signing, notarization, or Homebrew involved.
+
+Recommended — download, inspect, then run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/binlecode/menubar-load-runner/main/install.sh -o install.sh
+less install.sh          # inspect before running
+bash install.sh
+```
+
+Or the one-line convenience form:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/binlecode/menubar-load-runner/main/install.sh | bash
+```
+
+The installer clones the repo to `~/.local/share/menubar-load-runner`, compiles the binary, and
+symlinks the launcher to `~/.local/bin/menubar-load-runner`. Run interactively, it also asks
+whether to enable start-at-login (pass `--login` to enable it without prompting; a piped
+`curl | bash` skips the prompt). Re-running updates an existing install in place (`git pull`).
+
+- **Overrides:** `MENUBAR_LOAD_RUNNER_HOME` (install dir), `BIN_DIR` (launcher symlink dir).
+- **Update:** re-run the installer.
+- **Uninstall:** remove the symlink (`~/.local/bin/menubar-load-runner`) and the install dir; if
+  you enabled start-at-login, run
+  `~/.local/share/menubar-load-runner/scripts/uninstall-login-item.sh` first.
+
+Already have the repo checked out? Skip the installer — see **Run Locally**.
 
 ## Files
 
 - `MenuBarLoadRunner.swift`: app source.
+- `install.sh`: one-line installer (clone + compile + symlink launcher onto `PATH`; see Install above).
+- `LICENSE.md`: MIT license.
 - `menubar-load-runner`: launcher script.
 - `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh`: optional start-at-login setup (see below).
 - `CHANGELOG.md`: release history (Keep a Changelog + semver).
@@ -24,8 +59,9 @@ Current version: **1.5.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
 - `gifs/totoro-white.gif`: built-in white Totoro preset (transparent).
 - `gifs/totoro-black.gif`: built-in black Totoro preset (transparent).
 - `gifs/presets.json`: preset manifest — the single source of truth for each built-in preset's keyword,
-  menu title, GIF file, slot width, and auto speed range (and the default preset). Edit this to add or
-  tweak presets; no Swift change needed.
+  menu title, GIF file, and auto speed range (and the default preset). Edit this to add or
+  tweak presets; no Swift change needed. (Width is not configured here — it's derived from each GIF's
+  aspect ratio at runtime.)
 
 ## Run Locally
 
@@ -35,7 +71,9 @@ From the repository directory:
 ./menubar-load-runner
 ```
 
-This uses the built-in `horse-white` preset and one-slot width by default (`NSStatusItem.squareLength`).
+This uses the built-in `horse-white` preset. The menu-bar item sizes itself to the GIF's aspect ratio
+at menu-bar height (a wide preset like `totoro-group-*` gets a wide item; a tall/narrow one gets a
+narrow one) — width is automatic and not configurable.
 It launches detached by default, so it keeps running even if the host shell exits.
 
 To run attached to the current shell session:
@@ -49,12 +87,19 @@ Notes:
 - **Single instance.** Only one instance runs at a time. Running any command below a second time does nothing unless you pass `--extra` to allow an additional instance.
 - **Detached logs.** A detached launch writes output to `/tmp/menubar-load-runner.log` (override with the `MENUBAR_LOAD_RUNNER_LOG_FILE` environment variable). Use `--foreground` to send output straight to your terminal instead.
 
-## Global Command Wrapper
+## Global command
 
-If you are using the companion `env-config` control plane, the launcher wrapper is symlinked directly on your `$PATH` as **`menubar-load-runner`**. This allows you to launch the load runner globally from any folder:
+The installer symlinks the launcher onto your `PATH` (at `~/.local/bin/menubar-load-runner`), so you
+can launch it as **`menubar-load-runner`** from any folder:
 
 ```bash
 menubar-load-runner dog-black
+```
+
+Running from a cloned repo instead? Symlink it yourself:
+
+```bash
+ln -s "$PWD/menubar-load-runner" ~/.local/bin/menubar-load-runner
 ```
 
 `menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`, `--extra`).
@@ -101,7 +146,7 @@ for changing the baked-in args:
 # Default
 ./menubar-load-runner horse-white
 
-# Black horse preset (Pinterest silhouette, slightly wider slot scaling)
+# Black horse preset (Pinterest silhouette)
 ./menubar-load-runner horse-black
 
 # Chihiro walking preset (color, and white/black silhouettes)
@@ -112,10 +157,10 @@ for changing the baked-in args:
 # Totoro preset
 ./menubar-load-runner totoro
 
-# White Totoro group preset (transparent, defaults to 4 width units)
+# White Totoro group preset (transparent, wide — renders at its GIF aspect ratio)
 ./menubar-load-runner totoro-group-white
 
-# Black Totoro group preset (transparent, defaults to 4 width units)
+# Black Totoro group preset (transparent, wide — renders at its GIF aspect ratio)
 ./menubar-load-runner totoro-group-black
 
 # White Totoro preset
@@ -143,14 +188,11 @@ Or:
 MENUBAR_LOAD_RUNNER_PATH=/absolute/path/to/your.gif ./menubar-load-runner
 ```
 
-## Fixed width override
+## Width
 
-```bash
-./menubar-load-runner --width 2
-```
-
-`--width` sets requested menu bar width in slots (`1..4`) and scales the GIF to fill that width.
-The effective width is clamped to each preset's minimum. For example, `totoro-group-*` requires 4 slots even if a smaller value is requested.
+Width is automatic and not configurable: the menu-bar item sizes itself to the loaded GIF's aspect
+ratio at menu-bar height (clamped to a sane maximum). A wide GIF gets a wide item; a tall/narrow one
+gets a narrow item. The current width is shown read-only in the menu (see below).
 
 ## Fixed speed override
 
@@ -165,7 +207,9 @@ The effective width is clamped to each preset's minimum. For example, `totoro-gr
 ```
 
 `--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
-Overlay text is limited to 12 characters.
+The character limit is adaptive to the item width — from 1 up to 12 characters, with narrower GIFs
+allowing fewer (the interactive `Set Text...` prompt shows the current limit). The `--overlay-text`
+flag validates against the absolute ceiling of 12, since the GIF's width isn't known at parse time.
 
 ## The menu (live dashboard)
 
@@ -176,7 +220,7 @@ source, refreshed while it's open:
   fraction (the same value that maps to animation speed). Bars are colored by the same Low/Medium/High
   thresholds as the state line below, so the chart and text agree. Switching source resets it.
 - **Numeric readouts** below — current usage, state, speed multiplier, and system load average.
-- Selectors for **Load Source**, **Width**, **Overlay Text**, and the **preset** list.
+- A read-only **Width** readout, plus selectors for **Load Source**, **Overlay Text**, and the **preset** list.
 
 ## Load source (what drives the animation)
 
@@ -226,12 +270,16 @@ Click the menu bar item to open:
 
 - The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`
 - `Load Avg (1/5/15m)`
-- `Speed Multiplier` (shows the active load source and mode; a separate `Throttled` line appears only when low-power/thermal/memory pressure is capping the auto speed)
+- `Speed Multiplier` (shows the active load source and mode; a separate `Slowing animation — <cause>` line appears only when a self-throttle condition is active, naming the cause: thermal throttling, Low Power Mode, or memory pressure)
 - `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
-- `Width` status and `Width Options` (`auto`, `1`, `2`, `3`, `4` slots; preset minimum clamp applies)
-- `Overlay Text` (`Set Text...` with max 12 chars + bold toggle, `Clear`)
+- `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
+- `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `About`
 - `Exit`
 
 Metrics are refreshed every 2 seconds from the app's periodic sampler.
+
+## License
+
+[MIT](LICENSE.md) © 2026 Bin Le.

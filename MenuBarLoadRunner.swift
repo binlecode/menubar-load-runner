@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.5.1"
+    static let version = "1.6.0"
 }
 
 private enum Tuning {
@@ -37,8 +37,9 @@ private enum Tuning {
     // How many 0…1 load samples the menu's trace chart retains (one per loadSampleInterval tick).
     // 30 × 2s ≈ 60s of visible history.
     static let loadHistoryCapacity: Int = 30
-    // Per-preset speed ranges and slot scales now live in gifs/presets.json (see PresetManifest),
-    // not here — the manifest is the single source of truth for preset profiles.
+    // Per-preset speed ranges now live in gifs/presets.json (see PresetManifest), not here — the
+    // manifest is the single source of truth for preset profiles. Width is not a preset constant;
+    // it's derived at runtime from each GIF's real aspect ratio (see currentGifAspect/slotLength).
     static let speedOverrideMin: Double = 0.1
     static let speedOverrideMax: Double = 5.0
     static let initialSpeedMultiplier: Double = 1.0
@@ -77,10 +78,12 @@ private enum Tuning {
     static let minIconDimension: CGFloat = 12
     static let renderHorizontalInset: CGFloat = 2
     static let minAspect: CGFloat = 0.01
+    // Minimum status-item length (points) so a tall/narrow GIF still gets a tappable slot.
     static let minBaseSlotWidth: CGFloat = 18
-    // Neutral slot-scale / aspect fallback used when there is no active preset (custom GIF) or a
-    // frame's real aspect is unavailable. Preset slot scales live in gifs/presets.json.
-    static let fallbackSlotScale: CGFloat = 1.0
+    // Neutral aspect (width/height) fallback used when a frame's real aspect is unavailable.
+    static let fallbackAspect: CGFloat = 1.0
+    // Upper bound on the GIF-derived slot aspect, so a freakishly wide GIF can't blow out the bar.
+    static let maxIconAspect: CGFloat = 6.0
 
     static let loadAverageSampleCount = 3
     static let loadAverage1mIndex = 0
@@ -88,15 +91,19 @@ private enum Tuning {
     static let loadAverage15mIndex = 2
     static let minAlphaPixelComponents = 4
     static let alphaVisibleThreshold: UInt8 = 3
-    static let minWidthSlots = 1
-    static let maxWidthSlots = 4
     static let overlayMinFontSize: CGFloat = 8
     static let overlayMaxFontSize: CGFloat = 14
     static let overlayHorizontalInset: CGFloat = 2
     static let overlayVerticalInset: CGFloat = 1
     static let overlayFontScale: CGFloat = 0.5
     static let overlayStrokeWidth: CGFloat = -2
+    // Overlay char limit is adaptive to the GIF-derived slot width (see maxOverlayChars):
+    // overlayMaxChars is the absolute ceiling (also the CLI limit, where the width isn't known
+    // yet); overlayMinChars is the floor so even a sliver-width GIF accepts a glyph or two.
+    // overlayCharAdvanceFraction ≈ a monospaced glyph's advance as a fraction of the font size.
+    static let overlayMinChars = 1
     static let overlayMaxChars = 12
+    static let overlayCharAdvanceFraction: CGFloat = 0.62
 }
 
 // Which system reader drives the animation speed. A single registry (key + menu title) so the
@@ -149,7 +156,6 @@ private struct Config {
     // Keyword→path resolution happens in MenuBarLoadRunnerApp.init against `allPresets`,
     // so the shell launcher forwards this arg unchanged.
     let presetOrPath: String
-    let widthSlots: Int?
     let speedMultiplierOverride: Double?
     let overlayText: String?
     // Which reader drives the animation. Resolved from --load-source / env here (unknown →
@@ -163,7 +169,6 @@ private struct Config {
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
         var presetOrPath: String?
-        var widthSlots: Int?
         var speedMultiplierOverride: Double?
         var overlayText: String?
         var loadSourceArg: String?
@@ -174,17 +179,6 @@ private struct Config {
             case "--help", "-h":
                 printUsage()
                 return .help
-            case "--width", "-w":
-                guard
-                    let value = iterator.next(),
-                    let parsed = Int(value),
-                    (Tuning.minWidthSlots...Tuning.maxWidthSlots).contains(parsed)
-                else {
-                    fputs("Invalid value for --width. Expected an integer slot count in 1...4.\n", stderr)
-                    printUsage()
-                    return nil
-                }
-                widthSlots = parsed
             case "--speed-multiplier":
                 guard let value = iterator.next(), let parsed = Double(value), parsed > 0 else {
                     fputs("Invalid value for --speed-multiplier. Expected a positive number.\n", stderr)
@@ -263,7 +257,6 @@ private struct Config {
         return .config(
             Config(
                 presetOrPath: NSString(string: positional).expandingTildeInPath,
-                widthSlots: widthSlots,
                 speedMultiplierOverride: speedMultiplierOverride,
                 overlayText: overlayText,
                 loadSource: loadSource,
@@ -276,11 +269,10 @@ private struct Config {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("MenuBar Load Runner \(AppInfo.version)")
-        print("Usage: \(bin) <preset-name|path-to-gif> [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--width <slots:1..4>] [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
         print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
-        print("Default width: one slot (NSStatusItem.squareLength). With --width, GIF fills the configured slot count.")
-        print("Width note: requested slots are clamped to each preset's minimum (e.g. totoro-group requires 4 slots).")
+        print("Width: the menu-bar item sizes itself to the GIF's aspect ratio at menu-bar height — not configurable.")
         print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
     }
 }
@@ -607,7 +599,7 @@ private final class GPULoadMonitor {
 
 // Fan speed as a 0…1 *thermal/cooling* load — a lagging signal (fans trail actual work by seconds and
 // ramp only under sustained thermal load), so this reads "how hard is cooling working," not
-// instantaneous compute. Ported from actop's SMCReader (~/workspace_fullstack/actop): opens
+// instantaneous compute. Ported from actop's SMCReader: opens
 // AppleSMCKeysEndpoint unprivileged and read-only (never writes fan-control keys F{n}Tg/F{n}Md,
 // which need root), discovers per-fan actual/max RPM keys (F{n}Ac / F{n}Mx, SMC type "flt ", 4-byte
 // little-endian float) via the FNum fan count. Fanless Macs (MacBook Air, most M-series laptops)
@@ -1068,7 +1060,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let key: String
         let menuTitle: String
         let path: String
-        let slotScale: CGFloat
         let speedProfile: SpeedProfile
     }
 
@@ -1083,7 +1074,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             let key: String
             let menuTitle: String
             let file: String
-            let slotScale: Double
             let speed: Speed
         }
 
@@ -1108,7 +1098,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private let config: Config
     private let allPresets: [PresetDescriptor]
     // The manifest's declared default preset, resolved once in init. Also the profile fallback for
-    // a custom/user-supplied GIF that matches no preset (its slotScale/speedProfile stand in).
+    // a custom/user-supplied GIF that matches no preset (its speedProfile stands in).
     private let defaultDescriptor: PresetDescriptor?
     // Set when the preset manifest could not be loaded/decoded; applicationDidFinishLaunching shows
     // it and quits. nil on success.
@@ -1138,10 +1128,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var loadSourceMenuItem: NSMenuItem!
     private var loadSourceMenuItems: [NSMenuItem] = []
     private var widthStatusItem: NSMenuItem!
-    private var widthMenuItem: NSMenuItem!
-    private var widthAutoItem: NSMenuItem!
-    private var widthSlotItems: [NSMenuItem] = []
-    private var overlayStatusItem: NSMenuItem!
     private var overlayMenuItem: NSMenuItem!
     private var overlaySetItem: NSMenuItem!
     private var overlayClearItem: NSMenuItem!
@@ -1173,7 +1159,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var speedMultiplier: Double = Tuning.initialSpeedMultiplier
-    private var requestedWidthSlots: Int?
     private var requestedOverlayText: String?
     private var requestedOverlayBold = true
     private var cachedLoadAverages: (Double, Double, Double)?
@@ -1184,7 +1169,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     init(config: Config) {
         self.config = config
-        self.requestedWidthSlots = config.widthSlots
         self.requestedOverlayText = config.overlayText
         self.activeLoadSource = config.loadSource
 
@@ -1220,7 +1204,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     key: entry.key,
                     menuTitle: entry.menuTitle,
                     path: scriptDirURL.appendingPathComponent("gifs/\(entry.file)").path,
-                    slotScale: CGFloat(entry.slotScale),
                     speedProfile: SpeedProfile(
                         label: entry.speed.label,
                         min: entry.speed.min,
@@ -1311,10 +1294,19 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         speedMultiplierItem.isEnabled = false
         infoMenu.addItem(speedMultiplierItem)
 
-        throttleStatusItem = NSMenuItem(title: "Throttled: low power/thermal", action: nil, keyEquivalent: "")
+        // Title is set live in refreshMenuMetrics to name the active cause(s); hidden until then.
+        throttleStatusItem = NSMenuItem(title: "Slowing animation", action: nil, keyEquivalent: "")
         throttleStatusItem.isEnabled = false
         throttleStatusItem.isHidden = true
         infoMenu.addItem(throttleStatusItem)
+
+        // Read-only: the item sizes itself to the GIF's aspect ratio; there is no width control.
+        // Grouped with the other read-only readouts, above the control items below.
+        widthStatusItem = NSMenuItem(title: "Width: --", action: nil, keyEquivalent: "")
+        widthStatusItem.isEnabled = false
+        infoMenu.addItem(widthStatusItem)
+
+        infoMenu.addItem(NSMenuItem.separator())
 
         loadSourceMenuItem = NSMenuItem(title: "Load Source", action: nil, keyEquivalent: "")
         let loadSourceSubmenu = NSMenu(title: "Load Source")
@@ -1336,34 +1328,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             activeLoadSource = .cpu
         }
 
-        widthStatusItem = NSMenuItem(title: "Width: --", action: nil, keyEquivalent: "")
-        widthStatusItem.isEnabled = false
-        infoMenu.addItem(widthStatusItem)
-
-        widthMenuItem = NSMenuItem(title: "Width Options", action: nil, keyEquivalent: "")
-        let widthSubmenu = NSMenu(title: "Width Options")
-
-        widthAutoItem = NSMenuItem(title: "Auto (preset)", action: #selector(selectWidthAuto), keyEquivalent: "")
-        widthAutoItem.target = self
-        widthSubmenu.addItem(widthAutoItem)
-        widthSubmenu.addItem(.separator())
-
-        for slots in Tuning.minWidthSlots...Tuning.maxWidthSlots {
-            let title = "\(slots) slot" + (slots == 1 ? "" : "s")
-            let item = NSMenuItem(title: title, action: #selector(selectWidthSlot(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = slots
-            widthSubmenu.addItem(item)
-            widthSlotItems.append(item)
-        }
-
-        widthMenuItem.submenu = widthSubmenu
-        infoMenu.addItem(widthMenuItem)
-
-        overlayStatusItem = NSMenuItem(title: "Overlay Text: --", action: nil, keyEquivalent: "")
-        overlayStatusItem.isEnabled = false
-        infoMenu.addItem(overlayStatusItem)
-
+        // The submenu parent doubles as the status line — its title carries the current overlay
+        // state (text + style, or "off"), so no separate read-only line is needed.
         overlayMenuItem = NSMenuItem(title: "Overlay Text", action: nil, keyEquivalent: "")
         let overlaySubmenu = NSMenu(title: "Overlay Text")
 
@@ -1397,7 +1363,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         presetsHeaderItem.isEnabled = false
         statusItem.menu = infoMenu
         refreshPresetSelectionState()
-        refreshWidthSelectionState()
+        refreshWidthInfo()
         refreshOverlaySelectionState()
         refreshLoadSourceSelectionState()
 
@@ -1692,7 +1658,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     func menuWillOpen(_ menu: NSMenu) {
         refreshMenuMetrics()
         refreshPresetSelectionState()
-        refreshWidthSelectionState()
+        refreshWidthInfo()
         refreshOverlaySelectionState()
         refreshLoadSourceSelectionState()
     }
@@ -1805,7 +1771,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 activeLoadSource.menuTitle,
                 speedMultiplier
             )
-            throttleStatusItem.isHidden = !isUnderPowerPressure
+            // Name the active self-throttle cause(s) rather than a generic "throttled" tag, so the
+            // line distinguishes true thermal throttling from Low Power Mode / memory pressure.
+            let reasons = loadReductionReasons
+            if reasons.isEmpty {
+                throttleStatusItem.isHidden = true
+            } else {
+                throttleStatusItem.title = "Slowing animation — " + reasons.joined(separator: ", ")
+                throttleStatusItem.isHidden = false
+            }
         } else {
             speedMultiplierItem.title = String(format: "Speed Multiplier (fixed): %.2fx", speedMultiplier)
             throttleStatusItem.isHidden = true
@@ -1917,36 +1891,41 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return Set(raw.lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
     }()
 
-    private func refreshWidthSelectionState() {
-        let minSlots = minimumSlotsForCurrentPreset()
-        let requested = requestedWidthSlots
-        let effective = effectiveWidthSlots()
-
-        if let requested {
-            if requested < minSlots {
-                widthStatusItem.title = "Width: \(effective) slots (requested \(requested), min \(minSlots) for preset)"
-            } else {
-                widthStatusItem.title = "Width: \(effective) slots"
-            }
-        } else {
-            widthStatusItem.title = String(format: "Width: auto (preset scale %.2fx)", currentPresetScale())
+    // Read-only: report the GIF-derived item size (there is no width control). Shows the slot
+    // width in points and the GIF's aspect ratio that produced it.
+    private func refreshWidthInfo() {
+        guard !frames.isEmpty else {
+            widthStatusItem.title = "Width: --"
+            return
         }
-
-        widthAutoItem.state = requested == nil ? .on : .off
-        for item in widthSlotItems {
-            item.state = (requested != nil && item.tag == effective) ? .on : .off
-        }
+        widthStatusItem.title = String(
+            format: "Width: %.0f pt (GIF aspect %.2f×)", slotLength(), currentGifAspect()
+        )
     }
 
     private func refreshOverlaySelectionState() {
         if let text = requestedOverlayText {
             let style = requestedOverlayBold ? "bold" : "regular"
-            overlayStatusItem.title = "Overlay Text: \(text) (\(style))"
+            overlayMenuItem.title = "Overlay Text: \(text) (\(style))"
             overlayClearItem.isEnabled = true
         } else {
-            overlayStatusItem.title = "Overlay Text: off"
+            overlayMenuItem.title = "Overlay Text: off"
             overlayClearItem.isEnabled = false
         }
+        // Limit tracks the current GIF-derived width, so keep the menu prompt title in sync.
+        overlaySetItem.title = "Set Text... (max \(maxOverlayChars()))"
+    }
+
+    // Adaptive overlay limit: roughly how many monospaced glyphs fit across the current
+    // GIF-derived slot at the overlay font size, clamped to [overlayMinChars, overlayMaxChars].
+    // A narrow GIF caps input lower than a wide one; the absolute ceiling still applies.
+    private func maxOverlayChars() -> Int {
+        let barHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)
+        let fontSize = min(max(barHeight * Tuning.overlayFontScale, Tuning.overlayMinFontSize), Tuning.overlayMaxFontSize)
+        let charAdvance = max(fontSize * Tuning.overlayCharAdvanceFraction, 1)
+        let usableWidth = max(slotLength() - Tuning.overlayHorizontalInset * 2, 1)
+        let fit = Int((usableWidth / charAdvance).rounded(.down))
+        return min(max(fit, Tuning.overlayMinChars), Tuning.overlayMaxChars)
     }
 
     @objc
@@ -1979,26 +1958,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     @objc
-    private func selectWidthAuto() {
-        requestedWidthSlots = nil
-        applySizing()
-        renderCurrentFrame()
-        refreshWidthSelectionState()
-    }
-
-    @objc
-    private func selectWidthSlot(_ sender: NSMenuItem) {
-        requestedWidthSlots = min(max(sender.tag, Tuning.minWidthSlots), Tuning.maxWidthSlots)
-        applySizing()
-        renderCurrentFrame()
-        refreshWidthSelectionState()
-    }
-
-    @objc
     private func promptOverlayText() {
+        let limit = maxOverlayChars()
         let alert = NSAlert()
         alert.messageText = "Set Overlay Text"
-        alert.informativeText = "Enter up to \(Tuning.overlayMaxChars) characters."
+        alert.informativeText = "Enter up to \(limit) characters (fits the current \(String(format: "%.0f pt", slotLength())) width)."
         alert.alertStyle = .informational
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
@@ -2050,8 +2014,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return
         }
 
-        guard input.count <= Tuning.overlayMaxChars else {
-            showRuntimeError("Overlay text must be at most \(Tuning.overlayMaxChars) characters.")
+        guard input.count <= limit else {
+            showRuntimeError("Overlay text must be at most \(limit) characters at this width.")
             return
         }
 
@@ -2101,7 +2065,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         applySizing()
         renderCurrentFrame()
-        refreshWidthSelectionState()
+        refreshWidthInfo()
         refreshOverlaySelectionState()
 
         // New frame source: re-sync timing on the running driver rather than tearing it
@@ -2161,23 +2125,32 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return min(max(value, profile.min), profile.max)
     }
 
-    // Reads system power/thermal/memory-pressure state (getters only — never mutates it). True
-    // when the Mac is in Low Power Mode, thermally throttling, or under memory pressure, i.e.
-    // when this app should reduce its OWN animation work rather than add to the load it displays.
-    private var isUnderPowerPressure: Bool {
+    // The distinct system conditions under which this app slows its OWN animation so it doesn't
+    // add to a strained machine (getters only — never mutates system state). Ordered most-serious
+    // first so the combined menu line reads sensibly. Precise wording matters: only the *thermal*
+    // case is throttling macOS actually imposes (it clocks the CPU/GPU down); Low Power Mode is a
+    // user-chosen policy, and memory pressure is memory *reclamation* (compression/swap/jetsam),
+    // not compute throttling — so neither is called "throttling."
+    private var loadReductionReasons: [String] {
+        var reasons: [String] = []
         let info = ProcessInfo.processInfo
-        if info.isLowPowerModeEnabled { return true }
         switch info.thermalState {
-        case .serious, .critical: return true
+        case .serious, .critical: reasons.append("thermal throttling")
         default: break
         }
+        if info.isLowPowerModeEnabled { reasons.append("Low Power Mode") }
         // Memory pressure is event-only (no synchronous getter), so this reads the cached level
         // updated by the dispatch source. Requires `.normal` in the source's mask to ever clear.
         if memoryPressureLevel.contains(.warning) || memoryPressureLevel.contains(.critical) {
-            return true
+            reasons.append("memory pressure")
         }
-        return false
+        return reasons
     }
+
+    // True when any self-throttle condition is active — i.e. when this app should reduce its OWN
+    // animation work rather than add to the load it displays. Derived from loadReductionReasons so
+    // detection and the menu wording share one source of truth.
+    private var isUnderPowerPressure: Bool { !loadReductionReasons.isEmpty }
 
     // Recompute this app's OWN auto animation speed from the active source's latest sample
     // immediately, bypassing the sample-tick hysteresis. Called when power/thermal/memory-
@@ -2315,18 +2288,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         newRenderedFrames.reserveCapacity(frames.count)
 
         for (i, rawImage) in frames.enumerated() {
-            let aspect = i < frameAspects.count ? frameAspects[i] : Tuning.fallbackSlotScale
-            let targetSize: NSSize
-            
-            if requestedWidthSlots != nil {
-                targetSize = NSSize(width: availableWidth, height: availableHeight)
-            } else {
-                let maxHeight = max(availableHeight, Tuning.minIconDimension)
-                let maxWidth = max(availableWidth, Tuning.minIconDimension)
-                let targetHeight = min(maxHeight, maxWidth / max(aspect, Tuning.minAspect))
-                let targetWidth = targetHeight * aspect
-                targetSize = NSSize(width: targetWidth, height: targetHeight)
-            }
+            let aspect = i < frameAspects.count ? frameAspects[i] : Tuning.fallbackAspect
+            // The slot width already matches the GIF aspect (see slotLength()), so the art fills
+            // the slot; this just fits each frame proportionally within the available box.
+            let maxHeight = max(availableHeight, Tuning.minIconDimension)
+            let maxWidth = max(availableWidth, Tuning.minIconDimension)
+            let targetHeight = min(maxHeight, maxWidth / max(aspect, Tuning.minAspect))
+            let targetWidth = targetHeight * aspect
+            let targetSize = NSSize(width: targetWidth, height: targetHeight)
 
             // Using closure initializer for Retina resolution scaling
             let rendered = NSImage(size: targetSize, flipped: false) { dstRect in
@@ -2368,32 +2337,25 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func applySizing() {
         guard !frames.isEmpty else { return }
-        // imageScaling depends only on auto vs. fixed width, which changes on a width/preset
-        // selection — never per frame. Set it here (every mode-change path calls applySizing)
-        // rather than in the per-frame renderCurrentFrame hot path.
-        statusItem.button?.imageScaling = requestedWidthSlots != nil ? .scaleAxesIndependently : .scaleProportionallyUpOrDown
-        let baseSlotWidth = max(NSStatusBar.system.thickness, Tuning.minBaseSlotWidth)
-        if requestedWidthSlots != nil {
-            statusItem.length = ceil(baseSlotWidth * CGFloat(effectiveWidthSlots()))
-        } else {
-            statusItem.length = ceil(baseSlotWidth * currentPresetScale())
-        }
+        // GIF-based sizing: the item width follows the loaded GIF's own aspect ratio at menu-bar
+        // height — no per-preset constant, no user override. Proportional scaling fills the slot.
+        statusItem.button?.imageScaling = .scaleProportionallyUpOrDown
+        statusItem.length = slotLength()
         updateRenderedFrames()
     }
 
-    private func effectiveWidthSlots() -> Int {
-        let minSlots = minimumSlotsForCurrentPreset()
-        let requested = requestedWidthSlots ?? minSlots
-        return min(max(requested, minSlots), Tuning.maxWidthSlots)
+    // The GIF's width/height aspect (frames share one union bbox, so any frame represents the
+    // whole animation), clamped to a sane band. This is the sole driver of the item's width.
+    private func currentGifAspect() -> CGFloat {
+        let aspect = frameAspects.first ?? Tuning.fallbackAspect
+        return min(max(aspect, Tuning.minAspect), Tuning.maxIconAspect)
     }
 
-    private func minimumSlotsForCurrentPreset() -> Int {
-        let scaled = Int(ceil(currentPresetScale()))
-        return min(max(scaled, Tuning.minWidthSlots), Tuning.maxWidthSlots)
-    }
-
-    private func currentPresetScale() -> CGFloat {
-        activePreset?.slotScale ?? defaultDescriptor?.slotScale ?? Tuning.fallbackSlotScale
+    // Status-item length (points) the GIF maps to: menu-bar height × aspect, floored so a
+    // tall/narrow GIF still gets a tappable slot. Shared by applySizing and refreshWidthInfo.
+    private func slotLength() -> CGFloat {
+        let barHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)
+        return ceil(max(barHeight * currentGifAspect() + Tuning.renderHorizontalInset, Tuning.minBaseSlotWidth))
     }
 
     private func currentSpeedProfile() -> SpeedProfile {
@@ -2462,7 +2424,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             nextFrames.append(image)
             let aspect = preparedImage.height > 0
                 ? CGFloat(preparedImage.width) / CGFloat(preparedImage.height)
-                : Tuning.fallbackSlotScale
+                : Tuning.fallbackAspect
             nextAspects.append(max(aspect, Tuning.minAspect))
         }
 

@@ -66,6 +66,24 @@ Run from the repository root:
   `--foreground` while developing so output goes straight to the terminal.
 - `MenuBarLoadRunner` (the compiled binary) is gitignored; `MenuBarLoadRunner.swift` is the only source of truth.
 
+## Installer (`install.sh` — end-user install, already exists — do not rebuild)
+
+`install.sh` at the repo root is the user-facing one-line installer (gitlogue-style curl|bash,
+adapted for a *source-based* app — see `docs/TODO-20260710-0809-user-friendly-installer.md` for the
+rationale, incl. why Homebrew/notarization are deferred). It is intentionally MVP:
+
+- Flow: preflight (macOS + `git`/`swiftc`, else `xcode-select --install`) → `git clone` into
+  `~/.local/share/menubar-load-runner` (existing checkout → `git pull --ff-only`) → precompile
+  (fail-fast; falls back to on-demand compile) → symlink launcher into `~/.local/bin` → optional
+  `[y/N]` start-at-login prompt (via `/dev/tty`, so a piped `curl | bash` safely skips) → PATH hint.
+- Env overrides: `MENUBAR_LOAD_RUNNER_HOME`, `BIN_DIR`, and `MENUBAR_LOAD_RUNNER_REPO_URL` (the last
+  is test scaffolding — point it at a local clone to smoke-test into `./tmp/`). Flags: `--login`, `--help`.
+- **Deliberately out of scope** (don't add without a reason — they were reviewed and cut as
+  non-MVP): tag-pinning / `--ref` / `VERSION`, a Homebrew tap/formula, and a signed+notarized `.app`.
+  It installs the latest default branch; power users `git checkout` a tag themselves.
+- The installer *reuses* `scripts/install-login-item.sh` for start-at-login — it does not re-implement
+  the LaunchAgent (see next section).
+
 ## Start-at-login / LaunchAgent (already exists — do not rebuild)
 
 Auto-start is **already implemented** as a per-user LaunchAgent; don't hand-roll a plist, `launchctl`
@@ -89,11 +107,12 @@ sequence, or `.app` bundle. Use the scripts:
 
 Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bottom as:
 
-- **`Tuning`** — every magic number (slot-width scaling, overlay font sizing, alpha trim threshold,
+- **`Tuning`** — every magic number (icon-aspect clamp, overlay font sizing, alpha trim threshold,
   hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
-  literals. **Exception:** per-preset speed ranges and slot scales live in `gifs/presets.json` (see the
-  preset-registry note below), not `Tuning`.
-- **`Config`** — CLI arg / env var parsing (`--width`, `--speed-multiplier`, `--overlay-text`, positional
+  literals. **Exception:** per-preset speed ranges live in `gifs/presets.json` (see the
+  preset-registry note below), not `Tuning`. Width is not tuned per-preset — it derives from each GIF's
+  aspect ratio at runtime (`currentGifAspect`/`slotLength`).
+- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--overlay-text`, positional
   preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
   `presetOrPath`; when absent it is left empty and the app resolves the manifest's `defaultPreset`
   (`horse-white`). Keyword→path resolution
@@ -128,15 +147,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
 - **`MenuBarLoadRunnerApp`** (`NSApplicationDelegate`/`NSMenuDelegate`) — the entire app. Key internal
   concepts to know before changing behavior:
   - **Preset identity is externalized to `gifs/presets.json`.** That manifest (`defaultPreset` + a
-    `presets` array of `{key, menuTitle, file, slotScale, speed:{label,min,max,responseExponent}}`) is the
+    `presets` array of `{key, menuTitle, file, speed:{label,min,max,responseExponent}}`) is the
     single source of truth for every built-in preset's profile. `init(config:)` decodes it via `JSONDecoder`
     into the `PresetManifest` Codable structs and maps each entry into `allPresets: [PresetDescriptor]`
     (`file` is resolved to an absolute path relative to `#filePath`'s directory). The Swift code holds **no**
-    hardcoded preset list, and there are no per-preset speed/slot constants in `Tuning` anymore. Selecting a
-    preset resolves `activePreset` once (in `switchToGif(to:descriptor:)`); `currentPresetScale()`/
-    `currentSpeedProfile()` are trivial reads of `activePreset` (falling back to `defaultDescriptor`, the
+    hardcoded preset list, and there are no per-preset speed constants in `Tuning` anymore. Selecting a
+    preset resolves `activePreset` once (in `switchToGif(to:descriptor:)`); `currentSpeedProfile()`
+    is a trivial read of `activePreset` (falling back to `defaultDescriptor`, the
     manifest's declared default). A custom/user-supplied GIF that matches no entry leaves `activePreset` `nil`
-    and borrows `defaultDescriptor`'s profile (or `Self.customSpeedProfile` / `Tuning.fallbackSlotScale` if the
+    and borrows `defaultDescriptor`'s profile (or `Self.customSpeedProfile` if the
     manifest itself failed to load). If the manifest can't be loaded/decoded, `init` records `startupError` and
     `applicationDidFinishLaunching` shows it and quits. The default preset is the manifest's `defaultPreset`
     field, resolved when `config.presetOrPath` is empty (no arg / env override).
@@ -191,24 +210,34 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
-    `refreshWidthSelectionState`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather
+    `refreshWidthInfo`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather
     than pushed reactively. When adding
     a new piece of runtime state, wire it into these refresh functions and into the initial
     `applicationDidFinishLaunching` setup.
-  - **Width model**: `requestedWidthSlots` (nil = auto) combines with `minimumSlotsForCurrentPreset()`
-    (derived from `currentPresetScale()`, e.g. `totoro-group` forces 4 slots) via `effectiveWidthSlots()` to
-    clamp the user's request. Switching presets re-derives the effective width from the new preset's minimum.
+  - **Width model**: width is **GIF-derived, not configurable**. `currentGifAspect()` reads the loaded
+    GIF's aspect (frames share one union bbox from `trimTransparentPadding`, so any frame represents the
+    whole animation), clamped to `[Tuning.minAspect, Tuning.maxIconAspect]`. `slotLength()` maps that to
+    the status-item length (menu-bar height × aspect, floored at `Tuning.minBaseSlotWidth`) — the sole
+    driver of item width, used by both `applySizing()` and the read-only `refreshWidthInfo()` menu line.
+    There is no user width control (`--width` / slot submenu removed) and no per-preset slot constant.
+  - **Overlay char limit is width-adaptive**: `maxOverlayChars()` estimates how many monospaced glyphs
+    fit across `slotLength()` at the overlay font size, clamped to `[Tuning.overlayMinChars,
+    Tuning.overlayMaxChars]`. The interactive `Set Text...` prompt and its menu title use it; the
+    `--overlay-text` CLI path validates against the absolute `overlayMaxChars` ceiling since the GIF
+    width isn't known at parse time. Rendering still truncates (`byTruncatingTail`) as a backstop.
 
 ## Adding a new built-in preset
 
 No Swift edit is needed — preset profiles are data in `gifs/presets.json`. Touch these together, or the
 preset will be inconsistent across the CLI, menu, and README:
 1. Add the GIF to `gifs/`.
-2. `gifs/presets.json` — add one object to the `presets` array: `{key, menuTitle, file, slotScale,
+2. `gifs/presets.json` — add one object to the `presets` array: `{key, menuTitle, file,
    speed:{label, min, max, responseExponent}}`. `file` is the GIF filename relative to `gifs/`. This is the
-   single source of the preset's keyword, menu title, path, slot scale, and speed profile — the CLI keyword,
+   single source of the preset's keyword, menu title, path, and speed profile — the CLI keyword,
    menu item, `@objc` action, and every selection-state check all derive from it at startup. (Optionally set
-   `defaultPreset` to a `key` in the array to change the no-arg default.)
+   `defaultPreset` to a `key` in the array to change the no-arg default.) There is no width field — the
+   menu-bar item sizes itself to the GIF's aspect ratio, so just make sure the GIF is trimmed/proportioned
+   the way you want it to appear.
 3. `menubar-load-runner` — add a line to `print_help`'s preset list and usage string (docs only; the launcher
    forwards the keyword to Swift unchanged).
 4. `README.md` — add it to the file list, the built-in presets command list, and the auto speed ranges table.

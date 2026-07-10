@@ -26,6 +26,55 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.6.0] - 2026-07-10
+
+### Added
+
+- **Open-sourced under the MIT License** (`LICENSE.md`).
+- **One-line installer** (`install.sh`) and matching **`uninstall.sh`**. `install.sh` is a
+  gitlogue-style `curl | bash` installer adapted for this source-based app: it preflights macOS +
+  the Xcode Command Line Tools (`git`/`swiftc`), clones the repo to
+  `~/.local/share/menubar-load-runner` (updating in place on re-run), compiles the binary, symlinks
+  the launcher onto `PATH` at `~/.local/bin/menubar-load-runner`, and optionally sets up
+  start-at-login (interactive `[y/N]` prompt, or `--login`). `uninstall.sh` reverses it — removes the
+  LaunchAgent, the PATH symlink, and the install dir — touching only what the installer created. No
+  Apple signing, notarization, or Homebrew required. See the README "Install" section.
+
+### Removed
+
+- **Width customization** — the `--width` / `-w` CLI flag and the `Width Options` menu submenu
+  (`auto` / `1` / `2` / `3` / `4` slots) are gone, along with the per-preset `slotScale` field in
+  `gifs/presets.json`. The menu-bar item width is no longer user-configurable. **Breaking:** an
+  invocation or baked login-item arg that passes `--width <n>` now fails to launch (unknown
+  argument); remove it. A read-only `Width` line remains in the menu (see below).
+
+### Changed
+
+- **Width is now GIF-based.** The menu-bar item sizes itself directly to the loaded GIF's aspect
+  ratio at menu-bar height (width = height × aspect, clamped to `Tuning.maxIconAspect` and floored
+  at `Tuning.minBaseSlotWidth`), instead of a hand-tuned per-preset slot count. A wide GIF gets a
+  wide item; a tall/narrow one gets a narrow item. The `Width` menu line is read-only and reports
+  the resulting width in points plus the GIF aspect ratio.
+- **Overlay char limit is adaptive to the item width.** The interactive `Set Text...` prompt (and
+  its menu title) now cap input at roughly how many monospaced glyphs fit across the current
+  GIF-derived width — from `Tuning.overlayMinChars` (1) up to the `Tuning.overlayMaxChars` (12)
+  ceiling — so a narrow GIF allows fewer characters than a wide one. The `--overlay-text` CLI flag
+  still validates against the absolute 12-char ceiling, since the GIF width isn't known at parse
+  time; rendering truncates as a backstop either way.
+- Overlay menu tidy-up: dropped the separate read-only `Overlay Text: …` status line; the current
+  overlay state (text + style, or `off`) is now shown directly on the `Overlay Text` submenu
+  parent item, so one line does the job of two.
+- Self-throttle status line now names the specific active cause instead of the generic
+  `Throttled: low power/thermal` tag, and reserves the word "throttling" for the one condition
+  where macOS actually throttles the hardware. The line reads `Slowing animation — <cause(s)>`
+  where each cause is one of **thermal throttling** (macOS is clocking the CPU/GPU down —
+  `thermalState` `.serious`/`.critical`), **Low Power Mode** (a user-chosen power policy), or
+  **memory pressure** (memory reclamation — compression/swap/jetsam, not compute throttling).
+  Multiple simultaneous causes are joined into the one line. All three still slow the app's own
+  animation (the intent is unchanged — reduce this app's footprint when the machine is strained);
+  only the wording is corrected so low power and memory pressure are no longer mislabeled as
+  throttling. Detection and the menu wording now share one source of truth (`loadReductionReasons`).
+
 ## [1.5.1] - 2026-07-10
 
 ### Fixed

@@ -55,11 +55,14 @@ private enum Tuning {
     static let scalerRescaleCount: Int = 5
     static let scalerHeadroomUp: Double = 1.3
     static let scalerHeadroomDown: Double = 3.0
+    // Byte-unit divisors, shared by the ceiling floors below and the MB/GB menu readouts.
+    static let bytesPerMiB: Double = 1_048_576
+    static let bytesPerGiB: Double = 1_073_741_824
     // Per-source ceiling floors. btop uses 10 KiB/s; we raise them so idle background chatter
     // (keepalive packets, housekeeping I/O, lazy swap) doesn't peg a menu-bar toy at full speed.
-    static let networkFloorBytesPerSec: Double = 1 * 1_048_576
-    static let diskFloorBytesPerSec: Double = 4 * 1_048_576
-    static let swapFloorBytesPerSec: Double = 1 * 1_048_576
+    static let networkFloorBytesPerSec: Double = 1 * bytesPerMiB
+    static let diskFloorBytesPerSec: Double = 4 * bytesPerMiB
+    static let swapFloorBytesPerSec: Double = 1 * bytesPerMiB
 
     static let renderVerticalInset: CGFloat = 4
     static let minIconDimension: CGFloat = 12
@@ -603,9 +606,12 @@ private final class GPULoadMonitor {
 // its computed stride == 80 and disable the source if a future toolchain lays it out differently.
 @MainActor
 private final class FanLoadMonitor {
+    // One fan's current readout: actual RPM and its 0…1 utilization (actual/max).
+    struct FanReading { let rpm: Double; let utilization: Double }
+    // Average utilization across fans — drives the animation. Per-fan readings (one menu line
+    // per fan) are in `perFan`.
     private(set) var currentUtilization: Double = 0
-    // Max current RPM across fans (for the menu readout; the utilization drives the animation).
-    private(set) var currentRPM: Double = 0
+    private(set) var perFan: [FanReading] = []
     private(set) var hasSample = false
 
     // --- SMC KeyData struct (natural C alignment; total stride must be 80 to match the kernel) ---
@@ -655,8 +661,7 @@ private final class FanLoadMonitor {
 
     func sampleUsage() -> Double? {
         guard ensureOpen() else { hasSample = false; return nil }
-        var bestFraction: Double?
-        var bestRPM: Double = 0
+        var readings: [FanReading] = []
         for fan in fanKeys {
             guard let acVal = readFloat(fan.ac) else { continue }
             let current = Double(acVal)
@@ -666,14 +671,16 @@ private final class FanLoadMonitor {
             // genuinely stopped fan reads 0 → the speed path floors it at the preset's min speed,
             // so the animation still crawls rather than freezing.
             let clamped = min(max(current / Double(mxVal), 0), 1)
-            bestFraction = max(bestFraction ?? 0, clamped)
-            bestRPM = max(bestRPM, current)
+            readings.append(FanReading(rpm: current, utilization: clamped))
         }
-        guard let fraction = bestFraction else { hasSample = false; return nil }
-        currentUtilization = fraction
-        currentRPM = bestRPM
+        guard !readings.isEmpty else { hasSample = false; return nil }
+        perFan = readings
+        // Average across fans, not the max of any one — a single fan spinning up shouldn't
+        // dominate the animation speed while the rest of the system is quiet.
+        let averageFraction = readings.map(\.utilization).reduce(0, +) / Double(readings.count)
+        currentUtilization = averageFraction
         hasSample = true
-        return fraction
+        return averageFraction
     }
 
     // Lazily open the SMC connection and discover fan keys; cache the result. Guard the struct
@@ -790,47 +797,58 @@ private final class FanLoadMonitor {
 }
 
 // Network throughput as a 0…1 load. Cumulative interface byte counters (getifaddrs → if_data) are
-// differenced over real elapsed wall time into bytes/sec (counter-delta, warms up one tick like CPU),
-// then normalized by the shared adaptive ThroughputScaler. Only AF_LINK entries carry valid if_data,
-// and lo0 is skipped so loopback traffic doesn't inflate the number.
+// differenced over real elapsed wall time into inbound/outbound bytes/sec (counter-delta, warms up
+// one tick like CPU); the driving signal normalized by the shared adaptive ThroughputScaler is the
+// average of the two, not the sum, so a single-direction transfer isn't double-counted against a
+// symmetric one. Only AF_LINK entries carry valid if_data, and lo0 is skipped so loopback traffic
+// doesn't inflate the number.
 @MainActor
 private final class NetworkLoadMonitor {
     private(set) var hasSample = false
-    private(set) var currentThroughputBytesPerSec: Double = 0
-    // Last normalized 0…1 load (the scaler's output), so the speed path can re-read it without
-    // re-sampling — mirrors MemoryLoadMonitor.currentMemoryLoad.
+    private(set) var currentInboundBytesPerSec: Double = 0
+    private(set) var currentOutboundBytesPerSec: Double = 0
+    // Last normalized 0…1 load (the scaler's output, fed the in/out average), so the speed path can
+    // re-read it without re-sampling — mirrors MemoryLoadMonitor.currentMemoryLoad.
     private(set) var currentLoad: Double = 0
-    private var lastBytes: UInt64?
+    private var lastInBytes: UInt64?
+    private var lastOutBytes: UInt64?
     private var scaler = ThroughputScaler(floor: Tuning.networkFloorBytesPerSec)
     // getifaddrs is always present on macOS; the source is effectively always available.
     var isAvailable: Bool { true }
 
     func sampleUsage(elapsed: Double?) -> Double? {
-        guard let total = readTotalBytes() else {
+        guard let (inBytes, outBytes) = readInterfaceBytes() else {
             hasSample = false
             return nil
         }
-        defer { lastBytes = total }
+        defer {
+            lastInBytes = inBytes
+            lastOutBytes = outBytes
+        }
         // Counter-delta: needs a prior sample AND real elapsed time. First tick / source-switch
         // re-sample (elapsed nil) just stores the baseline and reports no rate yet.
-        guard let elapsed, elapsed > 0, let prev = lastBytes else {
-            currentThroughputBytesPerSec = 0
+        guard let elapsed, elapsed > 0, let prevIn = lastInBytes, let prevOut = lastOutBytes else {
+            currentInboundBytesPerSec = 0
+            currentOutboundBytesPerSec = 0
             hasSample = false
             return nil
         }
-        let deltaBytes = total >= prev ? total - prev : 0
-        currentThroughputBytesPerSec = Double(deltaBytes) / elapsed
+        let deltaIn = inBytes >= prevIn ? inBytes - prevIn : 0
+        let deltaOut = outBytes >= prevOut ? outBytes - prevOut : 0
+        currentInboundBytesPerSec = Double(deltaIn) / elapsed
+        currentOutboundBytesPerSec = Double(deltaOut) / elapsed
         hasSample = true
-        currentLoad = scaler.normalize(speed: currentThroughputBytesPerSec)
+        currentLoad = scaler.normalize(speed: (currentInboundBytesPerSec + currentOutboundBytesPerSec) / 2)
         return currentLoad
     }
 
-    private func readTotalBytes() -> UInt64? {
+    private func readInterfaceBytes() -> (inBytes: UInt64, outBytes: UInt64)? {
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else { return nil }
         defer { freeifaddrs(ifaddrPtr) }
 
-        var total: UInt64 = 0
+        var inTotal: UInt64 = 0
+        var outTotal: UInt64 = 0
         var cursor: UnsafeMutablePointer<ifaddrs>? = first
         while let current = cursor {
             defer { cursor = current.pointee.ifa_next }
@@ -839,52 +857,63 @@ private final class NetworkLoadMonitor {
             if String(cString: current.pointee.ifa_name) == "lo0" { continue }
             guard let dataPtr = current.pointee.ifa_data else { continue }
             let data = dataPtr.assumingMemoryBound(to: if_data.self).pointee
-            total &+= UInt64(data.ifi_ibytes) &+ UInt64(data.ifi_obytes)
+            inTotal &+= UInt64(data.ifi_ibytes)
+            outTotal &+= UInt64(data.ifi_obytes)
         }
-        return total
+        return (inTotal, outTotal)
     }
 }
 
 // Disk I/O throughput as a 0…1 load — twin of NetworkLoadMonitor. Every IOBlockStorageDriver's
 // Statistics dict carries cumulative "Bytes (Read)"/"Bytes (Write)"; summed across drivers, differenced
-// over real elapsed time into bytes/sec, and normalized by the shared adaptive ThroughputScaler.
+// over real elapsed time into read/write bytes/sec, and the average of the two (not the sum) is
+// normalized by the shared adaptive ThroughputScaler, so a read-only or write-only burst isn't
+// double-counted against a balanced read+write load.
 @MainActor
 private final class DiskLoadMonitor {
     private(set) var hasSample = false
-    private(set) var currentThroughputBytesPerSec: Double = 0
+    private(set) var currentReadBytesPerSec: Double = 0
+    private(set) var currentWriteBytesPerSec: Double = 0
     private(set) var currentLoad: Double = 0
-    private var lastBytes: UInt64?
+    private var lastReadBytes: UInt64?
+    private var lastWriteBytes: UInt64?
     private var scaler = ThroughputScaler(floor: Tuning.diskFloorBytesPerSec)
     private var availabilityChecked = false
     private var available = false
 
     var isAvailable: Bool {
         if !availabilityChecked {
-            available = (readTotalBytes() != nil)
+            available = (readWriteBytes() != nil)
             availabilityChecked = true
         }
         return available
     }
 
     func sampleUsage(elapsed: Double?) -> Double? {
-        guard let total = readTotalBytes() else {
+        guard let (readBytes, writeBytes) = readWriteBytes() else {
             hasSample = false
             return nil
         }
-        defer { lastBytes = total }
-        guard let elapsed, elapsed > 0, let prev = lastBytes else {
-            currentThroughputBytesPerSec = 0
+        defer {
+            lastReadBytes = readBytes
+            lastWriteBytes = writeBytes
+        }
+        guard let elapsed, elapsed > 0, let prevRead = lastReadBytes, let prevWrite = lastWriteBytes else {
+            currentReadBytesPerSec = 0
+            currentWriteBytesPerSec = 0
             hasSample = false
             return nil
         }
-        let deltaBytes = total >= prev ? total - prev : 0
-        currentThroughputBytesPerSec = Double(deltaBytes) / elapsed
+        let deltaRead = readBytes >= prevRead ? readBytes - prevRead : 0
+        let deltaWrite = writeBytes >= prevWrite ? writeBytes - prevWrite : 0
+        currentReadBytesPerSec = Double(deltaRead) / elapsed
+        currentWriteBytesPerSec = Double(deltaWrite) / elapsed
         hasSample = true
-        currentLoad = scaler.normalize(speed: currentThroughputBytesPerSec)
+        currentLoad = scaler.normalize(speed: (currentReadBytesPerSec + currentWriteBytesPerSec) / 2)
         return currentLoad
     }
 
-    private func readTotalBytes() -> UInt64? {
+    private func readWriteBytes() -> (readBytes: UInt64, writeBytes: UInt64)? {
         guard let matching = IOServiceMatching("IOBlockStorageDriver") else { return nil }
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
@@ -892,7 +921,8 @@ private final class DiskLoadMonitor {
         }
         defer { IOObjectRelease(iterator) }
 
-        var total: UInt64 = 0
+        var readTotal: UInt64 = 0
+        var writeTotal: UInt64 = 0
         var found = false
         var entry = IOIteratorNext(iterator)
         while entry != 0 {
@@ -904,12 +934,11 @@ private final class DiskLoadMonitor {
                 entry, "Statistics" as CFString, kCFAllocatorDefault, 0
             ) else { continue }
             guard let stats = prop.takeRetainedValue() as? [String: Any] else { continue }
-            let read = (stats["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
-            let write = (stats["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
-            total &+= read &+ write
+            readTotal &+= (stats["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
+            writeTotal &+= (stats["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
             found = true
         }
-        return found ? total : nil
+        return found ? (readTotal, writeTotal) : nil
     }
 }
 
@@ -1707,8 +1736,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 usageItem.title = networkUsageLineText()
                 stateItem.title = "Network State: \(cpuStateText(for: networkMonitor.currentLoad))"
                 statusItem.button?.setAccessibilityLabel(String(
-                    format: "MenuBar Load Runner — network %.1f MB/s, %@",
-                    networkMonitor.currentThroughputBytesPerSec / 1_048_576.0,
+                    format: "MenuBar Load Runner — network ↓%.1f MB/s ↑%.1f MB/s, %@",
+                    networkMonitor.currentInboundBytesPerSec / Tuning.bytesPerMiB,
+                    networkMonitor.currentOutboundBytesPerSec / Tuning.bytesPerMiB,
                     cpuStateText(for: networkMonitor.currentLoad)
                 ))
             } else {
@@ -1721,8 +1751,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 usageItem.title = diskUsageLineText()
                 stateItem.title = "Disk State: \(cpuStateText(for: diskMonitor.currentLoad))"
                 statusItem.button?.setAccessibilityLabel(String(
-                    format: "MenuBar Load Runner — disk %.1f MB/s, %@",
-                    diskMonitor.currentThroughputBytesPerSec / 1_048_576.0,
+                    format: "MenuBar Load Runner — disk read %.1f MB/s write %.1f MB/s, %@",
+                    diskMonitor.currentReadBytesPerSec / Tuning.bytesPerMiB,
+                    diskMonitor.currentWriteBytesPerSec / Tuning.bytesPerMiB,
                     cpuStateText(for: diskMonitor.currentLoad)
                 ))
             } else {
@@ -1732,15 +1763,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
         case .fan:
             if fanMonitor.hasSample {
-                usageItem.title = String(
-                    format: "Fan: %.0f RPM (%.0f%%)",
-                    fanMonitor.currentRPM,
-                    fanMonitor.currentUtilization * Tuning.percentScale
-                )
+                usageItem.title = fanUsageLineText()
                 stateItem.title = "Fan State: \(cpuStateText(for: fanMonitor.currentUtilization))"
                 statusItem.button?.setAccessibilityLabel(String(
-                    format: "MenuBar Load Runner — fan %.0f RPM, %@",
-                    fanMonitor.currentRPM,
+                    format: "MenuBar Load Runner — fan avg %.0f%%, %@",
+                    fanMonitor.currentUtilization * Tuning.percentScale,
                     cpuStateText(for: fanMonitor.currentUtilization)
                 ))
             } else {
@@ -1784,31 +1811,47 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let pct = memoryMonitor.currentUsedFraction * Tuning.percentScale
         var line = String(format: "Memory: %.0f%%", pct)
         if memoryMonitor.hasSwapSample, memoryMonitor.swapTotalBytes > 0 {
-            let gib = 1_073_741_824.0
             line += String(
                 format: " · swap %.1f/%.1f GB",
-                Double(memoryMonitor.swapUsedBytes) / gib,
-                Double(memoryMonitor.swapTotalBytes) / gib
+                Double(memoryMonitor.swapUsedBytes) / Tuning.bytesPerGiB,
+                Double(memoryMonitor.swapTotalBytes) / Tuning.bytesPerGiB
             )
         }
         // Show the swap *rate* when actively paging — it's part of what drives the animation, so the
         // dashboard shouldn't read "Memory: 40%" while swap activity pushes the speed higher.
         if memoryMonitor.hasSwapRateSample, memoryMonitor.currentSwapRateBytesPerSec > 0 {
-            let mibps = 1_048_576.0
-            line += String(format: " · %.1f MB/s", memoryMonitor.currentSwapRateBytesPerSec / mibps)
+            line += String(format: " · %.1f MB/s", memoryMonitor.currentSwapRateBytesPerSec / Tuning.bytesPerMiB)
         }
         return line
     }
 
-    // Network/disk metric lines: the human-meaningful throughput (MB/s), not the adaptive-normalized
-    // 0…1 load that actually drives the animation (that's activeSourceCurrentUsage). Mirrors the
-    // memory line showing raw used-% while the composite drives speed.
+    // Network/disk/fan metric lines: the human-meaningful readouts (MB/s per direction, RPM per fan),
+    // not the adaptive-normalized 0…1 load that actually drives the animation (that's
+    // activeSourceCurrentUsage — the average of the two figures shown here). Mirrors the memory line
+    // showing raw used-% while the composite drives speed.
     private func networkUsageLineText() -> String {
-        String(format: "Network: %.1f MB/s", networkMonitor.currentThroughputBytesPerSec / 1_048_576.0)
+        String(
+            format: "Network: ↓%.1f MB/s ↑%.1f MB/s",
+            networkMonitor.currentInboundBytesPerSec / Tuning.bytesPerMiB,
+            networkMonitor.currentOutboundBytesPerSec / Tuning.bytesPerMiB
+        )
     }
 
     private func diskUsageLineText() -> String {
-        String(format: "Disk: %.1f MB/s", diskMonitor.currentThroughputBytesPerSec / 1_048_576.0)
+        String(
+            format: "Disk: read %.1f MB/s write %.1f MB/s",
+            diskMonitor.currentReadBytesPerSec / Tuning.bytesPerMiB,
+            diskMonitor.currentWriteBytesPerSec / Tuning.bytesPerMiB
+        )
+    }
+
+    // One "RPM (util%)" segment per fan, joined with " · " — mirrors memoryUsageLineText's
+    // multi-clause style.
+    private func fanUsageLineText() -> String {
+        let segments = fanMonitor.perFan.enumerated().map { index, reading in
+            String(format: "Fan %d: %.0f RPM (%.0f%%)", index + 1, reading.rpm, reading.utilization * Tuning.percentScale)
+        }
+        return segments.joined(separator: " · ")
     }
 
     private func refreshPresetSelectionState() {

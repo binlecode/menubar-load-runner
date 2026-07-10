@@ -32,9 +32,9 @@ whether to enable start-at-login (pass `--login` to enable it without prompting;
 
 - **Overrides:** `MENUBAR_LOAD_RUNNER_HOME` (install dir), `BIN_DIR` (launcher symlink dir).
 - **Update:** re-run the installer.
-- **Uninstall:** remove the symlink (`~/.local/bin/menubar-load-runner`) and the install dir; if
-  you enabled start-at-login, run
-  `~/.local/share/menubar-load-runner/scripts/uninstall-login-item.sh` first.
+- **Uninstall:** run `~/.local/share/menubar-load-runner/uninstall.sh` — it tears down
+  start-at-login (if enabled), stops any running instance, and removes the launcher symlink and
+  the install dir (`--yes` to skip the delete confirmation).
 
 Already have the repo checked out? Skip the installer — see **Run Locally**.
 
@@ -42,6 +42,7 @@ Already have the repo checked out? Skip the installer — see **Run Locally**.
 
 - `MenuBarLoadRunner.swift`: app source.
 - `install.sh`: one-line installer (clone + compile + symlink launcher onto `PATH`; see Install above).
+- `uninstall.sh`: reverses `install.sh` (LaunchAgent, running instance, symlink, install dir).
 - `LICENSE.md`: MIT license (covers the source code; the bundled GIFs are third-party — see Assets & attribution).
 - `menubar-load-runner`: launcher script.
 - `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh`: optional start-at-login setup (see below).

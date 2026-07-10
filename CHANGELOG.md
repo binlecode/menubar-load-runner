@@ -43,6 +43,16 @@ _Nothing yet._
     and speed follows the average utilization across fans (previously the max across fans, so one
     ramped fan dominated).
 
+### Fixed
+
+- Frame registration: `loadFrames` previously cropped each GIF frame to its **own** independent
+  alpha bounding box, so a preset whose limb extent varies frame to frame (a running or walking
+  gait) rendered at a different size on different frames — visible as the whole menu-bar icon
+  resizing/wobbling as it animated. Measured up to a 55% frame-to-frame aspect-ratio swing on the
+  `chihiro` preset and 40% on `dog-white`/`dog-black`. Frames are now cropped to one shared
+  bounding box — the union of every frame's own alpha extent — so the icon's rendered size is
+  constant across a preset's whole animation; only the artwork inside it moves.
+
 ## [1.3.0] - 2026-07-09
 
 ### Added

@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.3.0"
+    static let version = "1.4.0"
 }
 
 private enum Tuning {
@@ -2404,22 +2404,40 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return false
         }
 
-        var nextFrames: [NSImage] = []
-        var nextAspects: [CGFloat] = []
+        var rawImages: [CGImage] = []
         var nextDurations: [TimeInterval] = []
-        nextFrames.reserveCapacity(count)
-        nextAspects.reserveCapacity(count)
+        rawImages.reserveCapacity(count)
         nextDurations.reserveCapacity(count)
 
         for i in 0..<count {
             guard let cgImage = CGImageSourceCreateImageAtIndex(src, i, nil) else {
                 continue
             }
-            let preparedImage = trimTransparentPadding(from: cgImage)
+            rawImages.append(cgImage)
+            nextDurations.append(frameDuration(from: src, frameIndex: i))
+        }
 
-            let duration = frameDuration(from: src, frameIndex: i)
-            nextDurations.append(duration)
+        guard !rawImages.isEmpty, rawImages.count == nextDurations.count else {
+            fputs("Failed to decode usable GIF frames from: \(gifURL.path)\n", stderr)
+            return false
+        }
 
+        // Crop every frame to ONE shared bounding box (the union of each frame's own alpha
+        // extent) rather than each frame's own tight box. A running/walking gait's limbs
+        // extend by a different amount on different frames; trimming each frame independently
+        // (the prior behavior) made the resulting image's own size — and therefore its
+        // rendered aspect ratio in updateRenderedFrames — change frame to frame, which reads
+        // as the whole icon wobbling/resizing as it animates. Trimming to one shared box keeps
+        // every frame the same size, so only the artwork inside it moves.
+        let unionBox = alphaBoundingBoxUnion(of: rawImages)
+
+        var nextFrames: [NSImage] = []
+        var nextAspects: [CGFloat] = []
+        nextFrames.reserveCapacity(rawImages.count)
+        nextAspects.reserveCapacity(rawImages.count)
+
+        for cgImage in rawImages {
+            let preparedImage = crop(cgImage, to: unionBox)
             let image = NSImage(
                 cgImage: preparedImage,
                 size: NSSize(width: preparedImage.width, height: preparedImage.height)
@@ -2431,30 +2449,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             nextAspects.append(max(aspect, Tuning.minAspect))
         }
 
-        guard
-            !nextFrames.isEmpty,
-            nextFrames.count == nextDurations.count,
-            nextFrames.count == nextAspects.count
-        else {
-            fputs("Failed to decode usable GIF frames from: \(gifURL.path)\n", stderr)
-            return false
-        }
-
         frames = nextFrames
         frameAspects = nextAspects
         baseDurations = nextDurations
         return true
     }
 
-    private func trimTransparentPadding(from image: CGImage) -> CGImage {
+    private struct AlphaBox {
+        let minX: Int
+        let maxX: Int
+        let minY: Int
+        let maxY: Int
+    }
+
+    // Tight alpha bounding box of a single frame, in the frame's own pixel coordinates.
+    // Returns nil when the image has no alpha channel, an unsupported pixel layout, or no
+    // pixels above the visibility threshold (fully transparent frame).
+    private func alphaBoundingBox(of image: CGImage) -> AlphaBox? {
         let bitmap = NSBitmapImageRep(cgImage: image)
-        guard bitmap.hasAlpha, let base = bitmap.bitmapData else { return image }
+        guard bitmap.hasAlpha, let base = bitmap.bitmapData else { return nil }
 
         let width = bitmap.pixelsWide
         let height = bitmap.pixelsHigh
         let bytesPerRow = bitmap.bytesPerRow
         let bytesPerPixel = max(bitmap.samplesPerPixel, 1)
-        guard width > 0, height > 0, bytesPerPixel >= Tuning.minAlphaPixelComponents else { return image }
+        guard width > 0, height > 0, bytesPerPixel >= Tuning.minAlphaPixelComponents else { return nil }
 
         let alphaOffset: Int
         switch image.alphaInfo {
@@ -2463,7 +2482,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .last, .premultipliedLast, .noneSkipLast:
             alphaOffset = bytesPerPixel - 1
         default:
-            return image
+            return nil
         }
 
         var minX = width
@@ -2484,12 +2503,34 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
         }
 
-        guard maxX >= minX, maxY >= minY else { return image }
-        if minX == 0 && maxX == width - 1 && minY == 0 && maxY == height - 1 {
+        guard maxX >= minX, maxY >= minY else { return nil }
+        return AlphaBox(minX: minX, maxX: maxX, minY: minY, maxY: maxY)
+    }
+
+    // Smallest box covering every frame's own alpha bounding box, so all frames of a GIF
+    // share one crop rect. Frames with no visible pixels (or an unsupported layout) don't
+    // contribute. Returns nil if no frame contributed (crop is skipped entirely).
+    private func alphaBoundingBoxUnion(of images: [CGImage]) -> AlphaBox? {
+        var union: AlphaBox?
+        for image in images {
+            guard let box = alphaBoundingBox(of: image) else { continue }
+            guard let current = union else { union = box; continue }
+            union = AlphaBox(
+                minX: min(current.minX, box.minX),
+                maxX: max(current.maxX, box.maxX),
+                minY: min(current.minY, box.minY),
+                maxY: max(current.maxY, box.maxY)
+            )
+        }
+        return union
+    }
+
+    private func crop(_ image: CGImage, to box: AlphaBox?) -> CGImage {
+        guard let box else { return image }
+        if box.minX == 0 && box.maxX == image.width - 1 && box.minY == 0 && box.maxY == image.height - 1 {
             return image
         }
-
-        let cropRect = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        let cropRect = CGRect(x: box.minX, y: box.minY, width: box.maxX - box.minX + 1, height: box.maxY - box.minY + 1)
         return image.cropping(to: cropRect) ?? image
     }
 

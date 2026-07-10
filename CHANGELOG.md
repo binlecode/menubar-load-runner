@@ -26,6 +26,23 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.4.0] - 2026-07-09
+
+### Changed
+
+- **Network**, **Disk**, and **Fan** load sources now report each axis separately and drive the
+  animation from the *average* of those axes rather than a single combined figure. A one-directional
+  transfer or a single spun-up fan no longer counts the same as balanced activity, and the status
+  menu surfaces the breakdown:
+  - **Network** tracks inbound and outbound throughput independently — the readout shows
+    `↓X MB/s ↑Y MB/s` and speed follows the average of the two (previously a single summed rx+tx
+    total).
+  - **Disk** tracks read and write throughput independently — the readout shows
+    `read X MB/s write Y MB/s` and speed follows their average (previously a summed total).
+  - **Fan** reports every fan's RPM and utilization as one `Fan N: NNNN RPM (NN%)` segment per fan,
+    and speed follows the average utilization across fans (previously the max across fans, so one
+    ramped fan dominated).
+
 ## [1.3.0] - 2026-07-09
 
 ### Added

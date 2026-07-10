@@ -66,6 +66,25 @@ Run from the repository root:
   `--foreground` while developing so output goes straight to the terminal.
 - `MenuBarLoadRunner` (the compiled binary) is gitignored; `MenuBarLoadRunner.swift` is the only source of truth.
 
+## Start-at-login / LaunchAgent (already exists — do not rebuild)
+
+Auto-start is **already implemented** as a per-user LaunchAgent; don't hand-roll a plist, `launchctl`
+sequence, or `.app` bundle. Use the scripts:
+
+```bash
+./scripts/install-login-item.sh [preset] [flags]   # bake args, load + start now and at login
+./scripts/uninstall-login-item.sh                  # deregister + delete plist and log
+```
+
+- Label `ai.bera.menubarloadrunner`; plist at `~/Library/LaunchAgents/`. No root, no signing.
+- `ProgramArguments` = the **launcher script** + `--no-detach` (so `launchd` supervises the real
+  process) + baked args. Because it runs the launcher (not a fixed binary), a source edit is picked up
+  on the next agent start — restart with `launchctl kickstart -k "gui/$(id -u)/ai.bera.menubarloadrunner"`,
+  no reinstall. Reinstall is **only** for changing baked args.
+- `RunAtLoad`, no `KeepAlive` (menu **Exit** quits until next login). Shows under System Settings →
+  Login Items → "Allow in the Background". Full mechanics (bootout reload race, etc.) in
+  `docs/DESIGN-system.md` §19.
+
 ## Architecture
 
 Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bottom as:

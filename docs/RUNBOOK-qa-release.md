@@ -8,6 +8,17 @@ version surface, and the launcher wrapper. Copy-paste the blocks in order; each 
 
 Run everything from the repo root.
 
+> **Executable harness.** Sections 1–6 below are also available as runnable scripts so you don't have
+> to copy-paste:
+> - `tests/qa.sh` — runs §1–5 (build, CLI parse + version, lifecycle, error paths, readers + scaler),
+>   self-scoring, exit 0 only if all pass. Add `--launcher` to also run §6 (it stops running instances).
+> - `tests/install-smoke.sh` — install/uninstall round-trip in a `tmp/` sandbox (never touches your
+>   real `~/.local` / LaunchAgents).
+> - `tests/readers.swift`, `tests/scaler.swift` — the §5 probes as standalone files.
+>
+> The inline blocks below remain the reference (and cover §7's manual spot-check, which can't be
+> automated). Keep the scripts and these blocks in sync.
+
 ---
 
 ## 0. Testing affordances (read first)

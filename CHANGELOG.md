@@ -26,6 +26,20 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.5.0] - 2026-07-09
+
+### Changed
+
+- **Memory** load source: the used-fraction term now has an idle floor (`Tuning.memoryIdleFloor`,
+  0.55) subtracted and the remainder rescaled to 0…1 before it drives the animation. macOS keeps
+  most physical RAM resident as cache/wired, so a healthy Mac idles high (often 0.8–0.9 used); the
+  previous linear map from the raw fraction drove the animation well up its speed range at rest.
+  With the floor, an idle machine reads ~0 and the preset's full min..max range maps onto the
+  fraction's real operating band. The swap-rate term is unchanged (already 0-based via the adaptive
+  scaler) and is still max'd in un-floored, so active paging drives full speed regardless. The
+  Memory menu line still shows the **raw** used-fraction — only the speed driver is floored. Affects
+  `--load-source memory` only; CPU (the default) and the other 0-idle sources are unchanged.
+
 ## [1.4.0] - 2026-07-09
 
 ### Changed

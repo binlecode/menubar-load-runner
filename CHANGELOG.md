@@ -26,6 +26,18 @@ of the public API and may change in any release.
 
 _Nothing yet._
 
+## [1.5.1] - 2026-07-10
+
+### Fixed
+
+- `Speed Multiplier` menu line: dropped the preset's speed-profile label and min/max range from
+  the auto-mode title — the label just restated the preset name (already visible from the checked
+  item in the `Presets` submenu) and the range was tuning-internal detail, not something a user
+  acts on. The line now reads `Speed Multiplier (auto: <source>): <value>x`. The
+  low-power/thermal/memory-pressure throttle notice, previously appended inline (making the item
+  even wider exactly when it was already busiest), is now its own `Throttled: low power/thermal`
+  menu line that's hidden unless the cap is active.
+
 ## [1.5.0] - 2026-07-09
 
 ### Changed

@@ -264,7 +264,7 @@
   .terminal .bar i:nth-child(3){background:#61C554}
   .terminal .bar span{margin-left:8px; font-family:var(--mono); font-size:11.5px; color:#8B93A3}
   .terminal pre{margin:0; padding:18px 18px 20px; font-family:var(--mono); font-size:13px; line-height:1.75;
-    color:#D7DCE6; overflow-x:auto}
+    color:#D7DCE6; white-space:pre-wrap; overflow-wrap:anywhere}
   .terminal .c{color:#6FB7B3}     /* comment */
   .terminal .p{color:#E7A23C}     /* prompt / cmd accent */
   .terminal .f{color:#C7A0E0}     /* flag */
@@ -349,7 +349,7 @@
       <div class="tempo" aria-hidden="true">
         <img class="creature" src="../gifs/running-horse-white.gif" alt="">
         <div class="beats" id="beats"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-        <span class="lbl">horse · 0.45–2.30×</span>
+        <span class="lbl">pulse = live tempo · horse 0.45–2.30×</span>
       </div>
     </div>
     <p class="heroBar cap">↑ real preset ranges from <span class="mono">gifs/presets.json</span> · self-throttles under Low Power / thermal / memory pressure</p>
@@ -430,7 +430,7 @@
         </div>
       </div>
     </div>
-    <p class="heroBar cap">…plus Horse (Black), Chihiro white/black, Totoro white/black, and a wide Totoro group. Drop in any <span class="mono">.gif</span> to make your own.</p>
+    <p class="heroBar cap">…plus Dog (Black), Horse (Black), Chihiro white/black, Totoro white/black, and a wide Totoro group (white/black) — 12 in all. Drop in any <span class="mono">.gif</span> to make your own.</p>
   </section>
 
   <section id="start">
@@ -441,22 +441,24 @@
     <div class="qs">
       <div class="terminal">
         <div class="bar"><i></i><i></i><i></i><span>zsh — menubar-load-runner</span></div>
-<pre><span class="c"># default preset (horse-white), detached</span>
-<span class="p">./menubar-load-runner</span>
+<pre><span class="c"># install — clone, compile, symlink onto PATH (no Xcode project, no Homebrew)</span>
+<span class="p">curl</span> -fsSL https://raw.githubusercontent.com/binlecode/menubar-load-runner/main/install.sh | <span class="p">bash</span>
 
-<span class="c"># pick a companion + drive it from GPU load</span>
-<span class="p">./menubar-load-runner</span> totoro <span class="f">--load-source</span> gpu
+<span class="c"># then run from anywhere — default preset, or pick a companion + load source</span>
+<span class="p">menubar-load-runner</span> totoro <span class="f">--load-source</span> gpu
 
-<span class="c"># your own gif (sizes to its aspect ratio), with a label</span>
-<span class="p">./menubar-load-runner</span> ~/run.gif <span class="f">--overlay-text</span> CPU
+<span class="c"># start at login — per-user LaunchAgent, no root, no .app bundle</span>
+<span class="p">./scripts/install-login-item.sh</span> chihiro
 
-<span class="c"># start at login — no root, no .app bundle</span>
-<span class="p">./scripts/install-login-item.sh</span> chihiro</pre>
+<span class="c"># clean uninstall — removes only what the installer created</span>
+<span class="p">~/.local/share/menubar-load-runner/uninstall.sh</span></pre>
       </div>
       <div class="facts">
         <div class="fact"><h4>A single Swift source file</h4><p>The whole app is <b>one <span class="mono">.swift</span> file</b> compiled by a zsh launcher with <span class="mono">swiftc -O</span>. No Xcode project, no SwiftPM package, no build system to learn.</p></div>
         <div class="fact"><h4>Vsync-aligned game loop</h4><p>A <b>CADisplayLink</b> advances frames against real elapsed time and the screen's refresh rate — smooth at any speed, and it pauses itself entirely when the item is occluded.</p></div>
         <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, and speed range all live in <b><span class="mono">presets.json</span></b> (width comes from the GIF's own aspect ratio). Add a preset by editing data — zero Swift changes.</p></div>
+        <div class="fact"><h4>Checks for its own updates</h4><p>On launch it reads your checkout's origin release tags — <b>the only network call the app ever makes</b>. A newer tag shows an <span class="mono">Update available</span> menu item; applying it is a deliberate <b>two-click</b> action (<span class="mono">git pull --ff-only</span>), never automatic.</p></div>
+        <div class="fact"><h4>One line in, one line out</h4><p>Install with a single <span class="mono">curl … | bash</span> — it clones, compiles, and symlinks onto your <span class="mono">PATH</span>; <span class="mono">uninstall.sh</span> reverses exactly what it created. <b>Open source (MIT)</b>, no signing or Homebrew.</p></div>
       </div>
     </div>
   </section>
@@ -465,7 +467,8 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.6.0</span>
+        <span class="badge">v1.6.1</span>
+        <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
         <span class="badge">unprivileged · read-only</span>

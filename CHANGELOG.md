@@ -9,12 +9,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATCH bumps apply to is:
 
-- **Launcher CLI** — the positional preset keyword or GIF path, and the flags `--width`,
-  `--speed-multiplier`, `--overlay-text`, `--load-source`, `--foreground` / `--no-detach`,
-  `--detach`, `--extra`, `-h` / `--help`.
+- **Launcher CLI** — the positional preset keyword or GIF path, and the flags
+  `--speed-multiplier`, `--overlay-text`, `--load-source`, `--no-update-check`,
+  `--foreground` / `--no-detach`, `--detach`, `--extra`, `-h` / `--help`.
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
-  `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
-  `MENUBAR_LOAD_RUNNER_EXIT_AFTER` and `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`.
+  `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`, `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`,
+  and the debug/QA hooks `MENUBAR_LOAD_RUNNER_EXIT_AFTER` and `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -24,12 +24,28 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-07-10
+
 ### Added
 
+- **In-app update check + user-initiated self-update.** On launch (fail-silent, off the main thread)
+  and via a new **Check for Updates…** menu item, the app reads the git origin's release tags
+  (`git ls-remote --tags`) and compares the highest to the running version. When a newer release
+  exists it shows an **Update available: vX.Y.Z** item. Applying is always a deliberate two-step user
+  action — click the item, confirm the dialog — after which it runs `git pull --ff-only` (never
+  `--force`/`reset`; a dirty/diverged checkout aborts cleanly with a *View Releases* escape hatch) and
+  asks you to restart to load the new version. New flag `--no-update-check` and env
+  `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0` disable it.
 - **Asset attribution** section in the README for the bundled third-party preset GIFs — clarifies the
   MIT license covers the source code only, and provides a takedown path.
-- **Executable QA harness** in `tests/` (`qa.sh`, `install-smoke.sh`, `readers.swift`, `scaler.swift`)
-  — the runnable form of `docs/RUNBOOK-qa-release.md` §1–6 (previously copy-paste blocks).
+- **Executable QA harness** in `tests/` (`qa.sh`, `install-smoke.sh`, `readers.swift`, `scaler.swift`,
+  `semver.swift`) — the runnable form of `docs/RUNBOOK-qa-release.md` §1–6 (previously copy-paste blocks).
+
+### Changed
+
+- **About panel** reworked to a standard macOS About layout: a *name + version* title, the tagline,
+  the live speed mode, a `© 2026 Bin Le · MIT License` line, a third-party-artwork attribution note,
+  and a **View on GitHub** button.
 
 ## [1.6.0] - 2026-07-10
 

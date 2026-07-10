@@ -73,8 +73,8 @@ Run from the repository root:
 ## Installer (`install.sh` — end-user install, already exists — do not rebuild)
 
 `install.sh` at the repo root is the user-facing one-line installer (gitlogue-style curl|bash,
-adapted for a *source-based* app — see `docs/TODO-20260710-0809-user-friendly-installer.md` for the
-rationale, incl. why Homebrew/notarization are deferred). It is intentionally MVP:
+adapted for a *source-based* app — Homebrew/notarization are deferred, see Out of scope below). It
+is intentionally MVP:
 
 - Flow: preflight (macOS + `git`/`swiftc`, else `xcode-select --install`) → `git clone` into
   `~/.local/share/menubar-load-runner` (existing checkout → `git pull --ff-only`) → precompile
@@ -87,6 +87,10 @@ rationale, incl. why Homebrew/notarization are deferred). It is intentionally MV
   It installs the latest default branch; power users `git checkout` a tag themselves.
 - The installer *reuses* `scripts/install-login-item.sh` for start-at-login — it does not re-implement
   the LaunchAgent (see next section).
+- `uninstall.sh` (repo root) reverses it: tears down the LaunchAgent (if enabled), stops any running
+  instance, removes the `BIN_DIR` symlink (only if it points into the install dir), and removes the
+  install dir (`[y/N]` confirm, `--yes` to skip; refuses/warns instead of deleting if the dir isn't
+  its own git checkout).
 
 ## Start-at-login / LaunchAgent (already exists — do not rebuild)
 

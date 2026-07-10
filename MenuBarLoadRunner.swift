@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.4.0"
+    static let version = "1.5.0"
 }
 
 private enum Tuning {
@@ -63,6 +63,15 @@ private enum Tuning {
     static let networkFloorBytesPerSec: Double = 1 * bytesPerMiB
     static let diskFloorBytesPerSec: Double = 4 * bytesPerMiB
     static let swapFloorBytesPerSec: Double = 1 * bytesPerMiB
+
+    // Memory used-fraction rests high on a healthy Mac (the OS holds most physical RAM as cache/
+    // wired), so a linear map from raw used-fraction would drive the animation well up its speed
+    // range while the machine is effectively idle. This floor is subtracted from the *used-fraction
+    // term only* (see MemoryLoadMonitor.sampleUsage) and the remainder rescaled to 0…1, so an idle
+    // Mac reads ~0 and the full min..max range maps onto the fraction's real operating band. It is a
+    // deliberate fixed approximation (real idle varies with RAM size/workload); the swap-rate term is
+    // already 0-based via ThroughputScaler and is NOT floored. The menu still shows the raw fraction.
+    static let memoryIdleFloor: Double = 0.55
 
     static let renderVerticalInset: CGFloat = 4
     static let minIconDimension: CGFloat = 12
@@ -424,8 +433,10 @@ private final class MemoryLoadMonitor {
     private(set) var swapUsedBytes: UInt64 = 0
     private(set) var swapTotalBytes: UInt64 = 0
     private(set) var hasSwapSample = false
-    // Composite driver value: max(usedFraction, adaptiveScaled(swapRate)). Equals the used-fraction
-    // until swap activity warms up (one tick) and the scaled swap rate rises above it. See Tuning /
+    // Composite driver value: max(idleFloored(usedFraction), adaptiveScaled(swapRate)). The used-
+    // fraction is floored/rescaled by Tuning.memoryIdleFloor before the max, so it drives ~0 on an
+    // idle Mac; the scaled swap rate (0-based) takes over once paging warms up (one tick) and rises
+    // above it. currentUsedFraction (the menu figure) stays the RAW fraction. See Tuning /
     // ThroughputScaler.
     private(set) var currentMemoryLoad: Double = 0
     private(set) var currentSwapRateBytesPerSec: Double = 0
@@ -450,7 +461,11 @@ private final class MemoryLoadMonitor {
         readSwapUsage()
         updateSwapRate(swapEvents: sample.swapEvents, elapsed: elapsed)
         let swapLoad = hasSwapRateSample ? swapScaler.normalize(speed: currentSwapRateBytesPerSec) : 0
-        currentMemoryLoad = max(sample.usedFraction, swapLoad)
+        // Reclaim the high resting band of the used-fraction (see Tuning.memoryIdleFloor) so an idle
+        // Mac drives ~0 speed and the full range maps onto the fraction's real operating band. Applied
+        // to the used-fraction term ONLY — swapLoad is already 0-based, so it's max'd in unfloored.
+        let flooredUsed = max(0, (sample.usedFraction - Tuning.memoryIdleFloor) / (1 - Tuning.memoryIdleFloor))
+        currentMemoryLoad = max(flooredUsed, swapLoad)
         return currentMemoryLoad
     }
 

@@ -24,13 +24,18 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Asset attribution notice** (`ASSETS.md`) for the bundled third-party preset GIFs — clarifies the
+  MIT license covers the source code only, and provides a takedown path.
+- **Executable QA harness** in `tests/` (`qa.sh`, `install-smoke.sh`, `readers.swift`, `scaler.swift`)
+  — the runnable form of `docs/RUNBOOK-qa-release.md` §1–6 (previously copy-paste blocks).
 
 ## [1.6.0] - 2026-07-10
 
 ### Added
 
-- **Open-sourced under the MIT License** (`LICENSE.md`).
+- **Open-sourced under the MIT License** (`LICENSE.md`) — covers the source code only.
 - **One-line installer** (`install.sh`) and matching **`uninstall.sh`**. `install.sh` is a
   gitlogue-style `curl | bash` installer adapted for this source-based app: it preflights macOS +
   the Xcode Command Line Tools (`git`/`swiftc`), clones the repo to

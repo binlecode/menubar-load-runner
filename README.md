@@ -42,7 +42,8 @@ Already have the repo checked out? Skip the installer — see **Run Locally**.
 
 - `MenuBarLoadRunner.swift`: app source.
 - `install.sh`: one-line installer (clone + compile + symlink launcher onto `PATH`; see Install above).
-- `LICENSE.md`: MIT license.
+- `LICENSE.md`: MIT license (covers the source code).
+- `ASSETS.md`: third-party attribution + notice for the bundled preset GIFs (not covered by MIT).
 - `menubar-load-runner`: launcher script.
 - `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh`: optional start-at-login setup (see below).
 - `CHANGELOG.md`: release history (Keep a Changelog + semver).
@@ -282,4 +283,8 @@ Metrics are refreshed every 2 seconds from the app's periodic sampler.
 
 ## License
 
-[MIT](LICENSE.md) © 2026 Bin Le.
+Source code: [MIT](LICENSE.md) © 2026 Bin Le.
+
+The bundled preset GIFs in `gifs/` are **not** covered by the MIT license — they are third-party
+content included as reference/sample artwork; see [`ASSETS.md`](ASSETS.md) for attribution and
+takedown info. Bring your own GIF with `menubar-load-runner /path/to.gif`.

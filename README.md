@@ -275,10 +275,31 @@ Click the menu bar item to open:
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
+- `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`
 - `Exit`
 
 Metrics are refreshed every 2 seconds from the app's periodic sampler.
+
+## Updates
+
+On launch, the app checks whether a newer release exists by reading your git checkout's origin remote
+release tags (`git ls-remote --tags origin 'v*'`) and comparing the highest one to the running
+version. **This is the only network access the app makes**, it runs once per launch off the main
+thread, and it fails silently (offline, no `git`, or a non-git install → nothing happens). When a
+newer tag is found, an **`Update available: vX.Y.Z ->`** item appears in the menu; **`Check for
+Updates...`** re-checks on demand.
+
+Applying an update is always a deliberate two-step user action — click the menu item, then confirm —
+never automatic:
+
+1. Click **`Update available`** (or **`Check for Updates...`** when it finds a newer version).
+2. Confirm the dialog. The app runs `git pull --ff-only` in its install directory (never `--force` /
+   `reset`, so a modified or diverged checkout aborts cleanly and offers the releases page instead).
+3. On success it asks you to **restart** — quit from the menu and relaunch (or it starts fresh at next
+   login). The launcher recompiles automatically because the source is now newer than the binary.
+
+Disable the check entirely with `--no-update-check` or `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0`.
 
 ## Testing & CI
 

@@ -11,6 +11,117 @@ private enum AppInfo {
     static let version = "1.6.0"
 }
 
+// A strict three-component semantic version (major.minor.patch). Used to compare the compiled-in
+// AppInfo.version against the newest release tag on the origin remote (see UpdateChecker). The parse
+// is deliberately strict — exactly three numeric components — so moved/dereferenced tags, pre-release
+// tags (v1.2.3-rc1), and junk are rejected rather than mis-ranked.
+private struct SemVer: Comparable, CustomStringConvertible {
+    let major: Int
+    let minor: Int
+    let patch: Int
+
+    // Accepts "1.6.0" or "v1.6.0" (a leading v/V is stripped). Returns nil for anything that is not
+    // exactly three non-negative integer components.
+    init?(_ raw: String) {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        if let first = s.first, first == "v" || first == "V" {
+            s.removeFirst()
+        }
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        var nums: [Int] = []
+        for part in parts {
+            // Reject signs, spaces, and non-digits — Int("+1")/Int("1 ") would otherwise slip through
+            // some inputs; require the component to be all ASCII digits and parseable.
+            guard !part.isEmpty, part.allSatisfy(\.isNumber), let n = Int(part) else { return nil }
+            nums.append(n)
+        }
+        (major, minor, patch) = (nums[0], nums[1], nums[2])
+    }
+
+    static func < (lhs: SemVer, rhs: SemVer) -> Bool {
+        (lhs.major, lhs.minor, lhs.patch) < (rhs.major, rhs.minor, rhs.patch)
+    }
+
+    // Bare "1.6.0" form; callers prepend "v" for tag/menu display.
+    var description: String { "\(major).\(minor).\(patch)" }
+    var tagString: String { "v\(description)" }
+}
+
+// Detects whether a newer release exists by reading the origin remote's release tags. Uses
+// `git ls-remote` rather than the GitHub API: no token, no rate limit, and it honors the checkout's
+// actual origin (forks, and the MENUBAR_LOAD_RUNNER_REPO_URL test override). Fail-silent by design —
+// any failure (offline, git missing, non-zero exit) yields nil, never an error surfaced to the user.
+private enum UpdateChecker {
+    // Result of running git: exit status plus captured stdout/stderr. nil (from runGit) means git
+    // couldn't be launched at all (missing binary) — indistinguishable enough from failure that
+    // callers treat both as "no result".
+    struct GitResult { let status: Int32; let stdout: String; let stderr: String }
+
+    // Runs `git -C <repoDir> <args…>` and captures both streams. Blocking — callers dispatch this off
+    // the main thread. Read-then-wait is safe here because git's output for our commands (ls-remote /
+    // ff-only pull) is far under the OS pipe buffer, so neither stream can block the child.
+    private static func runGit(_ args: [String], in repoDir: URL) -> GitResult? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", repoDir.path] + args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return GitResult(
+            status: process.terminationStatus,
+            stdout: String(data: outData, encoding: .utf8) ?? "",
+            stderr: String(data: errData, encoding: .utf8) ?? ""
+        )
+    }
+
+    // Runs `git ls-remote --tags --refs origin 'v*'` and returns the highest release tag as a SemVer,
+    // or nil on any failure / no tags. `--refs` strips the peeled "^{}" dereference lines; "v*" is a
+    // literal argument (no shell), so git does the server-side ref matching.
+    static func latestRemoteTag(repoDir: URL) -> SemVer? {
+        guard let result = runGit(["ls-remote", "--tags", "--refs", "origin", "v*"], in: repoDir),
+              result.status == 0 else {
+            return nil
+        }
+        return highestTag(inLsRemoteOutput: result.stdout)
+    }
+
+    // Fast-forward-only pull. Returns whether it succeeded plus a human-readable message (git's own
+    // output on failure — dirty tree, non-fast-forward, conflict). Never --force / reset --hard, so a
+    // diverged or dirty checkout aborts cleanly rather than losing work. Blocking; dispatch off-main.
+    static func pull(repoDir: URL) -> (ok: Bool, message: String) {
+        guard let result = runGit(["pull", "--ff-only"], in: repoDir) else {
+            return (false, "Could not run git.")
+        }
+        if result.status == 0 {
+            return (true, result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let raw = result.stderr.isEmpty ? result.stdout : result.stderr
+        return (false, raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    // Parses `ls-remote` output: each line is "<sha>\trefs/tags/<tag>". Extracts the tag after the
+    // last "refs/tags/", keeps only strict three-component SemVers, and returns the max. Pure/testable
+    // (no process), so QA can feed canned lines without a network.
+    static func highestTag(inLsRemoteOutput text: String) -> SemVer? {
+        text.split(whereSeparator: \.isNewline)
+            .compactMap { line -> SemVer? in
+                guard let range = line.range(of: "refs/tags/", options: .backwards) else { return nil }
+                return SemVer(String(line[range.upperBound...]))
+            }
+            .max()
+    }
+}
+
 private enum Tuning {
     static let defaultGifFrameDelay: TimeInterval = 0.1
     static let minGifFrameDelay: TimeInterval = 0.02
@@ -165,6 +276,9 @@ private struct Config {
     // self-terminates after that many seconds. Lets a smoke test exit 0 on its own instead of
     // an external kill/timeout against the blocking AppKit run loop. nil = run until quit.
     let exitAfterSeconds: TimeInterval?
+    // Whether to probe origin's release tags on launch (and enable the manual "Check for Updates…").
+    // Default true; disabled by --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK ∈ {0,false,no}.
+    let updateCheckEnabled: Bool
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
@@ -172,6 +286,7 @@ private struct Config {
         var speedMultiplierOverride: Double?
         var overlayText: String?
         var loadSourceArg: String?
+        var updateCheckEnabled = true
 
         var iterator = args.makeIterator()
         while let arg = iterator.next() {
@@ -206,6 +321,8 @@ private struct Config {
                     return nil
                 }
                 loadSourceArg = value
+            case "--no-update-check":
+                updateCheckEnabled = false
             default:
                 if presetOrPath == nil {
                     presetOrPath = arg
@@ -254,13 +371,22 @@ private struct Config {
             exitAfterSeconds = parsed
         }
 
+        // Env can only disable (the --no-update-check flag already covers the CLI side). If the flag
+        // disabled it, the env check is moot.
+        if updateCheckEnabled,
+           let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_UPDATE_CHECK"]?.lowercased(),
+           ["0", "false", "no"].contains(raw) {
+            updateCheckEnabled = false
+        }
+
         return .config(
             Config(
                 presetOrPath: NSString(string: positional).expandingTildeInPath,
                 speedMultiplierOverride: speedMultiplierOverride,
                 overlayText: overlayText,
                 loadSource: loadSource,
-                exitAfterSeconds: exitAfterSeconds
+                exitAfterSeconds: exitAfterSeconds,
+                updateCheckEnabled: updateCheckEnabled
             )
         )
     }
@@ -269,11 +395,12 @@ private struct Config {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("MenuBar Load Runner \(AppInfo.version)")
-        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--no-update-check]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--no-update-check]")
         print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
         print("Width: the menu-bar item sizes itself to the GIF's aspect ratio at menu-bar height — not configurable.")
         print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
+        print("Updates: on launch, checks the git origin's release tags for a newer version (network access). Apply is a menu click; disable with --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0.")
     }
 }
 
@@ -1103,6 +1230,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // Set when the preset manifest could not be loaded/decoded; applicationDidFinishLaunching shows
     // it and quits. nil on success.
     private let startupError: String?
+    // Directory holding the app's resources (gifs/presets.json). For an installed build this is the
+    // git worktree root (install.sh git-clones the repo here). Resolved once in init and reused as the
+    // update-checker's repo dir via `repoDirURL`.
+    private let scriptDirURL: URL
+    // The app's own git checkout, if it is one. nil for a copied-binary / non-git layout, which
+    // disables the whole update-check UI (nothing to pull from). Cheap enough to compute on demand.
+    private var repoDirURL: URL? {
+        let dotGit = scriptDirURL.appendingPathComponent(".git")
+        return FileManager.default.fileExists(atPath: dotGit.path) ? scriptDirURL : nil
+    }
     private var activePreset: PresetDescriptor?
     private var activeGifPath: String
     // These menu/status-item IUOs are all assigned exactly once in
@@ -1132,6 +1269,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var overlaySetItem: NSMenuItem!
     private var overlayClearItem: NSMenuItem!
     private var presetMenuItems: [NSMenuItem] = []
+    // In-app update check. `latestKnownVersion` is the newest release tag found on origin (nil until a
+    // probe completes, or on any failure — fail-silent). `updateItem` is the passive "Update
+    // available" line (hidden when up to date / not a git checkout); `checkForUpdatesItem` forces a
+    // fresh probe. Both driven by refreshUpdateStatus(). See SemVer / UpdateChecker.
+    private var latestKnownVersion: SemVer?
+    private var updateItem: NSMenuItem!
+    private var checkForUpdatesItem: NSMenuItem!
+    // Set while a probe is running so overlapping manual checks don't stack git processes.
+    private var updateCheckInFlight = false
     private var frames: [NSImage] = []
     private var frameAspects: [CGFloat] = []
     private var baseDurations: [TimeInterval] = []
@@ -1187,6 +1333,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let scriptDirURL = candidateBases.first {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("gifs/presets.json").path)
         } ?? fileDirURL
+        self.scriptDirURL = scriptDirURL
         let manifestURL = scriptDirURL.appendingPathComponent("gifs/presets.json")
 
         // Load the externalized preset profiles. On any failure, leave the registry empty and record
@@ -1357,6 +1504,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         infoMenu.addItem(NSMenuItem.separator())
+        // Update-check items. `updateItem` is a passive "Update available" line, hidden until a probe
+        // finds a newer release; "Check for Updates…" forces a fresh probe. Both are hidden entirely
+        // when this isn't a git checkout (repoDirURL == nil) — see refreshUpdateStatus(). Top-level, so
+        // the blanket target-wiring below covers them.
+        updateItem = NSMenuItem(title: "Update available", action: #selector(promptSelfUpdate), keyEquivalent: "")
+        updateItem.isHidden = true
+        infoMenu.addItem(updateItem)
+        checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        infoMenu.addItem(checkForUpdatesItem)
+
+        infoMenu.addItem(NSMenuItem.separator())
         infoMenu.addItem(NSMenuItem(title: "About", action: #selector(showAbout), keyEquivalent: ""))
         infoMenu.addItem(NSMenuItem(title: "Exit", action: #selector(exitApp), keyEquivalent: "q"))
         infoMenu.items.forEach { $0.target = self }
@@ -1366,6 +1524,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshWidthInfo()
         refreshOverlaySelectionState()
         refreshLoadSourceSelectionState()
+        refreshUpdateStatus()
 
         if !loadFrames(from: activeGifPath) {
             showStartupErrorAndQuit("Failed to decode GIF at: \(activeGifPath)")
@@ -1444,6 +1603,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
         }
 
+        // One-shot update probe on launch: fail-silent, off the main thread. MVP has no
+        // throttle/persistence (the binary has no bundle id, so UserDefaults has no reliable domain) —
+        // we check once per launch and let "Check for Updates…" re-check on demand. Skipped when
+        // disabled by flag/env and under smoke-test runs (suppressModalAlerts) so QA stays offline.
+        if config.updateCheckEnabled && !suppressModalAlerts {
+            startUpdateProbe(userInitiated: false)
+        }
+
         // Debug/test hook (MENUBAR_LOAD_RUNNER_EXIT_AFTER): self-terminate so smoke tests exit 0
         // on their own rather than relying on an external kill against the blocking run loop.
         if let seconds = config.exitAfterSeconds {
@@ -1485,6 +1652,165 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     @objc
     private func exitApp() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Update check
+
+    // Reflects the latest probe result into the menu. Read-only of already-fetched state (never blocks
+    // on git) since it runs on every menuWillOpen. When this isn't a git checkout there's nothing to
+    // pull, so both update items are hidden entirely.
+    private func refreshUpdateStatus() {
+        guard repoDirURL != nil else {
+            updateItem.isHidden = true
+            checkForUpdatesItem.isHidden = true
+            return
+        }
+        checkForUpdatesItem.isHidden = false
+        checkForUpdatesItem.isEnabled = !updateCheckInFlight
+        checkForUpdatesItem.title = updateCheckInFlight ? "Checking for Updates…" : "Check for Updates…"
+
+        if let latest = latestKnownVersion, let current = SemVer(AppInfo.version), latest > current {
+            let title = "Update available: \(latest.tagString) →"
+            let bold = NSFontManager.shared.convert(NSFont.menuFont(ofSize: 0), toHaveTrait: .boldFontMask)
+            updateItem.attributedTitle = NSAttributedString(string: title, attributes: [.font: bold])
+            updateItem.isHidden = false
+        } else {
+            updateItem.isHidden = true
+        }
+    }
+
+    // Kicks off a single off-main `ls-remote` probe. Fail-silent for the launch check; a user-initiated
+    // check (from "Check for Updates…") reports its outcome via reportManualCheckResult. Guards against
+    // stacking concurrent git processes.
+    private func startUpdateProbe(userInitiated: Bool) {
+        guard let repoDir = repoDirURL else {
+            if userInitiated {
+                showRuntimeError("Updates aren't available — this build isn't a git checkout.")
+            }
+            return
+        }
+        guard !updateCheckInFlight else { return }
+        updateCheckInFlight = true
+        refreshUpdateStatus()
+        DispatchQueue.global(qos: .utility).async {
+            let latest = UpdateChecker.latestRemoteTag(repoDir: repoDir)
+            // Weak capture goes on the main-queue closure (not the background one) to avoid capturing a
+            // mutable `self` var across the concurrency boundary — matches the notification-handler idiom.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.updateCheckInFlight = false
+                    if let latest { self.latestKnownVersion = latest }
+                    self.refreshUpdateStatus()
+                    if userInitiated { self.reportManualCheckResult(latest: latest) }
+                }
+            }
+        }
+    }
+
+    // Feedback for a user-initiated check (the menu has closed by now, so the passive item alone isn't
+    // enough). A newer version routes straight to the confirm; otherwise a brief info/warning alert.
+    private func reportManualCheckResult(latest: SemVer?) {
+        guard let latest else {
+            showRuntimeError("Couldn't check for updates. Check your connection and try again.")
+            return
+        }
+        guard let current = SemVer(AppInfo.version), latest > current else {
+            informational(title: "You're up to date",
+                          message: "MenuBar Load Runner \(AppInfo.version) is the latest release.")
+            return
+        }
+        promptSelfUpdate()
+    }
+
+    @objc
+    private func checkForUpdates() {
+        startUpdateProbe(userInitiated: true)
+    }
+
+    // The click-gated apply: confirm, then fast-forward pull. This is the ONLY path that mutates the
+    // checkout, and it always requires the menu click plus this confirm — never automatic.
+    @objc
+    private func promptSelfUpdate() {
+        guard let repoDir = repoDirURL,
+              let latest = latestKnownVersion,
+              let current = SemVer(AppInfo.version), latest > current else {
+            return   // state changed since the menu rendered; nothing to do
+        }
+        if suppressModalAlerts {
+            fputs("Update available: \(latest.tagString) (self-update skipped in headless run).\n", stderr)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Update to \(latest.tagString)?"
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+        alert.informativeText = "This runs 'git pull --ff-only' in \(repoDir.path), then you restart the app to load the new version."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Update")   // first = default (Return)
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        updateCheckInFlight = true
+        refreshUpdateStatus()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = UpdateChecker.pull(repoDir: repoDir)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.updateCheckInFlight = false
+                    self.refreshUpdateStatus()
+                    if result.ok {
+                        self.informational(
+                            title: "Updated to \(latest.tagString)",
+                            message: "Restart MenuBar Load Runner to load the new version — quit from the menu and relaunch (it also starts fresh at next login)."
+                        )
+                    } else {
+                        self.showUpdateFailed(message: result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    // Update failed (dirty tree / non-fast-forward / conflict): surface git's message and offer the
+    // releases page as an escape hatch. No --force fallback — a diverged checkout is the user's call.
+    private func showUpdateFailed(message: String) {
+        let detail = message.isEmpty ? "git pull failed." : message
+        if suppressModalAlerts {
+            fputs("Update failed: \(detail)\n", stderr)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Update failed"
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+        alert.informativeText = "\(detail)\n\nYou can update manually with 'git pull', or open the releases page."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open Releases Page")   // first = default (Return)
+        alert.addButton(withTitle: "Close")
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "https://github.com/binlecode/menubar-load-runner/releases") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // Small informational-alert helper (honors suppressModalAlerts for headless runs).
+    private func informational(title: String, message: String) {
+        if suppressModalAlerts {
+            fputs("\(title): \(message)\n", stderr)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 
     private func makeMenuAlertIcon() -> NSImage? {
@@ -1661,6 +1987,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshWidthInfo()
         refreshOverlaySelectionState()
         refreshLoadSourceSelectionState()
+        refreshUpdateStatus()
     }
 
     private func refreshMenuMetrics() {

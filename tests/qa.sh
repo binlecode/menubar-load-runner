@@ -2,31 +2,57 @@
 # QA harness for MenuBar Load Runner — the executable form of docs/RUNBOOK-qa-release.md §1–6.
 # Run from the repo root:  tests/qa.sh
 #
-# Default: §1 build, §2 CLI parse + version surface, §3 launch lifecycle, §4 error paths,
-#          §5 reader correctness + adaptive scaler. These are non-disruptive (they use the raw
-#          tmp/mblr-check binary under MENUBAR_LOAD_RUNNER_EXIT_AFTER, which self-terminates).
-# --launcher : ALSO run §6 (launcher wrapper + singleton). This calls `pkill MenuBarLoadRunner`,
-#              so it STOPS any running instance (incl. a login-item one) — off by default.
+# Coverage tiers (the boundary CI is built around — see README "Testing & CI"):
+#   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler.
+#             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
+#             a headless CI runner). This is the required gate.
+#   gui       §3 launch lifecycle · §4 error paths. These boot NSApplication + create an
+#             NSStatusItem, so they need an active WindowServer (GUI) session. Fine on a
+#             logged-in Mac; best-effort on hosted runners (some are headless).
+#   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
+#             so it STOPS any running instance (incl. a login-item one). Opt-in only.
+#   §7        interactive menu spot-check — always manual, never scripted.
 #
-# Exits 0 only if every section passes. §7 (interactive menu spot-check) stays manual.
+# Usage:
+#   tests/qa.sh                 core + gui              (local default — unchanged behavior)
+#   tests/qa.sh --core          core only              (headless / CI-safe subset)
+#   tests/qa.sh --gui           build + gui only        (best-effort GUI job)
+#   tests/qa.sh --launcher      core + gui + launcher   (disruptive)
+#   tests/qa.sh --help
+#
+# Exits 0 only if every section that ran passes.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-RUN_LAUNCHER=0
-[ "${1:-}" = "--launcher" ] && RUN_LAUNCHER=1
+RUN_NONGUI=1   # §2, §5
+RUN_GUI=1      # §3, §4
+RUN_LAUNCHER=0 # §6
+for arg in "$@"; do
+  case "$arg" in
+    --core|--no-gui) RUN_GUI=0 ;;
+    --gui)           RUN_NONGUI=0 ;;
+    --launcher)      RUN_LAUNCHER=1 ;;
+    -h|--help)
+      awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; exit 0 ;;
+    *) echo "unknown flag: $arg (try --help)"; exit 2 ;;
+  esac
+done
 
+mkdir -p tmp                 # tmp/ is gitignored; a fresh checkout (CI) won't have it
 BIN=./tmp/mblr-check
 GIF="$PWD/gifs/totoro.gif"
 total_fail=0
 section(){ printf '\n=== %s ===\n' "$1"; }
+skip(){ printf '\n=== %s ===\n  SKIPPED (%s)\n' "$1" "$2"; }
 
-# --- §1 Build (warning-clean) ---------------------------------------------
-section "§1 build (warning-clean)"
+# --- §1 Build (warning-clean) — always: the gate AND the prerequisite for §2/§3/§4 ---------
+section "§1 build (warning-clean) [core]"
 out=$(swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o "$BIN" 2>&1)
 if [ -z "$out" ]; then echo "  PASS build warning-clean"; else echo "  FAIL build output:"; echo "$out"; total_fail=$((total_fail+1)); fi
 
-# --- §2 CLI parse + version -----------------------------------------------
-section "§2 CLI parse paths"
+# --- §2 CLI parse + version [core] -----------------------------------------
+if [ "$RUN_NONGUI" = 1 ]; then
+section "§2 CLI parse paths [core]"
 pass=0; fail=0
 chk(){ [ "$2" = "$3" ] && { echo "  PASS [$1] rc=$3"; pass=$((pass+1)); } || { echo "  FAIL [$1] want $2 got $3"; fail=$((fail+1)); }; }
 $BIN --help >/dev/null 2>&1;                        chk "--help" 0 $?
@@ -41,9 +67,13 @@ VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner
 $BIN --help 2>&1 | grep -q "MenuBar Load Runner $VER" && { echo "  PASS --help shows $VER"; pass=$((pass+1)); } || { echo "  FAIL --help missing $VER"; fail=$((fail+1)); }
 grep -q "## \[$VER\]" CHANGELOG.md && { echo "  PASS CHANGELOG has [$VER]"; pass=$((pass+1)); } || { echo "  FAIL CHANGELOG missing [$VER]"; fail=$((fail+1)); }
 echo "  parse: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+else
+skip "§2 CLI parse paths [core]" "core tier not selected (--gui)"
+fi
 
-# --- §3 Launch lifecycle ---------------------------------------------------
-section "§3 launch lifecycle"
+# --- §3 Launch lifecycle [gui] ---------------------------------------------
+if [ "$RUN_GUI" = 1 ]; then
+section "§3 launch lifecycle [gui — needs WindowServer]"
 pass=0; fail=0
 run(){ desc="$1"; allow="$2"; shift 2
   err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" 2>&1 >/dev/null); rc=$?
@@ -64,8 +94,8 @@ run "env LOAD_SOURCE"          "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $B
 run "env PATH=<gif>"           "" env MENUBAR_LOAD_RUNNER_PATH="$GIF" $BIN --load-source disk
 echo "  lifecycle: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
-# --- §4 Error paths --------------------------------------------------------
-section "§4 error paths (fast, no modal)"
+# --- §4 Error paths [gui] --------------------------------------------------
+section "§4 error paths (fast, no modal) [gui — needs WindowServer]"
 err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN /no/such/file.gif 2>&1 >/dev/null); rc=$?
 { [ "$rc" = 0 ] && echo "$err" | grep -q "GIF file not found"; } && echo "  PASS bad GIF" || { echo "  FAIL bad GIF (rc=$rc)"; total_fail=$((total_fail+1)); }
 mv gifs/presets.json gifs/presets.json.bak
@@ -73,24 +103,30 @@ err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN 2>&1 >/dev/null); rc=$?
 mv gifs/presets.json.bak gifs/presets.json
 { [ "$rc" = 0 ] && echo "$err" | grep -q "Could not load preset manifest"; } && echo "  PASS missing manifest" || { echo "  FAIL missing manifest (rc=$rc)"; total_fail=$((total_fail+1)); }
 [ -f gifs/presets.json ] && echo "  PASS manifest restored" || { echo "  FAIL manifest NOT restored"; total_fail=$((total_fail+1)); }
+else
+skip "§3 launch lifecycle + §4 error paths [gui]" "GUI tier not selected (--core); needs a WindowServer session"
+fi
 
-# --- §5 Readers + scaler ---------------------------------------------------
-section "§5 reader correctness"
+# --- §5 Readers + scaler [core] --------------------------------------------
+if [ "$RUN_NONGUI" = 1 ]; then
+section "§5 reader correctness [core]"
 swiftc tests/readers.swift -o tmp/readers 2>&1 && ./tmp/readers || total_fail=$((total_fail+1)); rm -f tmp/readers
-section "§5 adaptive scaler"
+section "§5 adaptive scaler [core]"
 swiftc tests/scaler.swift -o tmp/scaler 2>&1 && ./tmp/scaler || total_fail=$((total_fail+1)); rm -f tmp/scaler
+else
+skip "§5 readers + adaptive scaler [core]" "core tier not selected (--gui)"
+fi
 
-# --- §6 Launcher wrapper (opt-in; disruptive) ------------------------------
+# --- §6 Launcher wrapper [launcher] (opt-in; disruptive) -------------------
 if [ "$RUN_LAUNCHER" = 1 ]; then
-  section "§6 launcher wrapper + singleton (stops running instances)"
+  section "§6 launcher wrapper + singleton [launcher — stops running instances]"
   pkill -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./menubar-load-runner --foreground --load-source memory 2>&1 | tail -1
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=8 ./menubar-load-runner --load-source memory >/dev/null 2>&1; sleep 1
   ./menubar-load-runner --load-source cpu 2>&1 | grep -qi 'already running' && echo "  PASS singleton rejects 2nd" || { echo "  FAIL singleton"; total_fail=$((total_fail+1)); }
   pkill -f 'MenuBarLoadRunner' 2>/dev/null
 else
-  section "§6 launcher wrapper"
-  echo "  SKIPPED (disruptive) — re-run with: tests/qa.sh --launcher"
+  skip "§6 launcher wrapper [launcher]" "disruptive — re-run with: tests/qa.sh --launcher"
 fi
 
 # --- Cleanup + verdict -----------------------------------------------------

@@ -26,7 +26,7 @@ of the public API and may change in any release.
 
 ### Added
 
-- **Asset attribution notice** (`ASSETS.md`) for the bundled third-party preset GIFs — clarifies the
+- **Asset attribution** section in the README for the bundled third-party preset GIFs — clarifies the
   MIT license covers the source code only, and provides a takedown path.
 - **Executable QA harness** in `tests/` (`qa.sh`, `install-smoke.sh`, `readers.swift`, `scaler.swift`)
   — the runnable form of `docs/RUNBOOK-qa-release.md` §1–6 (previously copy-paste blocks).

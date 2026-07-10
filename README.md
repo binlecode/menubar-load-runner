@@ -42,8 +42,7 @@ Already have the repo checked out? Skip the installer — see **Run Locally**.
 
 - `MenuBarLoadRunner.swift`: app source.
 - `install.sh`: one-line installer (clone + compile + symlink launcher onto `PATH`; see Install above).
-- `LICENSE.md`: MIT license (covers the source code).
-- `ASSETS.md`: third-party attribution + notice for the bundled preset GIFs (not covered by MIT).
+- `LICENSE.md`: MIT license (covers the source code; the bundled GIFs are third-party — see Assets & attribution).
 - `menubar-load-runner`: launcher script.
 - `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh`: optional start-at-login setup (see below).
 - `CHANGELOG.md`: release history (Keep a Changelog + semver).
@@ -283,8 +282,25 @@ Metrics are refreshed every 2 seconds from the app's periodic sampler.
 
 ## License
 
-Source code: [MIT](LICENSE.md) © 2026 Bin Le.
+Source code: [MIT](LICENSE.md) © 2026 Bin Le. The bundled preset GIFs in `gifs/` are **not** covered
+by the MIT license — see Assets & attribution below.
 
-The bundled preset GIFs in `gifs/` are **not** covered by the MIT license — they are third-party
-content included as reference/sample artwork; see [`ASSETS.md`](ASSETS.md) for attribution and
-takedown info. Bring your own GIF with `menubar-load-runner /path/to.gif`.
+## Assets & attribution
+
+The preset GIFs in `gifs/` are third-party content collected from publicly available internet sources
+(e.g. Giphy, Pinterest) and are included only as reference/sample artwork to demonstrate the app. No
+ownership is claimed over any of it; all rights remain with their respective owners:
+
+- `totoro.gif`, `totoro-white.gif`, `totoro-black.gif`, `totoro-group-white.gif`,
+  `totoro-group-black.gif` — "Totoro" and related characters © Studio Ghibli.
+- `chihiro-walk.gif`, `chihiro-walk-white.gif`, `chihiro-walk-black.gif` — "Chihiro" (Spirited Away)
+  © Studio Ghibli.
+- `running-horse-black.gif`, `running-horse-white.gif`, `running-dog-white.gif`,
+  `running-dog-black.gif` — animal silhouettes from public sources (original authorship unverified).
+
+This project is **not affiliated with, endorsed by, or sponsored by** any of these rights holders. If
+you are a rights holder and would like a file removed, please open an issue and it will be taken down
+promptly.
+
+You don't need the bundled GIFs — point the app at any GIF you have the rights to use:
+`menubar-load-runner /absolute/path/to/your.gif` (or set `MENUBAR_LOAD_RUNNER_PATH`).

@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.5.0"
+    static let version = "1.5.1"
 }
 
 private enum Tuning {
@@ -1134,6 +1134,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var loadAverageItem: NSMenuItem!
     private var stateItem: NSMenuItem!
     private var speedMultiplierItem: NSMenuItem!
+    private var throttleStatusItem: NSMenuItem!
     private var loadSourceMenuItem: NSMenuItem!
     private var loadSourceMenuItems: [NSMenuItem] = []
     private var widthStatusItem: NSMenuItem!
@@ -1309,6 +1310,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         speedMultiplierItem = NSMenuItem(title: "Speed Multiplier: --", action: nil, keyEquivalent: "")
         speedMultiplierItem.isEnabled = false
         infoMenu.addItem(speedMultiplierItem)
+
+        throttleStatusItem = NSMenuItem(title: "Throttled: low power/thermal", action: nil, keyEquivalent: "")
+        throttleStatusItem.isEnabled = false
+        throttleStatusItem.isHidden = true
+        infoMenu.addItem(throttleStatusItem)
 
         loadSourceMenuItem = NSMenuItem(title: "Load Source", action: nil, keyEquivalent: "")
         let loadSourceSubmenu = NSMenu(title: "Load Source")
@@ -1793,20 +1799,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         if isAutoSpeed {
-            let profile = currentSpeedProfile()
-            let constrained = isUnderPowerPressure ? " [throttled: low power/thermal]" : ""
             // Includes the active source so the dashboard shows WHAT drives the animation.
             speedMultiplierItem.title = String(
-                format: "Speed Multiplier (auto %@ %@ %.2fx..%.2fx): %.2fx%@",
+                format: "Speed Multiplier (auto: %@): %.2fx",
                 activeLoadSource.menuTitle,
-                profile.label,
-                profile.min,
-                profile.max,
-                speedMultiplier,
-                constrained
+                speedMultiplier
             )
+            throttleStatusItem.isHidden = !isUnderPowerPressure
         } else {
             speedMultiplierItem.title = String(format: "Speed Multiplier (fixed): %.2fx", speedMultiplier)
+            throttleStatusItem.isHidden = true
         }
 
         if let (avg1, avg5, avg15) = cachedLoadAverages {

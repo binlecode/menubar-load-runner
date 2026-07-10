@@ -3,7 +3,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
 
-Current version: **1.5.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.5.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 ## Files
 
@@ -226,7 +226,7 @@ Click the menu bar item to open:
 
 - The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`
 - `Load Avg (1/5/15m)`
-- `Speed Multiplier` (shows the active load source, mode, and active range when auto)
+- `Speed Multiplier` (shows the active load source and mode; a separate `Throttled` line appears only when low-power/thermal/memory pressure is capping the auto speed)
 - `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` status and `Width Options` (`auto`, `1`, `2`, `3`, `4` slots; preset minimum clamp applies)
 - `Overlay Text` (`Set Text...` with max 12 chars + bold toggle, `Clear`)

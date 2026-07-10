@@ -103,6 +103,16 @@ grep -oE 'src="[^"]+"' tmp/cover-dist/index.html | sed 's/src="//;s/"//' \
 # any MISS = a broken image once published; fix before deploying.
 ```
 
+### 2.4 Outbound links go where you intend
+
+The cover now links out (the GitHub CTA in the header + a repo link in the footer). A public landing
+page with a wrong or dead call-to-action is worse than none, so eyeball every external link:
+
+```bash
+grep -oE 'href="https?://[^"]+"' tmp/cover-dist/index.html | sort -u
+# expect only the intended repo URL(s), e.g. https://github.com/binlecode/menubar-load-runner
+```
+
 ---
 
 ## 3. Deploy to Cloudflare Pages (direct upload)
@@ -152,6 +162,11 @@ you rebuild + redeploy:
 # rebuild the bundle (Phase 1) then:
 npx wrangler pages deploy tmp/cover-dist --project-name=menubar-load-runner --commit-dirty=true
 ```
+
+> **Version badge:** `docs/cover.html` carries a footer version badge (e.g. `v1.6.0`) that is **not**
+> covered by the QA §2 version-parity check, so it drifts silently (it lagged a full release once).
+> Bump it in `docs/cover.html` when you cut a release, then rebuild + redeploy so the public page
+> matches the shipped version.
 
 > **Note:** the app itself reads the live `gifs/` on disk, and the Claude-hosted **artifact** (if any)
 > bakes the GIFs in as base64 — both are independent of this Pages site. Updating one does not update

@@ -1,26 +1,36 @@
 # Runbook: Publish the web cover
 
-How to publish `docs/cover.html` (the marketing/design cover page) to the public web **while the
-GitHub repo stays private** — no source, no git history, no personal infra exposed. We deploy to
-**Cloudflare Pages** as `<project>.pages.dev` using `wrangler` **direct upload**, so Cloudflare never
-gets repo access and only the files we hand it go public.
+How to publish `docs/cover.html` (the marketing/design cover page) to the public web as a **curated
+subset** of the repo — just the cover page and the GIFs it references, served as its own clean site
+root, decoupled from the repo's structure and history. We deploy to **Cloudflare Pages** as
+`<project>.pages.dev` using `wrangler` **direct upload** (we hand Cloudflare a built folder; it gets
+no repo access and no build step of its own).
 
 Work through the phases in order. Each step is copy-pasteable from the repo root and self-scoring
 (PASS/FAIL) or prints something to eyeball. Phase 3 (the flip to public web) happens **after** the
 audit in Phase 2.
 
-> **Why Cloudflare, not GitHub Pages?** GitHub Pages can't publish just the cover — free Pages needs
-> a **public** repo, exposing all source + full history. We only want the cover page public, across
-> possibly several private repos, so Cloudflare Pages (one free account → many `*.pages.dev` sites,
-> deploy-only-what-you-upload) is the fit. See the project chat / `build-visuals` for the visual
-> assets themselves.
+> **Why direct upload, given the repo is public (MIT)?** The repo being open source doesn't make it
+> the right *site root*: the cover is one HTML file that references a handful of GIFs via `../gifs/`,
+> not a `/`-rooted site, and `gifs/` also holds preset art the cover doesn't use. Direct upload lets
+> us publish exactly that curated bundle (page → `index.html`, only the referenced GIFs beside it)
+> with no repo-shaped URLs, no build config, and no auto-deploy coupling to `main`. It's also
+> repo-agnostic: one free Cloudflare account fans out to many `*.pages.dev` sites regardless of where
+> each cover lives.
+>
+> **Why not GitHub Pages / a CF Git integration?** Both are viable now that the repo is public and
+> are the more conventional choice if you want push-to-deploy of a `/docs` site. We prefer direct
+> upload here because the cover is a hand-curated snapshot, not a doc site that should redeploy on
+> every commit — see §5 for the deliberate "snapshot, not live" trade-off. See `build-visuals` for
+> the visual assets themselves.
 
 ---
 
 ## 0. Decision gate (read first)
 
-- [ ] **Only the cover goes public.** The repo stays private; we publish a *built subset*
-      (`cover.html` + the GIFs it references), not the repo.
+- [ ] **We publish a curated subset, not the repo.** Even though the repo is public, the site is
+      just the *built bundle* (`cover.html` → `index.html` + the GIFs it references) — not the repo's
+      files at repo-shaped URLs.
 - [ ] **Third-party art is going public.** The cover embeds character GIFs (Ghibli / Giphy /
       Pinterest). Publishing a page that *displays* them is a lower-exposure, higher-visibility act
       than shipping the files in an OSS repo, but it is **not zero risk** — see §2.1. Decide you're
@@ -163,7 +173,8 @@ rm -rf tmp/cover-dist
 
 ---
 
-### Reusing this for other private repos
+### Reusing this for other repos
 
-Same flow per repo: build a `tmp/cover-dist/`, `npx wrangler pages deploy … --project-name=<distinct>`.
-One free Cloudflare account fans out to many `*.pages.dev` sites, every source repo staying private.
+Same flow per repo, public or private: build a `tmp/cover-dist/`, `npx wrangler pages deploy …
+--project-name=<distinct>`. One free Cloudflare account fans out to many `*.pages.dev` sites, and
+because it's direct upload the flow is identical regardless of a repo's visibility.

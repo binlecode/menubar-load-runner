@@ -1,7 +1,7 @@
 # MenuBar Load Runner
 
 <p align="center">
-  <img src="docs/media/hero.svg" alt="MenuBar Load Runner — a running horse in the macOS menu bar whose animation speed tracks system load" width="880">
+  <img src="docs/media/hero.svg?v=2" alt="MenuBar Load Runner — a running horse in the macOS menu bar whose animation speed tracks system load" width="880">
 </p>
 
 Small macOS menu bar app that renders an animated GIF in the status bar.

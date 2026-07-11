@@ -257,6 +257,32 @@ loads it at startup). Switching source changes *which* load value is mapped, not
 > btop-style adaptive auto-scaling for the throughput (bytes/sec) sources, and self-throttling under
 > power/thermal/memory pressure — is documented in `docs/DESIGN-system.md` (§7, §12).
 
+## Resource cost
+
+MenuBar Load Runner is built to stay out of the way of the load it visualizes. Measured on Apple
+Silicon at 2× Retina — your numbers vary with Mac model, menu-bar height, display refresh rate, the
+active preset, and the current load level:
+
+- **CPU:** ~0.4–0.9% of one core while the icon is animating and visible; **0% when hidden** (the game
+  loop stops when the item is occluded by the notch, a full-screen app, or an inactive Space). Usage
+  scales with the animation rate — lower at light load — and is capped at half speed under Low Power
+  Mode / thermal / memory pressure.
+- **Memory:** ~10 MB at launch, ~20–24 MB once the menu (with its live load-history graph) has been
+  opened — essentially the AppKit framework floor for a menu-bar app.
+
+Frames are drawn by swapping a `CALayer`'s contents (a pre-rasterized `CGImage`), not by re-setting the
+status button's image every frame — which avoids a per-frame Auto Layout pass and keeps steady-state
+CPU low. Reproduce it:
+
+```bash
+./menubar-load-runner                                    # start (detached)
+PID=$(pgrep -f '/MenuBarLoadRunner( |$)')
+top -pid "$PID" -l 6 -s 1 -stats pid,command,cpu,mem     # CPU + memory
+footprint -p "$PID"                                      # phys_footprint (true memory)
+```
+
+Full method, per-frame cost breakdown, and rationale: `docs/DESIGN-system.md` §21.
+
 ## Help
 
 ```bash

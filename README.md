@@ -5,6 +5,8 @@ Animation speed automatically adapts to a system load source (CPU by default; al
 
 Current version: **1.6.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
+**Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
+
 ## Install
 
 macOS only. Requires the **Xcode Command Line Tools** (`git` + `swiftc`); the installer tells you
@@ -275,7 +277,7 @@ Click the menu bar item to open:
 - `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
-- `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
+- `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`
 - `Exit`

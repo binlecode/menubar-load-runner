@@ -456,6 +456,7 @@
       <div class="facts">
         <div class="fact"><h4>A single Swift source file</h4><p>The whole app is <b>one <span class="mono">.swift</span> file</b> compiled by a zsh launcher with <span class="mono">swiftc -O</span>. No Xcode project, no SwiftPM package, no build system to learn.</p></div>
         <div class="fact"><h4>Vsync-aligned game loop</h4><p>A <b>CADisplayLink</b> advances frames against real elapsed time and the screen's refresh rate — smooth at any speed, and it pauses itself entirely when the item is occluded.</p></div>
+        <div class="fact"><h4>Barely there</h4><p>Frames are swapped as a <b>layer's <span class="mono">CGImage</span> contents</b> — no per-frame redraw or layout — so a visible, animating icon costs about <b>~0.5% of one CPU core</b> in <b>~20&nbsp;MB</b>, and drops to <b>0% CPU when hidden</b>. It also caps its own speed under Low Power / thermal / memory pressure, so it never adds to the load it measures.</p></div>
         <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, and speed range all live in <b><span class="mono">presets.json</span></b> (width comes from the GIF's own aspect ratio). Add a preset by editing data — zero Swift changes.</p></div>
         <div class="fact"><h4>Checks for its own updates</h4><p>On launch it reads your checkout's origin release tags — <b>the only network call the app ever makes</b>. A newer tag shows an <span class="mono">Update available</span> menu item; applying it is a deliberate <b>two-click</b> action (<span class="mono">git pull --ff-only</span>), never automatic.</p></div>
         <div class="fact"><h4>One line in, one line out</h4><p>Install with a single <span class="mono">curl … | bash</span> — it clones, compiles, and symlinks onto your <span class="mono">PATH</span>; <span class="mono">uninstall.sh</span> reverses exactly what it created. <b>Open source (MIT)</b>, no signing or Homebrew.</p></div>
@@ -472,6 +473,7 @@
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
         <span class="badge">unprivileged · read-only</span>
+        <span class="badge">~0.5% CPU · ~20 MB · 0% hidden</span>
         <span class="badge">~1200 LOC</span>
       </div>
       <div class="sig">an ambient little thing for the corner of your screen</div>

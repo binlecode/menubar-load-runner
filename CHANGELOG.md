@@ -24,6 +24,21 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-10
+
+### Changed
+
+- **Menu-bar animation now drives a dedicated `CALayer`'s `contents` instead of the status
+  button's image.** Previously each GIF frame called `-[NSStatusBarButton setImage:]`, which made
+  AppKit re-run `NSStatusItem._adjustLength` and a full Auto Layout constraint solve *every frame* —
+  redundant work, since the item width is fixed and GIF-derived. Frames are now pre-rasterized once to
+  `CGImage`s at the display's backing scale and swapped onto a layer-backed subview pinned over the
+  button, so the per-frame cost is a GPU-side pointer swap with no layout, draw, or constraint pass.
+  Steady-state CPU drops from ~2.8% to ~0.4% of one core (≈6–7×), verified with `sample`/`top`: the
+  entire `setImage:`→`_adjustLength`→`NSISEngine` cascade is gone from the profile, while CoreAnimation
+  still composites the frame `CGImage` each cycle. Purely internal — no CLI, env, or observable-behavior
+  change (see the Public API note above).
+
 ## [1.6.1] - 2026-07-10
 
 ### Added

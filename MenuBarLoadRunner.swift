@@ -8,7 +8,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.6.1"
+    static let version = "1.7.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -1292,7 +1292,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var fallbackTimer: Timer?
     private var lastTickTime: TimeInterval = 0
     private var accumulatedFrameTime: TimeInterval = 0
-    private var renderedFrames: [NSImage] = []
+    // Pre-rasterized frames as CGImages. Per frame the game loop only assigns one to the
+    // animation layer's `contents` (a cheap pointer swap) — see renderCurrentFrame(). We keep
+    // CGImage rather than NSImage so that assignment never triggers a rasterization.
+    private var renderedFrames: [CGImage] = []
+    // Layer-backed host view pinned over the status-item button. Frame swaps go to its
+    // layer.contents, bypassing NSButton's setImage: → _adjustLength → Auto Layout cascade.
+    private var animationView: NSView?
     private var loadTimer: Timer?
     // Monotonic timestamp of the previous load sample, for counter-delta sources (swap rate now;
     // network/disk later). nil until the first tick / after a source switch, so rate-based signals
@@ -1417,7 +1423,20 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         button.imagePosition = .imageOnly
-        // imageScaling is set by applySizing() below (before the first renderCurrentFrame).
+        // Animation is driven through a dedicated layer-backed subview, not button.image:
+        // setting a status button's image on every GIF frame makes AppKit re-run _adjustLength
+        // and a full Auto Layout constraint solve per frame. Swapping a CALayer's `contents`
+        // instead is a GPU-side pointer swap with no layout/draw cycle. The view fills the
+        // button and tracks its size via autoresizing (the button resizes on preset switch).
+        let animationView = NSView(frame: button.bounds)
+        animationView.wantsLayer = true
+        animationView.autoresizingMask = [.width, .height]
+        if let layer = animationView.layer {
+            layer.contentsGravity = .resizeAspect  // matches the former .scaleProportionallyUpOrDown
+            layer.masksToBounds = true
+        }
+        button.addSubview(animationView)
+        self.animationView = animationView
         button.toolTip = activeGifPath
         // Base label for VoiceOver; refreshMenuMetrics() enriches it with live CPU load.
         button.setAccessibilityLabel("MenuBar Load Runner")
@@ -2609,8 +2628,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func renderCurrentFrame() {
-        guard let button = statusItem.button, !renderedFrames.isEmpty, frameIndex < renderedFrames.count else { return }
-        button.image = renderedFrames[frameIndex]
+        guard let layer = animationView?.layer, !renderedFrames.isEmpty, frameIndex < renderedFrames.count else { return }
+        // Cheap: hand CoreAnimation a pre-rasterized CGImage. No drawRect, no layout, no
+        // constraint solve — the whole point of the layer-backed approach.
+        layer.contents = renderedFrames[frameIndex]
     }
 
     private func effectiveOverlayText() -> String? {
@@ -2628,8 +2649,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let availableHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)
         let availableWidth = max(statusItem.length - Tuning.renderHorizontalInset, 1)
         let overlayText = effectiveOverlayText()
+        // Rasterize at the display's backing scale so the CGImages are crisp on Retina; the
+        // layer's contentsScale (set below) must match so CoreAnimation maps pixels 1:1.
+        let scale = backingScale()
 
-        var newRenderedFrames: [NSImage] = []
+        var newRenderedFrames: [CGImage] = []
         newRenderedFrames.reserveCapacity(frames.count)
 
         for (i, rawImage) in frames.enumerated() {
@@ -2642,50 +2666,84 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             let targetWidth = targetHeight * aspect
             let targetSize = NSSize(width: targetWidth, height: targetHeight)
 
-            // Using closure initializer for Retina resolution scaling
-            let rendered = NSImage(size: targetSize, flipped: false) { dstRect in
-                let imageRect = NSRect(origin: .zero, size: targetSize)
-                rawImage.draw(in: imageRect, from: NSRect(origin: .zero, size: rawImage.size), operation: .sourceOver, fraction: 1.0)
+            // Draw into a bitmap sized in pixels (points × scale). The context is scaled so the
+            // drawing code below works in point coordinates, exactly as the old NSImage path did.
+            let pixelWidth = max(Int((targetSize.width * scale).rounded()), 1)
+            let pixelHeight = max(Int((targetSize.height * scale).rounded()), 1)
+            guard let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixelWidth,
+                pixelsHigh: pixelHeight,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ), let ctx = NSGraphicsContext(bitmapImageRep: rep) else { continue }
 
-                if let text = overlayText {
-                    let fontSize = min(max(targetSize.height * Tuning.overlayFontScale, Tuning.overlayMinFontSize), Tuning.overlayMaxFontSize)
-                    let fontWeight: NSFont.Weight = self.requestedOverlayBold ? .bold : .regular
-                    let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: fontWeight)
-                    let paragraph = NSMutableParagraphStyle()
-                    paragraph.alignment = .center
-                    paragraph.lineBreakMode = .byTruncatingTail
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = ctx
+            ctx.imageInterpolation = .high
+            ctx.cgContext.scaleBy(x: scale, y: scale)  // draw in points; bitmap is in pixels
 
-                    let attributes: [NSAttributedString.Key: Any] = [
-                        .font: font,
-                        .foregroundColor: NSColor.white,
-                        .strokeColor: NSColor.black,
-                        .strokeWidth: Tuning.overlayStrokeWidth,
-                        .paragraphStyle: paragraph
-                    ]
+            let imageRect = NSRect(origin: .zero, size: targetSize)
+            rawImage.draw(in: imageRect, from: NSRect(origin: .zero, size: rawImage.size), operation: .sourceOver, fraction: 1.0)
 
-                    let textSize = (text as NSString).size(withAttributes: attributes)
-                    let textRect = NSRect(
-                        x: Tuning.overlayHorizontalInset,
-                        y: max((targetSize.height - textSize.height) / 2, Tuning.overlayVerticalInset),
-                        width: max(targetSize.width - (Tuning.overlayHorizontalInset * 2), 1),
-                        height: min(textSize.height, max(targetSize.height - (Tuning.overlayVerticalInset * 2), 1))
-                    )
-                    (text as NSString).draw(in: textRect, withAttributes: attributes)
-                }
-                return true
+            if let text = overlayText {
+                let fontSize = min(max(targetSize.height * Tuning.overlayFontScale, Tuning.overlayMinFontSize), Tuning.overlayMaxFontSize)
+                let fontWeight: NSFont.Weight = self.requestedOverlayBold ? .bold : .regular
+                let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: fontWeight)
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.alignment = .center
+                paragraph.lineBreakMode = .byTruncatingTail
+
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.white,
+                    .strokeColor: NSColor.black,
+                    .strokeWidth: Tuning.overlayStrokeWidth,
+                    .paragraphStyle: paragraph
+                ]
+
+                let textSize = (text as NSString).size(withAttributes: attributes)
+                let textRect = NSRect(
+                    x: Tuning.overlayHorizontalInset,
+                    y: max((targetSize.height - textSize.height) / 2, Tuning.overlayVerticalInset),
+                    width: max(targetSize.width - (Tuning.overlayHorizontalInset * 2), 1),
+                    height: min(textSize.height, max(targetSize.height - (Tuning.overlayVerticalInset * 2), 1))
+                )
+                (text as NSString).draw(in: textRect, withAttributes: attributes)
             }
-            rendered.isTemplate = false
-            newRenderedFrames.append(rendered)
+
+            NSGraphicsContext.restoreGraphicsState()
+            if let cgImage = rep.cgImage {
+                newRenderedFrames.append(cgImage)
+            }
         }
         renderedFrames = newRenderedFrames
+        animationView?.layer?.contentsScale = scale
+    }
+
+    // Backing scale of the display the status item lives on (for crisp Retina rasterization).
+    private func backingScale() -> CGFloat {
+        statusItem.button?.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2.0
     }
 
     private func applySizing() {
         guard !frames.isEmpty else { return }
         // GIF-based sizing: the item width follows the loaded GIF's own aspect ratio at menu-bar
-        // height — no per-preset constant, no user override. Proportional scaling fills the slot.
-        statusItem.button?.imageScaling = .scaleProportionallyUpOrDown
+        // height — no per-preset constant, no user override. The layer's .resizeAspect gravity
+        // fills the slot proportionally.
         statusItem.length = slotLength()
+        // Re-sync the layer-host view to the (possibly resized) button. Autoresizing tracks live
+        // resizes, but setting length may not have laid the button out yet, so pin it explicitly.
+        if let button = statusItem.button {
+            animationView?.frame = button.bounds
+        }
         updateRenderedFrames()
     }
 

@@ -24,6 +24,20 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-07-10
+
+### Changed
+
+- **Right-sized the chihiro and dog preset GIFs for menu-bar rendering.** Both were stored far larger
+  than the ~40px-tall menu-bar render size, so the load-time decode pass (which reads every frame at
+  full resolution to compute the shared alpha bounding box before downsampling) spiked memory on launch
+  and on preset switch. chihiro `293×621 → 147×311` (color file 474 KB → 196 KB); dog `466×220 → 300×142`.
+  Load-peak footprint drops from ~24 MB (chihiro) / ~14 MB (dog) to a flat ~10 MB baseline shared by
+  every preset — bar a ~2 MB residual on chihiro's 21 tall frames. Frame count, per-frame delays, and
+  the infinite-loop flag are preserved, and sources stay above the ~120px downsample threshold so edges
+  still anti-alias with no visible quality change. Steady-state memory and per-frame CPU are unchanged.
+  Assets only — no CLI, env, or observable-behavior change.
+
 ## [1.7.0] - 2026-07-10
 
 ### Changed

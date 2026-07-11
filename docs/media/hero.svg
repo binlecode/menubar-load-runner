@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 350" width="1200" height="350" role="img" aria-label="MenuBar Load Runner — a running horse in the macOS menu bar whose speed tracks system load">
+  <defs>
+    <linearGradient id="eq" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4FA9A6"/>
+      <stop offset="0.55" stop-color="#E7A23C"/>
+      <stop offset="1" stop-color="#D8532B"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#242B39"/>
+      <stop offset="1" stop-color="#1C222E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- paper card -->
+  <rect x="1" y="1" width="1198" height="348" rx="22" fill="#E6E4D5"/>
+  <rect x="1.5" y="1.5" width="1197" height="347" rx="21.5" fill="none" stroke="#CDC8B5" stroke-width="1.5"/>
+
+  <!-- ===== macOS menu-bar strip ===== -->
+  <rect x="60" y="60" width="1080" height="54" rx="13" fill="url(#screen)"/>
+
+  <!-- left: apple dot + menu words -->
+  <circle cx="92" cy="87" r="6" fill="#E7A23C"/>
+  <text x="116" y="92" font-family="ui-sans-serif,-apple-system,Helvetica,Arial,sans-serif" font-size="16" font-weight="700" fill="#ECE6D8">Finder</text>
+  <text x="188" y="92" font-family="ui-sans-serif,-apple-system,Helvetica,Arial,sans-serif" font-size="16" fill="#9C978A">File&#160;&#160;&#160;Edit&#160;&#160;&#160;View&#160;&#160;&#160;Go</text>
+
+  <!-- right cluster: the status item (horse + load trace), battery, clock -->
+  <!-- highlighted status-item pill -->
+  <rect x="888" y="67" width="128" height="40" rx="9" fill="#E7A23C" fill-opacity="0.14"/>
+
+  <!-- traced white-horse silhouette (running-horse-white.gif, gallop frame) -->
+  <g transform="translate(898,71) scale(0.40)">
+    <g transform="translate(0,82) scale(0.1,-0.1)" fill="#F0EDE1">
+      <path d="M957 723 c-4 -6 -25 -10 -47 -10 -23 0 -46 -5 -53 -12 -6 -6 -18 -11
+-27 -11 -9 0 -27 -11 -40 -25 -13 -14 -31 -25 -39 -25 -9 0 -33 -14 -53 -31
+l-37 -30 -128 2 c-171 2 -279 -9 -317 -32 -18 -11 -50 -19 -76 -19 -55 0 -92
+-9 -84 -21 3 -5 16 -9 29 -9 13 0 28 -6 32 -13 31 -48 136 -46 185 4 16 16 31
+29 34 29 8 0 4 -69 -5 -93 -6 -14 -20 -28 -33 -32 -48 -13 -67 -29 -74 -59 -3
+-17 -9 -35 -13 -41 -3 -5 -6 -12 -7 -15 -4 -19 -20 -48 -37 -68 -19 -21 -20
+-24 -4 -39 15 -15 17 -15 26 9 5 14 14 29 19 32 5 3 13 20 16 38 10 54 42 98
+71 98 28 0 32 -12 10 -30 -10 -8 -15 -31 -15 -70 0 -40 -5 -62 -16 -70 -21
+-18 -14 -69 11 -86 19 -13 20 -11 20 69 0 115 6 131 57 152 24 9 60 30 80 46
+38 30 100 40 113 19 4 -6 14 -10 23 -9 10 1 26 -2 36 -6 11 -5 50 -9 88 -9 57
+-1 68 -4 68 -18 0 -9 5 -20 10 -23 6 -3 10 -49 10 -104 0 -112 10 -135 55
+-129 27 4 28 5 10 13 -11 5 -25 16 -32 24 -15 19 -17 117 -3 126 6 3 10 28 10
+56 0 47 13 63 34 42 4 -5 11 -8 14 -8 46 -4 95 -43 123 -96 10 -20 26 -39 35
+-43 9 -3 14 -12 10 -21 -4 -11 2 -15 19 -15 36 0 31 14 -21 68 -25 26 -52 59
+-60 74 -8 15 -27 34 -42 42 -42 22 -49 35 -57 107 -6 60 -5 68 17 94 22 25 32
+28 76 27 28 0 62 -8 76 -17 23 -15 25 -15 36 4 9 18 4 27 -43 73 -29 29 -60
+64 -68 77 -9 15 -18 20 -22 14z"/>
+    </g>
+  </g>
+
+  <!-- load trace (equalizer) -->
+  <g fill="url(#eq)">
+    <rect x="958" y="97" width="6" height="8"/>
+    <rect x="967" y="90" width="6" height="15"/>
+    <rect x="976" y="82" width="6" height="23"/>
+    <rect x="985" y="88" width="6" height="17"/>
+    <rect x="994" y="77" width="6" height="28"/>
+    <rect x="1003" y="93" width="6" height="12"/>
+  </g>
+
+  <!-- battery -->
+  <rect x="1044" y="80" width="30" height="14" rx="3.5" fill="none" stroke="#9C978A" stroke-width="1.5"/>
+  <rect x="1046.5" y="82.5" width="19" height="9" rx="1.5" fill="#4FA9A6"/>
+  <rect x="1075.5" y="84" width="2.5" height="6" rx="1" fill="#9C978A"/>
+  <!-- clock -->
+  <text x="1120" y="92" text-anchor="end" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="15" fill="#ECE6D8">9:41</text>
+
+  <!-- ===== wordmark + tagline ===== -->
+  <text x="62" y="196" font-family="Georgia,'Times New Roman',serif" font-size="52" font-weight="700" fill="#141821">MenuBar Load <tspan fill="#C9812A" font-style="italic">Runner</tspan></text>
+
+  <text x="64" y="238" font-family="ui-sans-serif,-apple-system,Helvetica,Arial,sans-serif" font-size="20" fill="#5C5749">A dog, a horse, a soot sprite — trotting in your menu bar, breaking into a</text>
+  <text x="64" y="266" font-family="ui-sans-serif,-apple-system,Helvetica,Arial,sans-serif" font-size="20" fill="#5C5749">sprint when the machine is under load. Load becomes tempo.</text>
+
+  <!-- source chips -->
+  <text x="64" y="312" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="15" fill="#8A8570" letter-spacing="0.5">cpu&#160;&#183;&#160;memory&#160;&#183;&#160;gpu&#160;&#183;&#160;network&#160;&#183;&#160;disk&#160;&#183;&#160;fan</text>
+
+  <!-- live readout badge -->
+  <rect x="965" y="290" width="175" height="34" rx="17" fill="#F0EDE1" stroke="#CDC8B5" stroke-width="1.5"/>
+  <circle cx="988" cy="307" r="5" fill="#4FA9A6"/>
+  <text x="1003" y="312" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="14" fill="#21252C">CPU 22%&#160;&#8594;&#160;0.86&#215;</text>
+</svg>

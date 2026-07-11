@@ -1,5 +1,9 @@
 # MenuBar Load Runner
 
+<p align="center">
+  <img src="docs/media/hero.svg" alt="MenuBar Load Runner — a running horse in the macOS menu bar whose animation speed tracks system load" width="880">
+</p>
+
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
 

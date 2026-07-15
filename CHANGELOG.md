@@ -24,6 +24,19 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-15
+
+### Added
+
+- **`Keep Awake Color` submenu.** The bottom track line shown while Keep Awake is holding the Mac
+  awake now has a selectable tint: **Dusty Teal** (the default) or **Sand**. Each option carries two
+  tones — lighter on a dark menu bar, deeper on a light one — chosen per menu-bar appearance so the
+  2 pt line keeps its contrast across theme switches. Dusty Teal is chromatic (reads on the grayscale
+  preset art by hue), Sand is a warm near-neutral companion. Menu-only, session-lived like the
+  `Keep Awake` toggle itself (no CLI flag or env var); the line's color is never the system accent, so
+  it won't collide with other menu-bar glyphs. Modeled as a `KeepAwakeColor` registry wired like
+  `Load Source` (`selectKeepAwakeColor` / `refreshKeepAwakeColorSelectionState`).
+
 ## [1.8.0] - 2026-07-15
 
 ### Added

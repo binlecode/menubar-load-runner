@@ -23,6 +23,11 @@
     --lantern-deep:#C9812A;
     --ember:#D8532B;          /* vermilion — high load */
     --glow:rgba(231,162,60,.5);
+    /* — keep-awake track-line tints (each its own fixed hue, never the system accent) — */
+    --teal-bar:#82B3AF;       /* "Dusty Teal" on a dark menu bar (Tuning.keepAwakeBarTealDark) */
+    --sand-bar:#D8C39B;       /* "Sand" on a dark menu bar (Tuning.keepAwakeBarSandDark) */
+    --teal:#3E7E7B;           /* keep-awake accent for in-page controls, on the light ground */
+    --teal-glow:rgba(85,127,124,.42);
 
     /* menu-bar glass is its own dark surface in BOTH themes (like the real thing) */
     --bar:rgba(20,24,33,.82);
@@ -45,6 +50,7 @@
     :root{
       --bg:#0E1118; --surface:#161B25; --surface-2:#1C222E;
       --fg:#ECE6D8; --fg-soft:#9C978A; --hair:#2A3140;
+      --teal:#82B3AF; --teal-glow:rgba(130,179,175,.5);
     }
   }
   :root[data-theme="light"]{
@@ -54,6 +60,7 @@
   :root[data-theme="dark"]{
     --bg:#0E1118; --surface:#161B25; --surface-2:#1C222E;
     --fg:#ECE6D8; --fg-soft:#9C978A; --hair:#2A3140;
+    --teal:#82B3AF; --teal-glow:rgba(130,179,175,.5);
   }
 
   *{box-sizing:border-box}
@@ -274,6 +281,70 @@
   .fact p{margin:0; font-size:13px; color:var(--fg-soft); line-height:1.5}
   .fact b{color:var(--fg)}
 
+  /* ---------- keep awake ---------- */
+  .awake{display:grid; grid-template-columns:.98fr 1.02fr; gap:28px; align-items:center}
+  .awake-copy p{margin:0 0 16px; font-size:14.5px; color:var(--fg-soft); line-height:1.55; max-width:48ch}
+  .awake-copy p b{color:var(--fg); font-weight:600}
+  .awake-list{list-style:none; margin:0 0 22px; padding:0; display:flex; flex-direction:column; gap:10px}
+  .awake-list li{position:relative; padding-left:22px; font-size:13px; color:var(--fg-soft); line-height:1.45}
+  .awake-list li b{color:var(--fg); font-weight:600}
+  .awake-list li::before{content:""; position:absolute; left:2px; top:.42em; width:8px; height:8px;
+    border-radius:2px; background:var(--teal); box-shadow:0 0 8px var(--teal-glow)}
+
+  /* toggle switch */
+  .awake-controls{display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-bottom:12px}
+  .switch{display:inline-flex; align-items:center; gap:11px; cursor:pointer; background:none; border:0;
+    padding:0; font-family:var(--mono); font-size:12.5px; letter-spacing:.03em; color:var(--fg); font-weight:600}
+  .switch .sw-track{position:relative; width:46px; height:26px; border-radius:999px; flex:none;
+    background:var(--surface-2); border:1px solid var(--hair); transition:background .25s, border-color .25s}
+  .switch .sw-knob{position:absolute; top:2px; left:2px; width:20px; height:20px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.35); transition:transform .25s}
+  .switch[aria-checked="true"] .sw-track{background:var(--teal); border-color:var(--teal)}
+  .switch[aria-checked="true"] .sw-knob{transform:translateX(20px)}
+  .switch:focus-visible{outline:2px solid var(--teal); outline-offset:3px; border-radius:6px}
+  .awake-state{font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:var(--fg-soft)}
+  .awake-conditions{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-family:var(--mono);
+    font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
+  .awake-conditions .cond{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; cursor:pointer;
+    color:var(--fg-soft); background:var(--surface); border:1px dashed var(--hair); border-radius:999px;
+    padding:4px 10px; transition:color .18s, border-color .18s, background .18s}
+  .awake-conditions .cond:hover{color:var(--fg); border-color:var(--ember)}
+  .awake-conditions .cond[aria-pressed="true"]{color:var(--ember); border-style:solid; border-color:var(--ember);
+    background:color-mix(in srgb, var(--ember) 10%, transparent)}
+  .awake-conditions .cond:focus-visible{outline:2px solid var(--ember); outline-offset:2px}
+
+  /* the live menu-bar stage — creature + track line beneath the icon */
+  .awake-stage{background:var(--bar); border:1px solid var(--bar-line); border-radius:16px;
+    padding:26px 22px; display:flex; flex-direction:column; align-items:center; gap:18px;
+    box-shadow:0 10px 30px -18px rgba(0,0,0,.9); backdrop-filter:blur(6px);
+    background-image:radial-gradient(90% 130% at 50% 130%, rgba(130,179,175,.10), transparent 60%)}
+  .awake-stage .barmock{display:flex; align-items:center; gap:0; width:100%; height:34px; padding:0 12px;
+    color:rgba(255,255,255,.85)}
+  .awake-stage .barmock .apple{font-size:13px; opacity:.9; margin-right:14px}
+  .awake-stage .barmock .mtitle{font-size:12.5px; font-weight:600; opacity:.9}
+  .awake-stage .barmock .spacer{flex:1}
+  .awake-stage .runner-slot{position:relative; display:inline-flex; align-items:center; margin:0 8px}
+  .awake-stage .runner-slot img{height:26px; width:auto; display:block}
+  .awake-line{position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:1px;
+    background:var(--teal-bar); box-shadow:0 0 6px var(--teal-glow);
+    opacity:0; transition:opacity .3s, background .25s, box-shadow .25s}
+  .awake-line.on{opacity:1}
+  .awake-line.sand{background:var(--sand-bar); box-shadow:0 0 6px rgba(216,195,155,.55)}
+
+  /* color picker (mirrors the "Keep Awake Color" submenu) */
+  .awake-swatches{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
+  .swatch{display:inline-flex; align-items:center; gap:7px; cursor:pointer; background:var(--surface);
+    border:1px solid var(--hair); border-radius:999px; padding:4px 12px 4px 5px;
+    font-family:var(--mono); font-size:11px; color:var(--fg-soft); transition:color .18s, border-color .18s}
+  .swatch .dot{width:15px; height:15px; border-radius:50%; border:1px solid rgba(0,0,0,.18)}
+  .swatch:hover{color:var(--fg)}
+  .swatch[aria-pressed="true"]{color:var(--fg); border-color:currentColor}
+  .swatch:focus-visible{outline:2px solid var(--fg-soft); outline-offset:2px}
+  .awake-stage .clock{font-variant-numeric:tabular-nums; font-size:12px; opacity:.9; margin-left:8px}
+  .awake-stage .caption{font-family:var(--mono); font-size:10.5px; letter-spacing:.06em;
+    color:rgba(255,255,255,.6); text-align:center}
+
   /* ---------- footer ---------- */
   footer{padding:40px 0 60px; border-top:1px solid var(--hair); margin-top:20px}
   .foot{display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap}
@@ -287,6 +358,7 @@
     .sources{grid-template-columns:repeat(2,1fr)}
     .presets{grid-template-columns:1fr}
     .qs{grid-template-columns:1fr}
+    .awake{grid-template-columns:1fr}
   }
   @media (max-width:520px){
     .sources{grid-template-columns:1fr}
@@ -433,6 +505,66 @@
     <p class="heroBar cap">…plus Dog (Black), Horse (Black), Chihiro white/black, Totoro white/black, and a wide Totoro group (white/black) — 12 in all. Drop in any <span class="mono">.gif</span> to make your own.</p>
   </section>
 
+  <section id="awake">
+    <div class="sechead">
+      <h2>It can keep the Mac awake — on your&nbsp;terms</h2>
+      <span class="n">Keep Awake</span>
+    </div>
+    <div class="awake">
+      <div class="awake-copy">
+        <p>Flip <b>Keep&nbsp;Awake</b> in the menu and the app spawns
+          <span class="mono">caffeinate -i -w &lt;pid&gt;</span> — idle sleep is held off while long work
+          runs, but the display can still nap. The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
+          the app, so it's <b>reaped the instant the app quits or crashes</b>; no orphaned sleep lock.</p>
+        <ul class="awake-list">
+          <li><b>Auto-disengages</b> on critically low battery (≤20%, on battery) or serious/critical
+            thermal — then <b>re-engages</b> the moment the condition clears.</li>
+          <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
+            instant a condition suspends it, even with the toggle still on.</li>
+          <li>A thin line rides the bottom edge of the icon — pick <b>Dusty&nbsp;Teal</b> (default) or
+            <b>Sand</b> from the <span class="mono">Keep&nbsp;Awake&nbsp;Color</span> submenu. Each is a
+            fixed hue (two tones, tuned per menu-bar appearance), never your system accent.</li>
+        </ul>
+        <div class="awake-controls">
+          <button class="switch" id="awakeToggle" role="switch" aria-checked="false" aria-label="Toggle Keep Awake">
+            <span class="sw-track"><span class="sw-knob"></span></span> Keep Awake
+          </button>
+          <span class="awake-state" id="awakeState">off · caffeinate not running</span>
+        </div>
+        <div class="awake-swatches" aria-label="Track-line color (Keep Awake Color submenu)">
+          <span>line color:</span>
+          <button class="swatch" type="button" data-color="teal" aria-pressed="true">
+            <span class="dot" style="background:var(--teal-bar)"></span> Dusty Teal
+          </button>
+          <button class="swatch" type="button" data-color="sand" aria-pressed="false">
+            <span class="dot" style="background:var(--sand-bar)"></span> Sand
+          </button>
+        </div>
+        <div class="awake-conditions" aria-label="Simulate an auto-disengage condition">
+          <span>try a condition →</span>
+          <button class="cond" type="button" data-cond="battery" aria-pressed="false">battery ≤ 20%</button>
+          <button class="cond" type="button" data-cond="thermal" aria-pressed="false">serious thermal</button>
+        </div>
+      </div>
+      <div class="awake-stage">
+        <div class="barmock" role="img" aria-label="A macOS menu bar with a running creature; a Dusty Teal line marks that Keep Awake is holding the Mac awake">
+          <span class="apple"></span>
+          <span class="mtitle">Xcode</span>
+          <span class="spacer"></span>
+          <span class="runner-slot">
+            <img src="../gifs/chihiro-walk-white.gif" alt="">
+            <span class="awake-line" id="awakeLine"></span>
+          </span>
+          <span class="clock">Wed 2:14</span>
+        </div>
+        <span class="caption" id="awakeCaption">toggle it — the track line is the “ground it runs on”</span>
+      </div>
+    </div>
+    <p class="heroBar cap">Idle-sleep only (the screen may still sleep), unprivileged, OS-reaped. Lid-close,
+      Low Power Mode, and memory pressure are deliberately <b>not</b> disengage triggers — see
+      <span class="mono">DESIGN-system.md §22</span>.</p>
+  </section>
+
   <section id="start">
     <div class="sechead">
       <h2>One file. No Xcode.</h2>
@@ -458,7 +590,6 @@
         <div class="fact"><h4>Vsync-aligned game loop</h4><p>A <b>CADisplayLink</b> advances frames against real elapsed time and the screen's refresh rate — smooth at any speed, and it pauses itself entirely when the item is occluded.</p></div>
         <div class="fact"><h4>Barely there</h4><p>Frames are swapped as a <b>layer's <span class="mono">CGImage</span> contents</b> — no per-frame redraw or layout — so a visible, animating icon costs about <b>~0.5% of one CPU core</b> in <b>~20&nbsp;MB</b>, and drops to <b>0% CPU when hidden</b>. It also caps its own speed under Low Power / thermal / memory pressure, so it never adds to the load it measures.</p></div>
         <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, and speed range all live in <b><span class="mono">presets.json</span></b> (width comes from the GIF's own aspect ratio). Add a preset by editing data — zero Swift changes.</p></div>
-        <div class="fact"><h4>Keeps the Mac awake, when you ask</h4><p>A <b><span class="mono">Keep Awake</span></b> menu toggle spawns <span class="mono">caffeinate -i -w &lt;pid&gt;</span> so long work doesn't die to an idle nap — no second utility needed. It's <b>PID-bound</b> (reaped if the app quits or crashes) and <b>auto-disengages</b> on critically low battery or serious thermal, then re-engages when clear. A thin <b>Dusty&nbsp;Teal</b> line under the icon shows while it's holding the machine awake.</p></div>
         <div class="fact"><h4>Checks for its own updates</h4><p>On launch it reads your checkout's origin release tags — <b>the only network call the app ever makes</b>. A newer tag shows an <span class="mono">Update available</span> menu item; applying it is a deliberate <b>two-click</b> action (<span class="mono">git pull --ff-only</span>), never automatic.</p></div>
         <div class="fact"><h4>One line in, one line out</h4><p>Install with a single <span class="mono">curl … | bash</span> — it clones, compiles, and symlinks onto your <span class="mono">PATH</span>; <span class="mono">uninstall.sh</span> reverses exactly what it created. <b>Open source (MIT)</b>, no signing or Homebrew.</p></div>
       </div>
@@ -469,7 +600,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.8.0</span>
+        <span class="badge">v1.9.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
@@ -517,5 +648,55 @@
   }
   slider.addEventListener('input',apply);
   apply();
+
+  // keep-awake toggle — mirrors SleepPreventer: intent (isEnabled) vs. running state (caffeinate live).
+  // The track line keys on isRunning, so an active condition dims it even with the toggle on.
+  var awToggle=document.getElementById('awakeToggle');
+  var awLine=document.getElementById('awakeLine');
+  var awState=document.getElementById('awakeState');
+  var awCaption=document.getElementById('awakeCaption');
+  var conds=document.querySelectorAll('.awake-conditions .cond');
+  var swatches=document.querySelectorAll('.awake-swatches .swatch');
+  var enabled=false;
+  var color='teal';
+  var active={battery:false,thermal:false};
+  var reasons={battery:'battery ≤ 20%',thermal:'serious thermal'};
+  function firstActive(){ if(active.battery)return 'battery';
+    if(active.thermal)return 'thermal'; return null; }
+  function renderAwake(){
+    var cause=firstActive();
+    var running=enabled && !cause;
+    awToggle.setAttribute('aria-checked',enabled?'true':'false');
+    if(awLine){ awLine.classList.toggle('on',running); awLine.classList.toggle('sand',color==='sand'); }
+    if(!enabled){
+      awState.textContent='off · caffeinate not running';
+      if(awCaption) awCaption.textContent='toggle it — the track line is the “ground it runs on”';
+    } else if(running){
+      awState.textContent='holding awake · caffeinate -i -w <pid>';
+      if(awCaption) awCaption.textContent='● holding the Mac awake';
+    } else {
+      awState.textContent='paused · '+reasons[cause]+' · re-engages when clear';
+      if(awCaption) awCaption.textContent='auto-disengaged — toggle still on, but suspended';
+    }
+  }
+  awToggle.addEventListener('click',function(){ enabled=!enabled; renderAwake(); });
+  for(var q=0;q<conds.length;q++){
+    conds[q].addEventListener('click',function(){
+      var c=this.getAttribute('data-cond');
+      active[c]=!active[c];
+      this.setAttribute('aria-pressed',active[c]?'true':'false');
+      renderAwake();
+    });
+  }
+  for(var s=0;s<swatches.length;s++){
+    swatches[s].addEventListener('click',function(){
+      color=this.getAttribute('data-color');
+      for(var k=0;k<swatches.length;k++){
+        swatches[k].setAttribute('aria-pressed', swatches[k]===this?'true':'false');
+      }
+      renderAwake();
+    });
+  }
+  renderAwake();
 })();
 </script>

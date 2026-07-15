@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
 
-Current version: **1.7.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.9.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -307,7 +307,7 @@ Click the menu bar item to open:
 - `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
-- `Keep Awake` (checkbox) — keeps the Mac awake while the app runs by spawning `caffeinate -i -w <pid>` (idle-sleep only; the display may still sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin **Dusty Teal** track line along the icon's bottom edge shows while it's actively keeping the Mac awake. Resets to off on launch.
+- `Keep Awake` (checkbox) — keeps the Mac awake while the app runs by spawning `caffeinate -i -w <pid>` (idle-sleep only; the display may still sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake — its color is selectable via the **Keep Awake Color** submenu (**Dusty Teal**, the default, or **Sand**). Resets to off on launch.
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`

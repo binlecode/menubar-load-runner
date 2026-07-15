@@ -216,6 +216,21 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     entirely when the item is fully occluded (notch/overflow, another Space, display off) and restarts
     it when visible — no re-rasterizing frames no one can see. It only ever pauses in response to a
     positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
+  - **Keep Awake**: a menu checkbox spawns `caffeinate -i -w <pid>` (idle-sleep only,
+    bound to the app's PID) via the `SleepPreventer` class, which separates *intent* (`isEnabled`, the
+    toggle) from *running state* (the process may be suspended/respawned by conditions without losing
+    intent). `applyConditions(suspend:)` is the total function. Auto-disengage conditions
+    (`shouldDisengageSleepPrevention`): battery ≤ `Tuning.batteryLowThreshold` on battery, or serious/
+    critical thermal — deliberately NOT lid/display sleep, memory pressure, or Low Power Mode (see
+    `docs/DESIGN-system.md` §22). The power/thermal/battery observers fan through
+    `conditionsDidChange()` (calls the guarded speed recompute AND the *unguarded* `updateSleepPrevention()`),
+    so keep-awake still disengages under `--speed-multiplier`; memory pressure keeps calling the reevaluate
+    directly (not a sleep trigger). Battery is an event-driven IOKit Power Sources run-loop source
+    (`import IOKit.ps`), torn down in `applicationWillTerminate` alongside an explicit caffeinate kill.
+    The indicator is a **sibling `CALayer`** (`keepAwakeBar`) on `animationView.layer` on TOP of the frame
+    contents — a Dusty-Teal bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize), keyed on
+    `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
+    every frame on toggle).
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthInfo`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather

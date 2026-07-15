@@ -24,6 +24,19 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-07-15
+
+### Changed
+
+- **Internal: centralized menu-item title strings.** Every fixed `NSMenuItem` label and every label
+  *prefix* rebuilt by a refresh function now lives in a single `MenuTitle` namespace (sibling to
+  `Tuning`) instead of being inlined at both the item's creation site and its refresh site. This
+  removes a class of latent drift where a placeholder and its live value could disagree — two lines
+  already did: `CPU Usage` (placeholder `CPU Usage:` vs. refresh `CPU Usage (smoothed):`) and
+  `Speed Multiplier` (placeholder `Speed Multiplier:` vs. refresh `Speed Multiplier (auto:…)` /
+  `(fixed)`). Pure refactor: every menu title renders byte-for-byte identical; no CLI, env, preset,
+  or observable-behavior change. (Internal implementation detail, not part of the public API.)
+
 ## [1.9.0] - 2026-07-15
 
 ### Added

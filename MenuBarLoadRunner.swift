@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.9.0"
+    static let version = "1.9.1"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -238,6 +238,71 @@ private enum Tuning {
     static let keepAwakeBarSandDark = NSColor(srgbRed: 0.847, green: 0.765, blue: 0.608, alpha: 1) // #D8C39B
     static let keepAwakeBarSandLight = NSColor(srgbRed: 0.698, green: 0.604, blue: 0.431, alpha: 1) // #B29A6E
     static let keepAwakeBarThickness: CGFloat = 2
+}
+
+// Centralized menu-item vocabulary — every fixed label and every label *prefix* that a refresh
+// function rebuilds lives here, so a rename touches one site and the placeholder can't drift from
+// the live value. Data-driven groups (LoadSource.menuTitle, PresetDescriptor.menuTitle,
+// KeepAwakeColor.menuTitle) are already single-source and stay there; this namespace covers the
+// literals that were previously inlined at both a creation site and a refresh site.
+//
+// Two rows model a qualifier that sits *between* the prefix and the colon (`CPU Usage (smoothed):`,
+// `Speed Multiplier (auto: …)`): the bare prefix is stored once and the qualified forms derive from
+// it via the helpers below, so the placeholder and refresh can't disagree as they did before.
+//
+// Ellipsis style is frozen as-is per string (some use `…`, some ASCII `...`) — this is a pure
+// centralization, not a wording change, so titles render byte-for-byte identical.
+private enum MenuTitle {
+    // Group 1 — static, single-site labels (moved for inventory completeness).
+    static let loadHistory = "Load History"
+    static let keepAwake = "Keep Awake"
+    static let keepAwakeColor = "Keep Awake Color"
+    static let loadSource = "Load Source"
+    static let presets = "Presets"
+    static let about = "About"
+    static let exit = "Exit"
+    static let clear = "Clear"
+
+    // Update-check items.
+    static let updateAvailablePrefix = "Update available"
+    static let checkForUpdates = "Check for Updates…"
+    static let checkingForUpdates = "Checking for Updates…"
+
+    // Overlay.
+    static let overlayPrefix = "Overlay Text"
+    static func overlay(_ suffix: String) -> String { "\(overlayPrefix): \(suffix)" }
+    static let overlayOff = "off"
+    static func setText(max: Int) -> String { "Set Text... (max \(max))" }
+
+    // Read-only readouts.
+    static let widthPrefix = "Width"
+    static let placeholderValue = "--"
+    static let warmingUp = "warming up..."
+    static let loadAvgPrefix = "Load Avg (1/5/15m)"
+    static let loadAvgUnavailable = "unavailable"
+
+    // Generic "<Prefix>: <value>" formatter — the shape every readout line shares, so the prefix is
+    // stored once and both the placeholder and the refresh format through this.
+    static func line(_ prefix: String, _ value: String) -> String { "\(prefix): \(value)" }
+
+    // Metric state line. Derives as "<Source> State:" for every source EXCEPT .memory (which shows
+    // "Memory Pressure:"); the usage prefix is source-specific (`.cpu` qualifies with "(smoothed)",
+    // the rest use a bare "<Source>:").
+    static let memoryPressurePrefix = "Memory Pressure"
+    static func statePrefix(for source: LoadSource) -> String { "\(source.menuTitle) State" }
+
+    static let cpuUsagePrefix = "CPU Usage"
+    static let cpuUsageQualified = "\(cpuUsagePrefix) (smoothed)"
+
+    // Speed multiplier. Bare prefix stored once; the qualified forms (auto/fixed) derive from it so
+    // the placeholder ("Speed Multiplier: --") and the refresh ("Speed Multiplier (auto: …)") share
+    // a base and can't drift.
+    static let speedMultiplierPrefix = "Speed Multiplier"
+    static func speedAuto(_ source: String) -> String { "\(speedMultiplierPrefix) (auto: \(source))" }
+    static let speedFixed = "\(speedMultiplierPrefix) (fixed)"
+
+    // Self-throttle line.
+    static let slowingAnimation = "Slowing animation"
 }
 
 // Which system reader drives the animation speed. A single registry (key + menu title) so the
@@ -1554,43 +1619,43 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.delegate = self
 
         loadHistoryView = LoadHistoryView(capacity: Tuning.loadHistoryCapacity)
-        historyMenuItem = NSMenuItem(title: "Load History", action: nil, keyEquivalent: "")
+        historyMenuItem = NSMenuItem(title: MenuTitle.loadHistory, action: nil, keyEquivalent: "")
         historyMenuItem.isEnabled = false
         historyMenuItem.view = loadHistoryView
         infoMenu.addItem(historyMenuItem)
 
-        usageItem = NSMenuItem(title: "CPU Usage: --", action: nil, keyEquivalent: "")
+        usageItem = NSMenuItem(title: MenuTitle.line(MenuTitle.cpuUsagePrefix, MenuTitle.placeholderValue), action: nil, keyEquivalent: "")
         usageItem.isEnabled = false
         infoMenu.addItem(usageItem)
 
-        loadAverageItem = NSMenuItem(title: "Load Avg (1/5/15m): -- / -- / --", action: nil, keyEquivalent: "")
+        loadAverageItem = NSMenuItem(title: MenuTitle.line(MenuTitle.loadAvgPrefix, "-- / -- / --"), action: nil, keyEquivalent: "")
         loadAverageItem.isEnabled = false
         infoMenu.addItem(loadAverageItem)
 
-        stateItem = NSMenuItem(title: "CPU State: --", action: nil, keyEquivalent: "")
+        stateItem = NSMenuItem(title: MenuTitle.line(MenuTitle.statePrefix(for: .cpu), MenuTitle.placeholderValue), action: nil, keyEquivalent: "")
         stateItem.isEnabled = false
         infoMenu.addItem(stateItem)
 
-        speedMultiplierItem = NSMenuItem(title: "Speed Multiplier: --", action: nil, keyEquivalent: "")
+        speedMultiplierItem = NSMenuItem(title: MenuTitle.line(MenuTitle.speedMultiplierPrefix, MenuTitle.placeholderValue), action: nil, keyEquivalent: "")
         speedMultiplierItem.isEnabled = false
         infoMenu.addItem(speedMultiplierItem)
 
         // Title is set live in refreshMenuMetrics to name the active cause(s); hidden until then.
-        throttleStatusItem = NSMenuItem(title: "Slowing animation", action: nil, keyEquivalent: "")
+        throttleStatusItem = NSMenuItem(title: MenuTitle.slowingAnimation, action: nil, keyEquivalent: "")
         throttleStatusItem.isEnabled = false
         throttleStatusItem.isHidden = true
         infoMenu.addItem(throttleStatusItem)
 
         // Read-only: the item sizes itself to the GIF's aspect ratio; there is no width control.
         // Grouped with the other read-only readouts, above the control items below.
-        widthStatusItem = NSMenuItem(title: "Width: --", action: nil, keyEquivalent: "")
+        widthStatusItem = NSMenuItem(title: MenuTitle.line(MenuTitle.widthPrefix, MenuTitle.placeholderValue), action: nil, keyEquivalent: "")
         widthStatusItem.isEnabled = false
         infoMenu.addItem(widthStatusItem)
 
         infoMenu.addItem(NSMenuItem.separator())
 
-        loadSourceMenuItem = NSMenuItem(title: "Load Source", action: nil, keyEquivalent: "")
-        let loadSourceSubmenu = NSMenu(title: "Load Source")
+        loadSourceMenuItem = NSMenuItem(title: MenuTitle.loadSource, action: nil, keyEquivalent: "")
+        let loadSourceSubmenu = NSMenu(title: MenuTitle.loadSource)
         for source in LoadSource.allCases {
             let item = NSMenuItem(title: source.menuTitle, action: #selector(selectLoadSource(_:)), keyEquivalent: "")
             item.target = self
@@ -1611,14 +1676,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         // The submenu parent doubles as the status line — its title carries the current overlay
         // state (text + style, or "off"), so no separate read-only line is needed.
-        overlayMenuItem = NSMenuItem(title: "Overlay Text", action: nil, keyEquivalent: "")
-        let overlaySubmenu = NSMenu(title: "Overlay Text")
+        overlayMenuItem = NSMenuItem(title: MenuTitle.overlayPrefix, action: nil, keyEquivalent: "")
+        let overlaySubmenu = NSMenu(title: MenuTitle.overlayPrefix)
 
-        overlaySetItem = NSMenuItem(title: "Set Text... (max \(Tuning.overlayMaxChars))", action: #selector(promptOverlayText), keyEquivalent: "")
+        overlaySetItem = NSMenuItem(title: MenuTitle.setText(max: Tuning.overlayMaxChars), action: #selector(promptOverlayText), keyEquivalent: "")
         overlaySetItem.target = self
         overlaySubmenu.addItem(overlaySetItem)
 
-        overlayClearItem = NSMenuItem(title: "Clear", action: #selector(clearOverlayText), keyEquivalent: "")
+        overlayClearItem = NSMenuItem(title: MenuTitle.clear, action: #selector(clearOverlayText), keyEquivalent: "")
         overlayClearItem.target = self
         overlaySubmenu.addItem(overlayClearItem)
 
@@ -1626,14 +1691,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(overlayMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        keepAwakeMenuItem = NSMenuItem(title: "Keep Awake", action: #selector(toggleKeepAwake), keyEquivalent: "")
+        keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: #selector(toggleKeepAwake), keyEquivalent: "")
         keepAwakeMenuItem.target = self
         infoMenu.addItem(keepAwakeMenuItem)
 
         // Sibling submenu (a radio group) for the track-line tint — the Keep Awake item stays a
         // one-click toggle, so the color choice lives alongside it like Load Source does, not nested.
-        keepAwakeColorMenuItem = NSMenuItem(title: "Keep Awake Color", action: nil, keyEquivalent: "")
-        let keepAwakeColorSubmenu = NSMenu(title: "Keep Awake Color")
+        keepAwakeColorMenuItem = NSMenuItem(title: MenuTitle.keepAwakeColor, action: nil, keyEquivalent: "")
+        let keepAwakeColorSubmenu = NSMenu(title: MenuTitle.keepAwakeColor)
         for choice in KeepAwakeColor.allCases {
             let item = NSMenuItem(title: choice.menuTitle, action: #selector(selectKeepAwakeColor(_:)), keyEquivalent: "")
             item.target = self
@@ -1645,7 +1710,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(keepAwakeColorMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        let presetsHeaderItem = NSMenuItem(title: "Presets", action: nil, keyEquivalent: "")
+        let presetsHeaderItem = NSMenuItem(title: MenuTitle.presets, action: nil, keyEquivalent: "")
         infoMenu.addItem(presetsHeaderItem)
 
         for (index, preset) in allPresets.enumerated() {
@@ -1661,15 +1726,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // finds a newer release; "Check for Updates…" forces a fresh probe. Both are hidden entirely
         // when this isn't a git checkout (repoDirURL == nil) — see refreshUpdateStatus(). Top-level, so
         // the blanket target-wiring below covers them.
-        updateItem = NSMenuItem(title: "Update available", action: #selector(promptSelfUpdate), keyEquivalent: "")
+        updateItem = NSMenuItem(title: MenuTitle.updateAvailablePrefix, action: #selector(promptSelfUpdate), keyEquivalent: "")
         updateItem.isHidden = true
         infoMenu.addItem(updateItem)
-        checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        checkForUpdatesItem = NSMenuItem(title: MenuTitle.checkForUpdates, action: #selector(checkForUpdates), keyEquivalent: "")
         infoMenu.addItem(checkForUpdatesItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        infoMenu.addItem(NSMenuItem(title: "About", action: #selector(showAbout), keyEquivalent: ""))
-        infoMenu.addItem(NSMenuItem(title: "Exit", action: #selector(exitApp), keyEquivalent: "q"))
+        infoMenu.addItem(NSMenuItem(title: MenuTitle.about, action: #selector(showAbout), keyEquivalent: ""))
+        infoMenu.addItem(NSMenuItem(title: MenuTitle.exit, action: #selector(exitApp), keyEquivalent: "q"))
         infoMenu.items.forEach { $0.target = self }
         presetsHeaderItem.isEnabled = false
         statusItem.menu = infoMenu
@@ -1844,10 +1909,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
         checkForUpdatesItem.isHidden = false
         checkForUpdatesItem.isEnabled = !updateCheckInFlight
-        checkForUpdatesItem.title = updateCheckInFlight ? "Checking for Updates…" : "Check for Updates…"
+        checkForUpdatesItem.title = updateCheckInFlight ? MenuTitle.checkingForUpdates : MenuTitle.checkForUpdates
 
         if let latest = latestKnownVersion, let current = SemVer(AppInfo.version), latest > current {
-            let title = "Update available: \(latest.tagString) →"
+            let title = MenuTitle.line(MenuTitle.updateAvailablePrefix, "\(latest.tagString) →")
             let bold = NSFontManager.shared.convert(NSFont.menuFont(ofSize: 0), toHaveTrait: .boldFontMask)
             updateItem.attributedTitle = NSAttributedString(string: title, attributes: [.font: bold])
             updateItem.isHidden = false
@@ -2181,22 +2246,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         switch activeLoadSource {
         case .cpu:
             if loadMonitor.hasSample {
-                usageItem.title = String(format: "CPU Usage (smoothed): %.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
-                stateItem.title = "CPU State: \(cpuStateText(for: loadMonitor.smoothedUsage))"
+                usageItem.title = MenuTitle.line(MenuTitle.cpuUsageQualified, String(format: "%.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale))
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .cpu), cpuStateText(for: loadMonitor.smoothedUsage))
                 statusItem.button?.setAccessibilityLabel(String(
                     format: "MenuBar Load Runner — CPU %.0f%%, %@",
                     loadMonitor.smoothedUsage * Tuning.percentScale,
                     cpuStateText(for: loadMonitor.smoothedUsage)
                 ))
             } else {
-                usageItem.title = "CPU Usage (smoothed): warming up..."
-                stateItem.title = "CPU State: warming up..."
+                usageItem.title = MenuTitle.line(MenuTitle.cpuUsageQualified, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .cpu), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring CPU load")
             }
         case .memory:
             // Memory pressure (state line) reflects the cached dispatch-source level and is valid
             // even before the first used-fraction sample, so it's shown unconditionally.
-            stateItem.title = "Memory Pressure: \(memoryPressureText())"
+            stateItem.title = MenuTitle.line(MenuTitle.memoryPressurePrefix, memoryPressureText())
             if memoryMonitor.hasSample {
                 usageItem.title = memoryUsageLineText()
                 statusItem.button?.setAccessibilityLabel(String(
@@ -2205,27 +2270,27 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     memoryPressureText()
                 ))
             } else {
-                usageItem.title = "Memory: warming up..."
+                usageItem.title = MenuTitle.line(LoadSource.memory.menuTitle, MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring memory load")
             }
         case .gpu:
             if gpuMonitor.hasSample {
-                usageItem.title = String(format: "GPU: %.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale)
-                stateItem.title = "GPU State: \(cpuStateText(for: gpuMonitor.currentUtilization))"
+                usageItem.title = MenuTitle.line(LoadSource.gpu.menuTitle, String(format: "%.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale))
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .gpu), cpuStateText(for: gpuMonitor.currentUtilization))
                 statusItem.button?.setAccessibilityLabel(String(
                     format: "MenuBar Load Runner — GPU %.0f%%, %@",
                     gpuMonitor.currentUtilization * Tuning.percentScale,
                     cpuStateText(for: gpuMonitor.currentUtilization)
                 ))
             } else {
-                usageItem.title = "GPU: warming up..."
-                stateItem.title = "GPU State: warming up..."
+                usageItem.title = MenuTitle.line(LoadSource.gpu.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .gpu), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring GPU load")
             }
         case .network:
             if networkMonitor.hasSample {
                 usageItem.title = networkUsageLineText()
-                stateItem.title = "Network State: \(cpuStateText(for: networkMonitor.currentLoad))"
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .network), cpuStateText(for: networkMonitor.currentLoad))
                 statusItem.button?.setAccessibilityLabel(String(
                     format: "MenuBar Load Runner — network ↓%.1f MB/s ↑%.1f MB/s, %@",
                     networkMonitor.currentInboundBytesPerSec / Tuning.bytesPerMiB,
@@ -2233,14 +2298,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     cpuStateText(for: networkMonitor.currentLoad)
                 ))
             } else {
-                usageItem.title = "Network: warming up..."
-                stateItem.title = "Network State: warming up..."
+                usageItem.title = MenuTitle.line(LoadSource.network.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .network), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring network load")
             }
         case .disk:
             if diskMonitor.hasSample {
                 usageItem.title = diskUsageLineText()
-                stateItem.title = "Disk State: \(cpuStateText(for: diskMonitor.currentLoad))"
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .disk), cpuStateText(for: diskMonitor.currentLoad))
                 statusItem.button?.setAccessibilityLabel(String(
                     format: "MenuBar Load Runner — disk read %.1f MB/s write %.1f MB/s, %@",
                     diskMonitor.currentReadBytesPerSec / Tuning.bytesPerMiB,
@@ -2248,32 +2313,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     cpuStateText(for: diskMonitor.currentLoad)
                 ))
             } else {
-                usageItem.title = "Disk: warming up..."
-                stateItem.title = "Disk State: warming up..."
+                usageItem.title = MenuTitle.line(LoadSource.disk.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .disk), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring disk load")
             }
         case .fan:
             if fanMonitor.hasSample {
                 usageItem.title = fanUsageLineText()
-                stateItem.title = "Fan State: \(cpuStateText(for: fanMonitor.currentUtilization))"
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .fan), cpuStateText(for: fanMonitor.currentUtilization))
                 statusItem.button?.setAccessibilityLabel(String(
                     format: "MenuBar Load Runner — fan avg %.0f%%, %@",
                     fanMonitor.currentUtilization * Tuning.percentScale,
                     cpuStateText(for: fanMonitor.currentUtilization)
                 ))
             } else {
-                usageItem.title = "Fan: warming up..."
-                stateItem.title = "Fan State: warming up..."
+                usageItem.title = MenuTitle.line(LoadSource.fan.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .fan), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring fan load")
             }
         }
 
         if isAutoSpeed {
             // Includes the active source so the dashboard shows WHAT drives the animation.
-            speedMultiplierItem.title = String(
-                format: "Speed Multiplier (auto: %@): %.2fx",
-                activeLoadSource.menuTitle,
-                speedMultiplier
+            speedMultiplierItem.title = MenuTitle.line(
+                MenuTitle.speedAuto(activeLoadSource.menuTitle),
+                String(format: "%.2fx", speedMultiplier)
             )
             // Name the active self-throttle cause(s) rather than a generic "throttled" tag, so the
             // line distinguishes true thermal throttling from Low Power Mode / memory pressure.
@@ -2281,18 +2345,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             if reasons.isEmpty {
                 throttleStatusItem.isHidden = true
             } else {
-                throttleStatusItem.title = "Slowing animation — " + reasons.joined(separator: ", ")
+                throttleStatusItem.title = MenuTitle.slowingAnimation + " — " + reasons.joined(separator: ", ")
                 throttleStatusItem.isHidden = false
             }
         } else {
-            speedMultiplierItem.title = String(format: "Speed Multiplier (fixed): %.2fx", speedMultiplier)
+            speedMultiplierItem.title = MenuTitle.line(MenuTitle.speedFixed, String(format: "%.2fx", speedMultiplier))
             throttleStatusItem.isHidden = true
         }
 
         if let (avg1, avg5, avg15) = cachedLoadAverages {
-            loadAverageItem.title = String(format: "Load Avg (1/5/15m): %.2f / %.2f / %.2f", avg1, avg5, avg15)
+            loadAverageItem.title = MenuTitle.line(MenuTitle.loadAvgPrefix, String(format: "%.2f / %.2f / %.2f", avg1, avg5, avg15))
         } else {
-            loadAverageItem.title = "Load Avg (1/5/15m): unavailable"
+            loadAverageItem.title = MenuTitle.line(MenuTitle.loadAvgPrefix, MenuTitle.loadAvgUnavailable)
         }
     }
 
@@ -2407,25 +2471,26 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // width in points and the GIF's aspect ratio that produced it.
     private func refreshWidthInfo() {
         guard !frames.isEmpty else {
-            widthStatusItem.title = "Width: --"
+            widthStatusItem.title = MenuTitle.line(MenuTitle.widthPrefix, MenuTitle.placeholderValue)
             return
         }
-        widthStatusItem.title = String(
-            format: "Width: %.0f pt (GIF aspect %.2f×)", slotLength(), currentGifAspect()
+        widthStatusItem.title = MenuTitle.line(
+            MenuTitle.widthPrefix,
+            String(format: "%.0f pt (GIF aspect %.2f×)", slotLength(), currentGifAspect())
         )
     }
 
     private func refreshOverlaySelectionState() {
         if let text = requestedOverlayText {
             let style = requestedOverlayBold ? "bold" : "regular"
-            overlayMenuItem.title = "Overlay Text: \(text) (\(style))"
+            overlayMenuItem.title = MenuTitle.overlay("\(text) (\(style))")
             overlayClearItem.isEnabled = true
         } else {
-            overlayMenuItem.title = "Overlay Text: off"
+            overlayMenuItem.title = MenuTitle.overlay(MenuTitle.overlayOff)
             overlayClearItem.isEnabled = false
         }
         // Limit tracks the current GIF-derived width, so keep the menu prompt title in sync.
-        overlaySetItem.title = "Set Text... (max \(maxOverlayChars()))"
+        overlaySetItem.title = MenuTitle.setText(max: maxOverlayChars())
     }
 
     // Adaptive overlay limit: roughly how many monospaced glyphs fit across the current

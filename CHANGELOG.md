@@ -24,6 +24,30 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-15
+
+### Added
+
+- **`Keep Awake` menu checkbox.** Keeps the Mac awake while the app runs by spawning
+  `caffeinate -i -w <pid>` — idle-sleep only (the display may still sleep), bound to the app's PID so
+  the OS reaps it automatically on crash/force-quit (no orphaned sleep lock). No second utility
+  (KeepingYouAwake, Amphetamine) needed just to stop a Mac napping mid-compile/-train/-download.
+  Owned by the new `SleepPreventer` class, which separates *intent* (`isEnabled`, the toggle) from
+  *running state* (the process, which conditions may suspend and respawn without losing intent).
+  - **Auto-disengage** on critically low battery (≤ 20% on battery power) or serious/critical thermal
+    state, re-engaging when the condition clears — so an unattended Mac doesn't drain to death and a
+    hot Mac isn't kept fighting sleep. Deliberately *not* triggered by lid/display sleep (idle-sleep
+    prevention intentionally allows the display to sleep), memory pressure, or Low Power Mode.
+    Battery is read via an event-driven IOKit Power Sources run-loop source (desktop Macs with no
+    battery skip it entirely); thermal reuses the existing `ProcessInfo.thermalState` observer.
+  - A thin **Dusty Teal** track line along the icon's bottom edge shows while it's *actively* keeping
+    the Mac awake (keyed on running state, so it hides while a condition has it suspended). It's a
+    sibling overlay `CALayer`, never composited into the rendered frames — a toggle costs no
+    re-rasterization.
+  - Intent is memory-only: the toggle resets to off on launch. Auto-restore across launches and an
+    activate/deactivate notification are deferred.
+  - See `docs/DESIGN-system.md` §22 for the full design.
+
 ## [1.7.1] - 2026-07-10
 
 ### Changed

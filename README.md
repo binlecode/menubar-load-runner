@@ -307,6 +307,7 @@ Click the menu bar item to open:
 - `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
+- `Keep Awake` (checkbox) — keeps the Mac awake while the app runs by spawning `caffeinate -i -w <pid>` (idle-sleep only; the display may still sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin **Dusty Teal** track line along the icon's bottom edge shows while it's actively keeping the Mac awake. Resets to off on launch.
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`

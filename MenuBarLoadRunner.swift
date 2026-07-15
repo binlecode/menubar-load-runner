@@ -3,12 +3,13 @@ import CoreGraphics
 import Darwin
 import ImageIO
 import IOKit
+import IOKit.ps
 import QuartzCore
 
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.7.1"
+    static let version = "1.8.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -221,6 +222,22 @@ private enum Tuning {
     static let overlayMinChars = 1
     static let overlayMaxChars = 12
     static let overlayCharAdvanceFraction: CGFloat = 0.62
+
+    // Keep Awake auto-disengage: on battery power at or below this charge fraction
+    // we kill `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
+    static let batteryLowThreshold: Double = 0.20
+
+    // Keep-awake track line — "Dusty Teal" (NOT the system accent). A washed blue-green; being
+    // chromatic it reads on grayscale preset art by hue rather than lightness. Two tones so the 2pt
+    // line holds contrast on both menu-bar appearances: lighter on dark, deeper on light. Paired
+    // aesthetically with the "Sand" neutral (#D8C39B).
+    static let keepAwakeBarDark = NSColor(srgbRed: 0.51, green: 0.70, blue: 0.69, alpha: 1) // #82B3AF
+    static let keepAwakeBarLight = NSColor(srgbRed: 0.33, green: 0.50, blue: 0.49, alpha: 1) // #557F7C
+    static let keepAwakeBarThickness: CGFloat = 2
+    static func keepAwakeBarColor(for appearance: NSAppearance?) -> NSColor {
+        let dark = appearance?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return dark ? keepAwakeBarDark : keepAwakeBarLight
+    }
 }
 
 // Which system reader drives the animation speed. A single registry (key + menu title) so the
@@ -1180,6 +1197,53 @@ private final class LoadHistoryView: NSView {
     }
 }
 
+// Owns the `caffeinate` child process that keeps the Mac awake while "Keep Awake" is on. The key
+// design choice is separating *intent* from *running state*: `isEnabled` is the user's toggle, while
+// the process may be independently suspended by conditions (battery-low, serious thermal) and
+// respawned when they clear — without losing the user's intent. `applyConditions(suspend:)` is a
+// total function safe to call on every condition change and on toggle: it spawns iff the user wants
+// it AND no condition suspends it, otherwise it kills.
+//
+// `caffeinate -i -w <pid>`: `-i` prevents idle sleep only (the display may still sleep — intended for
+// keeping work running, not the screen on); `-w <pid>` binds the child to MLR's PID so the OS reaps
+// it automatically if MLR crashes or is force-quit, so there's never an orphaned sleep lock.
+@MainActor
+private final class SleepPreventer {
+    private static let caffeinatePath = "/usr/bin/caffeinate"
+    private var process: Process?
+    private(set) var isEnabled = false          // the user's toggle (intent)
+    var isRunning: Bool { process != nil }      // whether caffeinate is actually spawned right now
+
+    func setEnabled(_ on: Bool) { isEnabled = on }  // caller then drives applyConditions()
+
+    // Spawn iff the user wants it AND no condition suspends it; otherwise kill. Idempotent.
+    func applyConditions(suspend: Bool) {
+        if isEnabled && !suspend { spawn() } else { kill() }
+    }
+
+    private func spawn() {
+        guard process == nil else { return }
+        guard FileManager.default.isExecutableFile(atPath: Self.caffeinatePath) else {
+            fputs("SleepPreventer: \(Self.caffeinatePath) is not available; cannot prevent sleep.\n", stderr)
+            return
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: Self.caffeinatePath)
+        proc.arguments = ["-i", "-w", String(ProcessInfo.processInfo.processIdentifier)]
+        do {
+            try proc.run()
+            process = proc
+        } catch {
+            fputs("SleepPreventer: caffeinate spawn failed: \(error.localizedDescription)\n", stderr)
+        }
+    }
+
+    private func kill() {
+        process?.terminate()
+        process = nil
+    }
+}
+
 @MainActor
 private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct SpeedProfile {
@@ -1325,6 +1389,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var thermalStateObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
 
+    // Keep Awake. Memory-only intent (resets to off on launch — KeepingYouAwake behaves the same);
+    // the actual caffeinate process is suspended/respawned by conditionsDidChange().
+    private let sleepPreventer = SleepPreventer()
+    private var keepAwakeMenuItem: NSMenuItem!
+    // Updated by the IOKit power-source notification. Stays false on a desktop Mac (no battery), so
+    // battery is never a disengage trigger there.
+    private var batteryLow = false
+    private var batteryRunLoopSource: CFRunLoopSource?
+    // Sibling overlay layer on animationView.layer, on top of the frame contents. The keep-awake
+    // track line; hidden unless caffeinate is actually running. NEVER composited into renderedFrames.
+    private var keepAwakeBar: CALayer?
+
     init(config: Config) {
         self.config = config
         self.requestedOverlayText = config.overlayText
@@ -1434,6 +1510,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let layer = animationView.layer {
             layer.contentsGravity = .resizeAspect  // matches the former .scaleProportionallyUpOrDown
             layer.masksToBounds = true
+            installKeepAwakeBar(on: layer)
         }
         button.addSubview(animationView)
         self.animationView = animationView
@@ -1517,6 +1594,11 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(overlayMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
+        keepAwakeMenuItem = NSMenuItem(title: "Keep Awake", action: #selector(toggleKeepAwake), keyEquivalent: "")
+        keepAwakeMenuItem.target = self
+        infoMenu.addItem(keepAwakeMenuItem)
+
+        infoMenu.addItem(NSMenuItem.separator())
         let presetsHeaderItem = NSMenuItem(title: "Presets", action: nil, keyEquivalent: "")
         infoMenu.addItem(presetsHeaderItem)
 
@@ -1585,15 +1667,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reevaluateSpeedForCurrentConditions() }
+            MainActor.assumeIsolated { self?.conditionsDidChange() }
         }
         thermalStateObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reevaluateSpeedForCurrentConditions() }
+            MainActor.assumeIsolated { self?.conditionsDidChange() }
         }
+        startBatteryMonitoring()
 
         // Memory pressure is the third self-throttle input alongside low-power/thermal, but its
         // lifecycle differs: it is event-only (no synchronous getter), so we cache the level and
@@ -1657,6 +1740,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Dispatch source: cancel() (not removeObserver) — its own lifecycle.
         memoryPressureSource?.cancel()
         memoryPressureSource = nil
+
+        // `-w <pid>` already reaps caffeinate on a crash, but a clean exit should terminate it
+        // explicitly and tear down the power-source run-loop source. isEnabled is left intact; the
+        // process is what we kill (suspend: true forces the kill branch).
+        sleepPreventer.applyConditions(suspend: true)
+        if let source = batteryRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
+            batteryRunLoopSource = nil
+        }
     }
 
     @objc
@@ -2528,6 +2620,99 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshMenuMetrics()
     }
 
+    // Single entry point for the power / thermal / battery observers. Keeps the two concerns
+    // independent: the speed recompute keeps its auto-speed guard (it no-ops under
+    // --speed-multiplier or before the first sample), while sleep prevention must run
+    // unconditionally so it can still DISENGAGE in those cases — so it does NOT piggyback on the
+    // guarded recompute. Memory pressure is not a sleep trigger, so its dispatch source keeps
+    // calling reevaluateSpeedForCurrentConditions() directly.
+    private func conditionsDidChange() {
+        reevaluateSpeedForCurrentConditions()   // existing, guarded (auto-speed only)
+        updateSleepPrevention()                 // unguarded (always applies keep-awake conditions)
+    }
+
+    // Conditions under which we kill caffeinate even while the user's toggle is on. Deliberately
+    // minimal: battery critically low (unattended drain protection) and serious/critical thermal
+    // (fighting sleep while overheating makes it worse). NOT triggered by lid/display sleep (`-i`
+    // intentionally allows the display to sleep), memory pressure, or Low Power Mode — see
+    // docs/DESIGN-system.md §22.2 for the rationale.
+    private var shouldDisengageSleepPrevention: Bool {
+        if batteryLow { return true }
+        let t = ProcessInfo.processInfo.thermalState
+        return t == .serious || t == .critical
+    }
+
+    private func updateSleepPrevention() {
+        sleepPreventer.applyConditions(suspend: shouldDisengageSleepPrevention)
+        keepAwakeMenuItem?.state = sleepPreventer.isEnabled ? .on : .off
+        updateKeepAwakeBar()
+    }
+
+    @objc private func toggleKeepAwake() {
+        sleepPreventer.setEnabled(!sleepPreventer.isEnabled)
+        updateSleepPrevention()   // spawns now, or immediately suspends if a condition is already active
+    }
+
+    // IOKit Power Sources — event-driven, mirroring the power/thermal notification pattern. Fires on
+    // every power-source change (plug/unplug, % delta). A desktop Mac (no battery) skips setup
+    // entirely, so batteryLow stays false and is never a disengage trigger there.
+    private func startBatteryMonitoring() {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],
+              !list.isEmpty else { return }
+
+        let callback: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ctx in
+            guard let ctx else { return }
+            let app = Unmanaged<MenuBarLoadRunnerApp>.fromOpaque(ctx).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                app.batteryLow = MenuBarLoadRunnerApp.evaluateBatteryLow()
+                app.conditionsDidChange()
+            }
+        }
+        batteryRunLoopSource = IOPSNotificationCreateRunLoopSource(
+            callback, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
+        if let source = batteryRunLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
+        batteryLow = Self.evaluateBatteryLow()   // initial read — don't wait for the first notification
+    }
+
+    private static func evaluateBatteryLow() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],
+              let first = list.first,
+              let dict = IOPSGetPowerSourceDescription(blob, first as CFTypeRef)?
+                            .takeUnretainedValue() as? [String: Any] else { return false }
+        let capacity = (dict[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 100   // 0–100
+        let onBattery = (dict[kIOPSPowerSourceStateKey] as? String) == kIOPSBatteryPowerValue
+        return onBattery && capacity <= Tuning.batteryLowThreshold * 100
+    }
+
+    // Built once during animation-view setup. A sibling sublayer ON TOP of the frame-content layer,
+    // hidden by default. It NEVER touches the frame contents, so a toggle costs no re-rasterization.
+    private func installKeepAwakeBar(on host: CALayer) {
+        let bar = CALayer()
+        bar.isHidden = true
+        host.addSublayer(bar)
+        keepAwakeBar = bar
+    }
+
+    // Called on toggle, on suspend/resume via conditions, and whenever the item resizes
+    // (applySizing). Uses isRunning (not isEnabled), so the bar vanishes while a battery/thermal
+    // condition has caffeinate suspended and reappears when it resumes — it tracks the ACTUAL state.
+    private func updateKeepAwakeBar() {
+        guard let bar = keepAwakeBar, let host = animationView?.layer else { return }
+        bar.isHidden = !sleepPreventer.isRunning
+        guard !bar.isHidden else { return }
+        // No implicit position/size animation — the bar should snap, not slide, on resize.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let thickness = Tuning.keepAwakeBarThickness
+        bar.frame = CGRect(x: 0, y: 0, width: host.bounds.width, height: thickness)  // bottom edge
+        bar.backgroundColor = Tuning.keepAwakeBarColor(for: statusItem.button?.effectiveAppearance).cgColor
+        CATransaction.commit()
+    }
+
     // Pause the game loop while the status item is fully occluded, resume when it
     // becomes visible again. On resume startGameLoop() re-syncs timing, so the
     // animation picks up from the current frame rather than replaying skipped ones.
@@ -2745,6 +2930,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             animationView?.frame = button.bounds
         }
         updateRenderedFrames()
+        updateKeepAwakeBar()   // re-lay the overlay bar over the (possibly) resized item
     }
 
     // The GIF's width/height aspect (frames share one union bbox, so any frame represents the

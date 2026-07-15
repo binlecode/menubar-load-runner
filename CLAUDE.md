@@ -228,9 +228,12 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     directly (not a sleep trigger). Battery is an event-driven IOKit Power Sources run-loop source
     (`import IOKit.ps`), torn down in `applicationWillTerminate` alongside an explicit caffeinate kill.
     The indicator is a **sibling `CALayer`** (`keepAwakeBar`) on `animationView.layer` on TOP of the frame
-    contents — a Dusty-Teal bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize), keyed on
+    contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change), keyed on
     `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
-    every frame on toggle).
+    every frame on toggle). Its tint is user-selectable via the sibling **Keep Awake Color** submenu — a
+    radio group wired exactly like Load Source (`KeepAwakeColor` registry, `selectKeepAwakeColor`,
+    `refreshKeepAwakeColorSelectionState`) offering Dusty Teal (default) or Sand, each with a dark/light
+    tone chosen per menu-bar appearance. Menu-only (no CLI/env), session-lived like the toggle itself.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthInfo`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather

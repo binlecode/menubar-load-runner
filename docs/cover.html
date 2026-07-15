@@ -458,6 +458,7 @@
         <div class="fact"><h4>Vsync-aligned game loop</h4><p>A <b>CADisplayLink</b> advances frames against real elapsed time and the screen's refresh rate — smooth at any speed, and it pauses itself entirely when the item is occluded.</p></div>
         <div class="fact"><h4>Barely there</h4><p>Frames are swapped as a <b>layer's <span class="mono">CGImage</span> contents</b> — no per-frame redraw or layout — so a visible, animating icon costs about <b>~0.5% of one CPU core</b> in <b>~20&nbsp;MB</b>, and drops to <b>0% CPU when hidden</b>. It also caps its own speed under Low Power / thermal / memory pressure, so it never adds to the load it measures.</p></div>
         <div class="fact"><h4>Data-driven presets</h4><p>Keyword, menu title, and speed range all live in <b><span class="mono">presets.json</span></b> (width comes from the GIF's own aspect ratio). Add a preset by editing data — zero Swift changes.</p></div>
+        <div class="fact"><h4>Keeps the Mac awake, when you ask</h4><p>A <b><span class="mono">Keep Awake</span></b> menu toggle spawns <span class="mono">caffeinate -i -w &lt;pid&gt;</span> so long work doesn't die to an idle nap — no second utility needed. It's <b>PID-bound</b> (reaped if the app quits or crashes) and <b>auto-disengages</b> on critically low battery or serious thermal, then re-engages when clear. A thin <b>Dusty&nbsp;Teal</b> line under the icon shows while it's holding the machine awake.</p></div>
         <div class="fact"><h4>Checks for its own updates</h4><p>On launch it reads your checkout's origin release tags — <b>the only network call the app ever makes</b>. A newer tag shows an <span class="mono">Update available</span> menu item; applying it is a deliberate <b>two-click</b> action (<span class="mono">git pull --ff-only</span>), never automatic.</p></div>
         <div class="fact"><h4>One line in, one line out</h4><p>Install with a single <span class="mono">curl … | bash</span> — it clones, compiles, and symlinks onto your <span class="mono">PATH</span>; <span class="mono">uninstall.sh</span> reverses exactly what it created. <b>Open source (MIT)</b>, no signing or Homebrew.</p></div>
       </div>
@@ -468,7 +469,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.7.1</span>
+        <span class="badge">v1.8.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

@@ -25,6 +25,29 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-07-16
+
+Documentation and distribution-tooling release — no changes to the app binary or its public API.
+
+### Changed
+
+- **Installer hardening.** `install.sh` now runs its whole body from a `main()` invoked on the
+  last line, so a truncated `curl | bash` download can't execute a partial install. `uninstall.sh`
+  now defaults to *keeping* the install directory unless deletion is explicitly consented to
+  (`--yes`, or an interactive `y/N`); a non-interactive run without `--yes` no longer silently
+  `rm -rf`s it.
+- **Docs.** Added a factual "How it compares" feature matrix to the README (feature presence vs.
+  `menubar_runcat` / `zoomies` / `stats`; no performance claims). The deep source-anchored design
+  document and the competitor-analysis research doc were moved out of the public repo, and the
+  remaining public surfaces (README, RUNBOOK, `CLAUDE.md`) were made self-contained.
+
+### Fixed
+
+- **QA harness (§6).** The launcher/singleton check no longer reports a false failure under
+  `set -o pipefail`: the second launch's output is captured and matched without a pipe (avoiding
+  the launcher taking `SIGPIPE` when `grep` closes early), and it polls for the victim instance to
+  register instead of a fixed `sleep`. Harness-only — the singleton behavior was never broken.
+
 ## [1.10.0] - 2026-07-15
 
 ### Added

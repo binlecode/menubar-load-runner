@@ -1,12 +1,16 @@
-// Reader correctness check — mirrors the actual load-source readers in MenuBarLoadRunner.swift across
-// all five sources and asserts each value is in range and sane. Percentage readers (CPU counter-delta;
-// memory used-fraction; GPU utilization) are natural 0..1. Rate readers (network + disk throughput,
-// memory swap rate) are counter-deltas over real elapsed time, normalized by the btop-style adaptive
-// scaler seed (ceiling = max(rate*headroom, floor)). On a quiet machine NET/DISK/SWAP may read 0 B/s
-// and normalize to 0 — expected, not a failure. GPU/NET/DISK "unavailable" (nil) is also not a failure.
+// Reader correctness check — mirrors the actual load-source readers in MenuBarLoadRunner.swift and
+// asserts each value is in range and sane. Percentage readers (CPU counter-delta; memory used-fraction;
+// GPU utilization) are natural 0..1. Rate readers (network + disk throughput, memory swap rate, battery
+// discharge current) are magnitudes/counter-deltas normalized by the btop-style adaptive scaler seed
+// (ceiling = max(rate*headroom, floor)). On a quiet machine NET/DISK/SWAP may read 0 B/s and normalize
+// to 0 — expected, not a failure. GPU/NET/DISK/BATTERY "unavailable" (nil) is also not a failure.
+// The FAN reader is intentionally NOT mirrored here: it reads AppleSMC via a reverse-engineered
+// SMCKeyData struct whose Swift layout must match the C ABI byte-for-byte (a mis-sized port reads
+// garbage silently, not an error), so re-porting it in a throwaway probe would risk a misleading
+// verdict. Fan is covered by qa.sh §3 lifecycle (launch + availability fallback) and §7 manual.
 // Exits 0 if every in-range invariant holds, 1 otherwise.  Run:
 //   swiftc tests/readers.swift -o tmp/readers && ./tmp/readers
-import Darwin; import Foundation; import IOKit
+import Darwin; import Foundation; import IOKit; import IOKit.ps
 
 var ok = true
 func inv(_ label: String, _ pass: Bool) { if !pass { ok = false }; print("  \(pass ? "PASS" : "FAIL") [\(label)]") }
@@ -60,5 +64,19 @@ print(String(format: "COMPOSITE %.3f", comp)); inv("COMPOSITE in [0,1] & >= used
 if let g = gpu() { print(String(format: "GPU %.3f", g)); inv("GPU in [0,1]", g >= 0 && g <= 1) } else { print("GPU: unavailable (nil) — OK") }
 if let a = n0, let b = n1 { let r = Double(b >= a ? b - a : 0) / dt; let x = norm(r, 1 * 1_048_576.0); print(String(format: "NET %.0f B/s load=%.3f", r, x.load)); inv("NET load in [0,1] & ceil>=floor", x.load >= 0 && x.load <= 1 && x.ceil >= 1_048_576.0) } else { print("NET: unavailable — OK") }
 if let a = d0, let b = d1 { let r = Double(b >= a ? b - a : 0) / dt; let x = norm(r, 4 * 1_048_576.0); print(String(format: "DISK %.0f B/s load=%.3f", r, x.load)); inv("DISK load in [0,1] & ceil>=floor", x.load >= 0 && x.load <= 1 && x.ceil >= 4 * 1_048_576.0) } else { print("DISK: unavailable — OK") }
+
+// Battery: charge fraction (readout, 0..1) + discharge mA (drives via the scaler; 0 on AC). nil on desktop Macs.
+func battery() -> (charge: Double, mA: Double, onBattery: Bool)? {
+    guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(), let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any], let first = list.first,
+          let d = IOPSGetPowerSourceDescription(blob, first as CFTypeRef)?.takeUnretainedValue() as? [String: Any] else { return nil }
+    let cap = (d[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 0; let mx = (d[kIOPSMaxCapacityKey] as? NSNumber)?.doubleValue ?? 100
+    let ch = mx > 0 ? min(max(cap / mx, 0), 1) : 0; let onB = (d[kIOPSPowerSourceStateKey] as? String) == kIOPSBatteryPowerValue
+    let mA = (d[kIOPSCurrentKey] as? NSNumber)?.doubleValue ?? 0; return (ch, onB ? abs(mA) : 0, onB)
+}
+if let bt = battery() { let bx = norm(bt.mA, 500.0)   // Tuning.batteryFloorMilliamps = 500 mA
+    print(String(format: "BATTERY charge=%.3f onBattery=%@ discharge=%.0f mA load=%.3f", bt.charge, bt.onBattery ? "YES" : "NO", bt.mA, bx.load))
+    inv("BATTERY charge in [0,1]", bt.charge >= 0 && bt.charge <= 1)
+    inv("BATTERY load in [0,1] & ceil>=floor", bx.load >= 0 && bx.load <= 1 && bx.ceil >= 500.0)
+} else { print("BATTERY: unavailable (nil) — OK (desktop Mac)") }
 
 print("readers: \(ok ? "all invariants hold" : "FAILURES above")"); exit(ok ? 0 : 1)

@@ -57,13 +57,16 @@ pass=0; fail=0
 chk(){ [ "$2" = "$3" ] && { echo "  PASS [$1] rc=$3"; pass=$((pass+1)); } || { echo "  FAIL [$1] want $2 got $3"; fail=$((fail+1)); }; }
 $BIN --help >/dev/null 2>&1;                        chk "--help" 0 $?
 $BIN --width 2 >/dev/null 2>&1;                     chk "--width removed (rejected)" 1 $?
+$BIN --overlay-text X >/dev/null 2>&1;              chk "--overlay-text removed (rejected)" 1 $?
 $BIN --speed-multiplier 0 >/dev/null 2>&1;          chk "--speed-multiplier 0" 1 $?
 $BIN --speed-multiplier -2 >/dev/null 2>&1;         chk "--speed-multiplier neg" 1 $?
-$BIN --overlay-text "" >/dev/null 2>&1;             chk "--overlay-text empty" 1 $?
-$BIN --overlay-text THIRTEENCHARS >/dev/null 2>&1;  chk "--overlay-text >12" 1 $?
+$BIN --label >/dev/null 2>&1;                       chk "--label no value" 1 $?
 $BIN --load-source >/dev/null 2>&1;                 chk "--load-source no value" 1 $?
+$BIN --show-all-sources --help >/dev/null 2>&1;     chk "--show-all-sources accepted" 0 $?
 $BIN --no-update-check --help >/dev/null 2>&1;      chk "--no-update-check accepted" 0 $?
-$BIN --help 2>&1 | grep -q -- "--no-update-check" && { echo "  PASS --help lists --no-update-check"; pass=$((pass+1)); } || { echo "  FAIL --help missing --no-update-check"; fail=$((fail+1)); }
+for f in --speed-multiplier --label --load-source --show-all-sources --no-update-check; do
+  $BIN --help 2>&1 | grep -q -- "$f" && { echo "  PASS --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL --help missing $f"; fail=$((fail+1)); }
+done
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?
 VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner.swift | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')
 $BIN --help 2>&1 | grep -q "MenuBar Load Runner $VER" && { echo "  PASS --help shows $VER"; pass=$((pass+1)); } || { echo "  FAIL --help missing $VER"; fail=$((fail+1)); }
@@ -86,11 +89,20 @@ run "load-source memory"       "" $BIN --load-source memory
 run "load-source gpu"          "" $BIN --load-source gpu
 run "load-source network"      "" $BIN --load-source network
 run "load-source disk"         "" $BIN --load-source disk
+# fan/battery may be absent (fanless / AC-only / desktop); allow the fallback line so the run passes there.
+run "load-source fan"          "unavailable on this machine" $BIN --load-source fan
+run "load-source battery"      "unavailable on this machine" $BIN --load-source battery
 run "load-source bogus"        "Unknown --load-source" $BIN --load-source bogus
 run "force-unavail gpu->cpu"   "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu $BIN --load-source gpu
+run "force-unavail fan->cpu"   "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=fan $BIN --load-source fan
+run "force-unavail battery"    "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=battery $BIN --load-source battery
 run "fixed speed"              "" $BIN --speed-multiplier 1.5
-run "overlay + gpu"            "" $BIN --overlay-text GPU --load-source gpu
-run "wide preset + overlay"    "" $BIN totoro-group-white --overlay-text NET --load-source network
+run "label value + gpu"        "" $BIN --label value --load-source gpu
+run "label custom text"        "" $BIN --label BUILD
+run "show-all-sources (flag)"  "" $BIN --show-all-sources
+run "show-all-sources (env)"   "" env MENUBAR_LOAD_RUNNER_SHOW_ALL=1 $BIN --load-source memory
+run "no-update-check"          "" $BIN --no-update-check
+run "wide preset + label"      "" $BIN totoro-group-white --label NET --load-source network
 run "custom path + memory"     "" $BIN "$GIF" --load-source memory
 run "env LOAD_SOURCE"          "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $BIN
 run "env PATH=<gif>"           "" env MENUBAR_LOAD_RUNNER_PATH="$GIF" $BIN --load-source disk

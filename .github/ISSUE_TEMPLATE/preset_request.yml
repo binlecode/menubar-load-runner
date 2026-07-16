@@ -1,0 +1,28 @@
+name: Preset request
+description: Suggest a new animal/character animation for the menu bar.
+labels: [preset-request]
+body:
+  - type: input
+    id: idea
+    attributes:
+      label: What would you like to see running in your menu bar?
+      placeholder: e.g. a running fox, a rowing boat, a pixel-art cat
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference art (optional)
+      description: >
+        Link a GIF or image if you have one in mind. Simple side-profile
+        silhouettes with a transparent background work best at menu-bar size —
+        and please note the source so attribution/licensing can be checked.
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Preferred variant
+      options:
+        - White silhouette (for dark menu bars)
+        - Black silhouette (for light menu bars)
+        - Both
+        - Color art

@@ -11,6 +11,13 @@ Current version: **1.10.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
+## Feedback wanted
+
+This project grows by community feedback. Want a new preset, another load source, or
+different behavior? Say so in
+[Discussions](https://github.com/binlecode/menubar-load-runner/discussions) — a one-liner
+is enough. Found a bug? [Open an issue](https://github.com/binlecode/menubar-load-runner/issues/new/choose).
+
 ## Install
 
 macOS only. Requires the **Xcode Command Line Tools** (`git` + `swiftc`); the installer tells you

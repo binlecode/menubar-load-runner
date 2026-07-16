@@ -1,0 +1,39 @@
+name: Bug report
+description: Something broke — install failure, crash, wrong animation behavior, etc.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `menubar-load-runner dog-black --label value`
+        2. Open the menu
+        3. ...
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: e.g. macOS 15.5 (Sequoia)
+    validations:
+      required: true
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model / chip
+      placeholder: e.g. MacBook Air M2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: >
+        Detached runs log to `/tmp/menubar-load-runner.log`; or re-run with
+        `menubar-load-runner --foreground` and paste the terminal output.
+      render: text

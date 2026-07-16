@@ -26,6 +26,9 @@
     /* — keep-awake track-line tints (each its own fixed hue, never the system accent) — */
     --teal-bar:#82B3AF;       /* "Dusty Teal" on a dark menu bar (Tuning.keepAwakeBarTealDark) */
     --sand-bar:#D8C39B;       /* "Sand" on a dark menu bar (Tuning.keepAwakeBarSandDark) */
+    --graphite-bar:#A8AEB5;   /* "Graphite" on a dark menu bar (Tuning.keepAwakeBarGraphiteDark) */
+    --mauve-bar:#B3A6C4;      /* "Mauve" on a dark menu bar (Tuning.keepAwakeBarMauveDark) */
+    --sage-bar:#93B583;       /* "Sage" on a dark menu bar (Tuning.keepAwakeBarSageDark) */
     --teal:#3E7E7B;           /* keep-awake accent for in-page controls, on the light ground */
     --teal-glow:rgba(85,127,124,.42);
 
@@ -329,9 +332,9 @@
     background:var(--teal-bar); box-shadow:0 0 6px var(--teal-glow);
     opacity:0; transition:opacity .3s, background .25s, box-shadow .25s}
   .awake-line.on{opacity:1}
-  .awake-line.sand{background:var(--sand-bar); box-shadow:0 0 6px rgba(216,195,155,.55)}
+  /* the line's tint is set inline by JS from the selected swatch (5 colors) */
 
-  /* color picker (mirrors the "Keep Awake Color" submenu) */
+  /* color picker (mirrors the merged "Keep Awake" submenu radio group) */
   .awake-swatches{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px;
     font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
   .swatch{display:inline-flex; align-items:center; gap:7px; cursor:pointer; background:var(--surface);
@@ -619,9 +622,11 @@
             thermal — then <b>re-engages</b> the moment the condition clears.</li>
           <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
             instant a condition suspends it, even with the toggle still on.</li>
-          <li>A thin line rides the bottom edge of the icon — pick <b>Dusty&nbsp;Teal</b> (default) or
-            <b>Sand</b> from the <span class="mono">Keep&nbsp;Awake&nbsp;Color</span> submenu. Each is a
-            fixed hue (two tones, tuned per menu-bar appearance), never your system accent.</li>
+          <li>A thin line rides the bottom edge of the icon. The <span class="mono">Keep&nbsp;Awake</span>
+            submenu is one radio group — <b>Off</b> plus five track-line tints
+            (<b>Dusty&nbsp;Teal</b> default, <b>Sand</b>, <b>Graphite</b>, <b>Mauve</b>, <b>Sage</b>):
+            picking a color turns it on with that tint, <b>Off</b> turns it off. Each is a fixed hue
+            (two tones, tuned per menu-bar appearance), never your system accent.</li>
         </ul>
         <div class="awake-controls">
           <button class="switch" id="awakeToggle" role="switch" aria-checked="false" aria-label="Toggle Keep Awake">
@@ -629,13 +634,22 @@
           </button>
           <span class="awake-state" id="awakeState">off · caffeinate not running</span>
         </div>
-        <div class="awake-swatches" aria-label="Track-line color (Keep Awake Color submenu)">
+        <div class="awake-swatches" aria-label="Track-line color (Keep Awake submenu radio group)">
           <span>line color:</span>
           <button class="swatch" type="button" data-color="teal" aria-pressed="true">
             <span class="dot" style="background:var(--teal-bar)"></span> Dusty Teal
           </button>
           <button class="swatch" type="button" data-color="sand" aria-pressed="false">
             <span class="dot" style="background:var(--sand-bar)"></span> Sand
+          </button>
+          <button class="swatch" type="button" data-color="graphite" aria-pressed="false">
+            <span class="dot" style="background:var(--graphite-bar)"></span> Graphite
+          </button>
+          <button class="swatch" type="button" data-color="mauve" aria-pressed="false">
+            <span class="dot" style="background:var(--mauve-bar)"></span> Mauve
+          </button>
+          <button class="swatch" type="button" data-color="sage" aria-pressed="false">
+            <span class="dot" style="background:var(--sage-bar)"></span> Sage
           </button>
         </div>
         <div class="awake-conditions" aria-label="Simulate an auto-disengage condition">
@@ -756,6 +770,14 @@
   var swatches=document.querySelectorAll('.awake-swatches .swatch');
   var enabled=false;
   var color='teal';
+  // dark-menu-bar tone + glow per color — mirrors KeepAwakeColor / Tuning.keepAwakeBar*Dark
+  var BAR={
+    teal:{c:'#82B3AF',g:'rgba(130,179,175,.5)'},
+    sand:{c:'#D8C39B',g:'rgba(216,195,155,.55)'},
+    graphite:{c:'#A8AEB5',g:'rgba(168,174,181,.5)'},
+    mauve:{c:'#B3A6C4',g:'rgba(179,166,196,.5)'},
+    sage:{c:'#93B583',g:'rgba(147,181,131,.5)'}
+  };
   var active={battery:false,thermal:false};
   var reasons={battery:'battery ≤ 20%',thermal:'serious thermal'};
   function firstActive(){ if(active.battery)return 'battery';
@@ -764,7 +786,8 @@
     var cause=firstActive();
     var running=enabled && !cause;
     awToggle.setAttribute('aria-checked',enabled?'true':'false');
-    if(awLine){ awLine.classList.toggle('on',running); awLine.classList.toggle('sand',color==='sand'); }
+    if(awLine){ awLine.classList.toggle('on',running); var b=BAR[color]||BAR.teal;
+      awLine.style.background=b.c; awLine.style.boxShadow='0 0 6px '+b.g; }
     if(!enabled){
       awState.textContent='off · caffeinate not running';
       if(awCaption) awCaption.textContent='toggle it — the track line is the “ground it runs on”';

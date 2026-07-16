@@ -394,6 +394,39 @@ to conserve the free-tier Actions quota** (macOS runners bill at a 10× minute m
 manual-dispatch-only for now — run it on demand from the Actions tab, or re-enable auto-runs by
 uncommenting the trigger block in the workflow.
 
+## How it compares
+
+MenuBar Load Runner sits between two categories: animated load indicators (RunCat-style "the
+creature runs faster when the machine works harder") and menu-bar system monitors (numeric
+dashboards). It is the CLI-first, no-Xcode entry in the first category, with a lightweight slice of
+the second built into its dropdown. Feature presence at a glance versus the closest open-source
+neighbors — [menubar_runcat](https://github.com/Kyome22/menubar_runcat) (the open-source edition of
+RunCat, by its original developer), [zoomies](https://github.com/KartikLabhshetwar/zoomies) (SwiftUI
+pixel-pet indicator), and [stats](https://github.com/exelban/stats) (the full system-monitor
+dashboard):
+
+| | MenuBar Load Runner | menubar_runcat | zoomies | stats |
+| :--- | :--- | :--- | :--- | :--- |
+| **Category** | Animated load indicator | Animated load indicator | Animated load indicator | System monitor |
+| **Packaging** | Single Swift file + shell launcher (no Xcode project) | Xcode `.app` | Xcode `.app` | Xcode `.app` |
+| **Load sources** | CPU, memory+swap, GPU, network, disk, fan, battery | CPU | CPU, GPU, RAM | Full hardware suite |
+| **Unbounded rates (net/disk/swap) drive the animation** | Yes — adaptive auto-scaling | — | — | n/a (numeric display) |
+| **In-menu readout** | 60s sparkline, numerics, load averages | Minimal | Numeric dropdown | Full graphs, temps, per-process |
+| **Sensor temps / battery health / per-process** | No (out of scope by design) | No | No | Yes |
+| **Pauses when hidden; self-throttles under power/thermal pressure** | Yes | — | — | — |
+| **Built-in sleep inhibitor (Keep Awake)** | Yes (`caffeinate`, auto-disengage) | — | — | — |
+| **CLI flags / headless install / login automation** | Yes (launcher, LaunchAgent scripts) | GUI app | GUI app | GUI app |
+| **Settings window** | No (menu + CLI flags) | — | Yes (SwiftUI) | Yes |
+| **Updates** | In-app git tag check + one-click `git pull` | Manual rebuild (archived repo) | GitHub releases | Built-in updater |
+
+> Snapshot: July 2026, feature *presence* only — no performance comparisons are made or implied
+> (see the "Not benchmarked here" note in `docs/DESIGN-system.md` §21). Verify each project's
+> current state upstream.
+
+If you want temperatures, battery health, or per-process breakdowns, use **stats** — this app
+deliberately stays an unprivileged, aggregate-only indicator. If you want a graphical settings
+window over CLI flags, **zoomies** offers one.
+
 ## License
 
 Source code: [MIT](LICENSE.md) © 2026 Bin Le. The bundled preset GIFs in `gifs/` are **not** covered

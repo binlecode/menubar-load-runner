@@ -127,8 +127,6 @@ login (there is no `KeepAlive`). It shows up in **System Settings → General �
 the Background"** — not the top "Open at Login" list, which is only for `.app`-style login items.
 
 Uninstall is the exact inverse and leaves no residue (deregisters the agent, deletes the plist + log).
-The mechanics — `--no-detach` supervision, `RunAtLoad` timing, the `bootout` reload race, and the
-Background Task Management behavior — are documented in `docs/DESIGN-system.md` §19.
 
 ### Upgrading vs. reconfiguring the login item
 
@@ -280,9 +278,13 @@ menu into a compact multi-metric monitor; collapsing restores active-only sampli
 list already expanded via `--show-all-sources` (or `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`). The active source
 still drives the animation; the history sparkline still tracks the active source only.
 
-> How each source is measured and normalized — EMA smoothing, the memory + swap composite,
-> btop-style adaptive auto-scaling for the throughput (bytes/sec) sources, and self-throttling under
-> power/thermal/memory pressure — is documented in `docs/DESIGN-system.md` (§7, §12).
+> How each source is measured, in brief: the percentage-style sources (CPU, GPU, fan, battery) are
+> direct unprivileged reads (CPU smoothed by a short moving average); memory combines the used
+> fraction with live swap throughput; the byte-rate sources (network, disk, swap) are counter
+> deltas normalized against an adaptive ceiling that tracks your machine's recent peaks (the same
+> approach `btop` uses), so the animation stays meaningful whatever your hardware's actual maximum
+> throughput is. Under Low Power Mode, thermal, or memory pressure the app caps its own animation
+> speed at half the preset's range.
 
 ## Resource cost
 
@@ -307,8 +309,6 @@ PID=$(pgrep -f '/MenuBarLoadRunner( |$)')
 top -pid "$PID" -l 6 -s 1 -stats pid,command,cpu,mem     # CPU + memory
 footprint -p "$PID"                                      # phys_footprint (true memory)
 ```
-
-Full method, per-frame cost breakdown, and rationale: `docs/DESIGN-system.md` §21.
 
 ## Help
 
@@ -420,8 +420,8 @@ dashboard):
 | **Updates** | In-app git tag check + one-click `git pull` | Manual rebuild (archived repo) | GitHub releases | Built-in updater |
 
 > Snapshot: July 2026, feature *presence* only — no performance comparisons are made or implied
-> (see the "Not benchmarked here" note in `docs/DESIGN-system.md` §21). Verify each project's
-> current state upstream.
+> (no rigorous same-method measurements of other menu-bar apps exist; the only figures measured
+> here are this app's own, above). Verify each project's current state upstream.
 
 If you want temperatures, battery health, or per-process breakdowns, use **stats** — this app
 deliberately stays an unprivileged, aggregate-only indicator. If you want a graphical settings

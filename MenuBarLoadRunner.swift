@@ -3213,8 +3213,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // Conditions under which we kill caffeinate even while the user's toggle is on. Deliberately
     // minimal: battery critically low (unattended drain protection) and serious/critical thermal
     // (fighting sleep while overheating makes it worse). NOT triggered by lid/display sleep (`-i`
-    // intentionally allows the display to sleep), memory pressure, or Low Power Mode — see
-    // docs/DESIGN-system.md §22.2 for the rationale.
+    // intentionally allows the display to sleep), memory pressure (sleep costs negligible RAM),
+    // or Low Power Mode (a performance policy, not a sleep policy — battery-low already guards drain).
     private var shouldDisengageSleepPrevention: Bool {
         if batteryLow { return true }
         let t = ProcessInfo.processInfo.thermalState

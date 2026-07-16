@@ -22,8 +22,8 @@ repo root.
 TODO files are named `TODO-<YYYYMMDD-HHMM>-<slug>.md` (e.g.
 `docs/TODO-20260706-2010-swift-impl-review-findings.md`) — the timestamp is when the file was
 created, so filenames sort chronologically and make ordering/timing explicit without needing
-a separate changelog. Other `docs/` files (design specs, etc.) don't need the timestamp
-prefix, e.g. `docs/DESIGN-system.md`.
+a separate changelog. Other `docs/` files (runbooks, etc.) don't need the timestamp
+prefix, e.g. `docs/RUNBOOK-qa-release.md`.
 
 ## Commands
 
@@ -108,8 +108,9 @@ sequence, or `.app` bundle. Use the scripts:
   on the next agent start — restart with `launchctl kickstart -k "gui/$(id -u)/ai.bera.menubarloadrunner"`,
   no reinstall. Reinstall is **only** for changing baked args.
 - `RunAtLoad`, no `KeepAlive` (menu **Exit** quits until next login). Shows under System Settings →
-  Login Items → "Allow in the Background". Full mechanics (bootout reload race, etc.) in
-  `docs/DESIGN-system.md` §19.
+  Login Items → "Allow in the Background". One mechanic worth knowing: reinstall does
+  `bootout` + `bootstrap`, and `bootout` completes asynchronously — the install script polls for
+  deregistration before re-bootstrapping rather than sleeping a fixed interval.
 
 ## Architecture
 
@@ -227,8 +228,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     toggle) from *running state* (the process may be suspended/respawned by conditions without losing
     intent). `applyConditions(suspend:)` is the total function. Auto-disengage conditions
     (`shouldDisengageSleepPrevention`): battery ≤ `Tuning.batteryLowThreshold` on battery, or serious/
-    critical thermal — deliberately NOT lid/display sleep, memory pressure, or Low Power Mode (see
-    `docs/DESIGN-system.md` §22). The power/thermal/battery observers fan through
+    critical thermal — deliberately NOT lid/display sleep (`-i` intentionally lets the display
+    sleep), memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
+    not a sleep policy; the battery-low threshold already guards drain). The power/thermal/battery
+    observers fan through
     `conditionsDidChange()` (calls the guarded speed recompute AND the *unguarded* `updateSleepPrevention()`),
     so keep-awake still disengages under `--speed-multiplier`; memory pressure keeps calling the reevaluate
     directly (not a sleep trigger). Battery is an event-driven IOKit Power Sources run-loop source

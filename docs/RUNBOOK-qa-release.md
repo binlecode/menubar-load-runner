@@ -422,8 +422,9 @@ reader ranges + adaptive-scaler behavior) · §7 checklist ticked · `git diff` 
   runtime-fallback to the §7 checklist. Percentage sources assert the value in [0,1] directly; rate
   (counter-delta) sources copy the swap-rate/NET/DISK block in §5 as the template — difference a
   cumulative counter over `systemUptime`, normalize through the adaptive scaler seed
-  (`max(rate*headroom, floor)`), and assert `load ∈ [0,1]` and `ceiling ≥ floor`. See
-  `docs/DESIGN-system.md` §7.13 for the full checklist.
+  (`max(rate*headroom, floor)`), and assert `load ∈ [0,1]` and `ceiling ≥ floor`. App-side steps
+  (reader class + `isAvailable` probe, `LoadSource` case, the three speed-path helper branches,
+  menu row, README/help) are summarized in `CLAUDE.md`'s load-source section.
 - **New normalization / scaling logic** → add a behavior check like the §5 adaptive-scaler block:
   drive synthetic sequences through a faithful port and assert the distinctive properties (seeding,
   hysteresis, floor, range). Note the drift risk — keep the port in sync with the real type + `Tuning`.

@@ -239,10 +239,11 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     The indicator is a **sibling `CALayer`** (`keepAwakeBar`) on `animationView.layer` on TOP of the frame
     contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change), keyed on
     `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
-    every frame on toggle). Its tint is user-selectable via the sibling **Keep Awake Color** submenu — a
-    radio group wired like the preset/width selectors (`KeepAwakeColor` registry, `selectKeepAwakeColor`,
-    `refreshKeepAwakeColorSelectionState`) offering Dusty Teal (default) or Sand, each with a dark/light
-    tone chosen per menu-bar appearance. Menu-only (no CLI/env), session-lived like the toggle itself.
+    every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
+    submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
+    `KeepAwakeColor` (Dusty Teal (default) / Sand, each a dark/light tone chosen per menu-bar appearance).
+    Off disengages caffeinate; a color row engages it *and* sets that tint (`selectKeepAwakeOption`,
+    `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). Menu-only (no CLI/env), session-lived.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshShowAllSourcesState`) rather

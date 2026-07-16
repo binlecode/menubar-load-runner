@@ -374,18 +374,22 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
       ./menubar-load-runner --foreground` — those sources are absent from the **Other Sources** list, and
       requesting one at launch logs a fallback-to-cpu line (also covered automatically in §3).
 
-**Keep Awake** (v1.8.0/v1.9.0):
+**Keep Awake** (v1.8.0/v1.9.0; menu merged + palette expanded in v1.11.0):
 
-- [ ] **Keep Awake** checkbox toggles on: a thin tinted track line appears along the icon's bottom edge
-      while it's actively holding the Mac awake; `pgrep caffeinate` shows a `caffeinate -i -w <pid>`
-      bound to the app's PID. Toggling off removes both. Idle-sleep only — the display may still sleep.
-- [ ] **Keep Awake Color** submenu: **Dusty Teal** (default) / **Sand** — switching recolors the track
-      line live; the radio selection mark moves. (Menu-only; resets each launch.)
+- [ ] **Keep Awake ▸** is a single submenu holding one radio group: **Off** plus five colors
+      (**Dusty Teal** (default) / **Sand** / **Graphite** / **Mauve** / **Sage**). There is no separate
+      on/off checkbox or Keep Awake Color submenu anymore.
+- [ ] Picking a color engages Keep Awake with that tint: a thin tinted track line appears along the
+      icon's bottom edge and `pgrep caffeinate` shows a `caffeinate -i -w <pid>` bound to the app's PID.
+      Idle-sleep only — the display may still sleep. Picking **Off** removes both. The radio dot follows
+      the selection (Off when disengaged, else the active color).
+- [ ] Switching between colors while engaged recolors the track line live. **Sage** should read clearly
+      green, distinct from **Dusty Teal**'s cyan lean. (Menu-only; resets to Off + Dusty Teal each launch.)
 - [ ] Auto-disengage: on battery below ~20% (or serious/critical thermal) the line hides and caffeinate
-      is suspended while the toggle stays checked (intent preserved); it re-engages when the condition
-      clears. Hard to force by hand — spot-check the toggle/color/track behavior and trust §-code path.
-- [ ] Selection marks (Presets, Keep Awake, Keep Awake Color) render as a small solid **dot**, not the
-      native checkmark (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.
+      is suspended while the chosen color stays marked (intent preserved); it re-engages when the
+      condition clears. Hard to force by hand — spot-check the color/track behavior and trust the code path.
+- [ ] Selection marks (Presets, Keep Awake) render as a small solid **dot**, not the native checkmark
+      (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.
 
 **Updates, label, width, misc:**
 

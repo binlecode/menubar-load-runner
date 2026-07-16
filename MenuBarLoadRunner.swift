@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.10.1"
+    static let version = "1.11.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -232,12 +232,20 @@ private enum Tuning {
     // so the 2pt line holds contrast on both menu-bar appearances: lighter on a dark bar, deeper on a
     // light one (the bestMatch lives in KeepAwakeColor.color(for:)). "Dusty Teal" is the default —
     // being chromatic it reads on grayscale preset art by hue rather than lightness, so it stays
-    // legible even on full-height art where the near-neutral "Sand" companion can fade. The two are
-    // user-selectable via the Keep Awake Color submenu.
+    // legible even on full-height art where the near-neutral companions can fade. The set is
+    // user-selectable via the Keep Awake submenu. Beyond Teal/Sand, three "post-AI minimal" tints:
+    // Graphite (near-neutral cool gray), Mauve (desaturated lavender), Sage (grey-green with an olive
+    // lean) — all heavily desaturated, same two-tone (lighter on dark bar, deeper on light) formula.
     static let keepAwakeBarTealDark = NSColor(srgbRed: 0.51, green: 0.70, blue: 0.69, alpha: 1)  // #82B3AF
     static let keepAwakeBarTealLight = NSColor(srgbRed: 0.33, green: 0.50, blue: 0.49, alpha: 1) // #557F7C
     static let keepAwakeBarSandDark = NSColor(srgbRed: 0.847, green: 0.765, blue: 0.608, alpha: 1) // #D8C39B
     static let keepAwakeBarSandLight = NSColor(srgbRed: 0.698, green: 0.604, blue: 0.431, alpha: 1) // #B29A6E
+    static let keepAwakeBarGraphiteDark = NSColor(srgbRed: 0.659, green: 0.682, blue: 0.710, alpha: 1) // #A8AEB5
+    static let keepAwakeBarGraphiteLight = NSColor(srgbRed: 0.420, green: 0.443, blue: 0.478, alpha: 1) // #6B717A
+    static let keepAwakeBarMauveDark = NSColor(srgbRed: 0.702, green: 0.651, blue: 0.769, alpha: 1) // #B3A6C4
+    static let keepAwakeBarMauveLight = NSColor(srgbRed: 0.494, green: 0.443, blue: 0.569, alpha: 1) // #7E7191
+    static let keepAwakeBarSageDark = NSColor(srgbRed: 0.576, green: 0.710, blue: 0.514, alpha: 1) // #93B583
+    static let keepAwakeBarSageLight = NSColor(srgbRed: 0.392, green: 0.522, blue: 0.353, alpha: 1) // #64855A
     static let keepAwakeBarThickness: CGFloat = 2
 
     // Selection-mark dot size, as a fraction of the menu font's cap height (the same font the
@@ -262,7 +270,7 @@ private enum MenuTitle {
     // Group 1 — static, single-site labels (moved for inventory completeness).
     static let loadHistory = "Load History"
     static let keepAwake = "Keep Awake"
-    static let keepAwakeColor = "Keep Awake Color"
+    static let keepAwakeOff = "Off"
     // The disclosure header row uses a view (DisclosureMenuItemView) that draws its own ▸/▾ glyph, so
     // only the bare label lives here.
     static let otherSources = "Other Sources"
@@ -388,11 +396,17 @@ private enum MenuBarLabel: Equatable {
 private enum KeepAwakeColor: Int, CaseIterable {
     case teal = 0
     case sand = 1
+    case graphite = 2
+    case mauve = 3
+    case sage = 4
 
     var menuTitle: String {
         switch self {
         case .teal: return "Dusty Teal"
         case .sand: return "Sand"
+        case .graphite: return "Graphite"
+        case .mauve: return "Mauve"
+        case .sage: return "Sage"
         }
     }
 
@@ -403,6 +417,9 @@ private enum KeepAwakeColor: Int, CaseIterable {
         switch self {
         case .teal: return dark ? Tuning.keepAwakeBarTealDark : Tuning.keepAwakeBarTealLight
         case .sand: return dark ? Tuning.keepAwakeBarSandDark : Tuning.keepAwakeBarSandLight
+        case .graphite: return dark ? Tuning.keepAwakeBarGraphiteDark : Tuning.keepAwakeBarGraphiteLight
+        case .mauve: return dark ? Tuning.keepAwakeBarMauveDark : Tuning.keepAwakeBarMauveLight
+        case .sage: return dark ? Tuning.keepAwakeBarSageDark : Tuning.keepAwakeBarSageLight
         }
     }
 }
@@ -1726,12 +1743,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // Keep Awake. Memory-only intent (resets to off on launch — KeepingYouAwake behaves the same);
     // the actual caffeinate process is suspended/respawned by conditionsDidChange().
     private let sleepPreventer = SleepPreventer()
+    // Parent of the "Keep Awake ▸" submenu, whose rows are one merged radio group: Off + one row per
+    // KeepAwakeColor. Picking a color turns keep-awake on with that tint; picking Off turns it off — so
+    // enabled-state and tint are a single choice (no separate toggle / color submenu).
     private var keepAwakeMenuItem: NSMenuItem!
-    // Keep-awake bar tint, user-selectable via the Keep Awake Color submenu. Menu-only (no CLI/env),
+    private var keepAwakeOptionItems: [NSMenuItem] = []
+    // Sentinel tag for the submenu's "Off" row — distinct from every KeepAwakeColor.rawValue (0, 1, …).
+    private static let keepAwakeOffTag = -1
+    // Keep-awake bar tint, user-selectable via the Keep Awake submenu. Menu-only (no CLI/env),
     // so it starts at the default and lives only for the session, like the Keep Awake toggle itself.
     private var activeKeepAwakeColor: KeepAwakeColor = .teal
-    private var keepAwakeColorMenuItem: NSMenuItem!
-    private var keepAwakeColorMenuItems: [NSMenuItem] = []
     // Updated by the IOKit power-source notification. Stays false on a desktop Mac (no battery), so
     // battery is never a disengage trigger there.
     private var batteryLow = false
@@ -1956,25 +1977,26 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(labelMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: #selector(toggleKeepAwake), keyEquivalent: "")
-        keepAwakeMenuItem.target = self
-        useSelectionMark(keepAwakeMenuItem)
-        infoMenu.addItem(keepAwakeMenuItem)
-
-        // Sibling submenu (a radio group) for the track-line tint — the Keep Awake item stays a
-        // one-click toggle, so the color choice lives alongside it like Load Source does, not nested.
-        keepAwakeColorMenuItem = NSMenuItem(title: MenuTitle.keepAwakeColor, action: nil, keyEquivalent: "")
-        let keepAwakeColorSubmenu = NSMenu(title: MenuTitle.keepAwakeColor)
+        // "Keep Awake ▸" submenu: one radio group merging the on/off state and the track-line tint.
+        // Off disengages caffeinate; each color row engages it with that tint (selectKeepAwakeOption).
+        keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: nil, keyEquivalent: "")
+        let keepAwakeSubmenu = NSMenu(title: MenuTitle.keepAwake)
+        let offItem = NSMenuItem(title: MenuTitle.keepAwakeOff, action: #selector(selectKeepAwakeOption(_:)), keyEquivalent: "")
+        offItem.target = self
+        offItem.tag = Self.keepAwakeOffTag
+        useSelectionMark(offItem)
+        keepAwakeSubmenu.addItem(offItem)
+        keepAwakeOptionItems.append(offItem)
         for choice in KeepAwakeColor.allCases {
-            let item = NSMenuItem(title: choice.menuTitle, action: #selector(selectKeepAwakeColor(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: choice.menuTitle, action: #selector(selectKeepAwakeOption(_:)), keyEquivalent: "")
             item.target = self
             item.tag = choice.rawValue
             useSelectionMark(item)
-            keepAwakeColorSubmenu.addItem(item)
-            keepAwakeColorMenuItems.append(item)
+            keepAwakeSubmenu.addItem(item)
+            keepAwakeOptionItems.append(item)
         }
-        keepAwakeColorMenuItem.submenu = keepAwakeColorSubmenu
-        infoMenu.addItem(keepAwakeColorMenuItem)
+        keepAwakeMenuItem.submenu = keepAwakeSubmenu
+        infoMenu.addItem(keepAwakeMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
         let presetsHeaderItem = NSMenuItem(title: MenuTitle.presets, action: nil, keyEquivalent: "")
@@ -2011,7 +2033,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshLabelSelectionState()
         applyLabelMode()   // create the value slot now if launched with --label value / custom text
         refreshShowAllSourcesState()
-        refreshKeepAwakeColorSelectionState()
+        refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
 
         if !loadFrames(from: activeGifPath) {
@@ -2524,7 +2546,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshWidthInfo()
         refreshLabelSelectionState()
         refreshShowAllSourcesState()
-        refreshKeepAwakeColorSelectionState()
+        refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
     }
 
@@ -2765,11 +2787,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
     }
 
-    // Radio group for the keep-awake track-line tint — same shape as the load-source/preset checks.
-    // Both options are always available (they're pure colors), so no isEnabled dance is needed.
-    private func refreshKeepAwakeColorSelectionState() {
-        for item in keepAwakeColorMenuItems {
-            item.state = (item.tag == activeKeepAwakeColor.rawValue) ? .on : .off
+    // Merged Keep Awake radio group (Off + one row per tint). Off is marked when caffeinate is disabled;
+    // otherwise the active color's row is marked. All rows are always available (pure colors / off), so
+    // no isEnabled dance is needed. Keyed on the toggle intent (isEnabled), not the transient running
+    // state, so a condition-suspended caffeinate still shows its color as the chosen option.
+    private func refreshKeepAwakeSelectionState() {
+        let enabled = sleepPreventer.isEnabled
+        for item in keepAwakeOptionItems {
+            let selected = item.tag == Self.keepAwakeOffTag ? !enabled : (enabled && item.tag == activeKeepAwakeColor.rawValue)
+            item.state = selected ? .on : .off
         }
     }
 
@@ -3000,12 +3026,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
     }
 
+    // One handler for the merged Keep Awake radio group. Off disengages caffeinate; a color row engages
+    // it (if not already) and sets that tint. Enabled-state and tint are a single choice here.
     @objc
-    private func selectKeepAwakeColor(_ sender: NSMenuItem) {
-        guard let choice = KeepAwakeColor(rawValue: sender.tag), choice != activeKeepAwakeColor else { return }
-        activeKeepAwakeColor = choice
-        updateKeepAwakeBar()   // re-tint immediately; a no-op paint if the bar is currently hidden
-        refreshKeepAwakeColorSelectionState()
+    private func selectKeepAwakeOption(_ sender: NSMenuItem) {
+        if sender.tag == Self.keepAwakeOffTag {
+            if sleepPreventer.isEnabled { sleepPreventer.setEnabled(false) }
+        } else if let choice = KeepAwakeColor(rawValue: sender.tag) {
+            activeKeepAwakeColor = choice
+            if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
+        }
+        updateSleepPrevention()   // spawns/suspends caffeinate, re-tints the bar, refreshes the group
     }
 
     @objc
@@ -3223,13 +3254,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private func updateSleepPrevention() {
         sleepPreventer.applyConditions(suspend: shouldDisengageSleepPrevention)
-        keepAwakeMenuItem?.state = sleepPreventer.isEnabled ? .on : .off
+        refreshKeepAwakeSelectionState()   // move the Off/color mark to match the new intent
         updateKeepAwakeBar()
-    }
-
-    @objc private func toggleKeepAwake() {
-        sleepPreventer.setEnabled(!sleepPreventer.isEnabled)
-        updateSleepPrevention()   // spawns now, or immediately suspends if a condition is already active
     }
 
     // IOKit Power Sources — event-driven, mirroring the power/thermal notification pattern. Fires on

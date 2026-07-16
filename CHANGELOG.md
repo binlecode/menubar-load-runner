@@ -25,6 +25,27 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-16
+
+Keep Awake menu is now a single control with an expanded, restraint-first color palette.
+
+### Added
+
+- **Three new Keep Awake track-line tints**, alongside the existing Dusty Teal and Sand:
+  **Graphite** (near-neutral cool gray), **Mauve** (desaturated lavender), and **Sage** (a muted
+  green, pitched distinctly greener than Dusty Teal's cyan lean so the two read apart). All follow
+  the same heavily desaturated, two-tone formula — a lighter shade on a dark menu bar, a deeper one
+  on a light bar — so each holds its identity across appearance.
+
+### Changed
+
+- **Keep Awake and Keep Awake Color merged into one `Keep Awake` submenu.** Where there were two
+  top-level items (an on/off checkbox plus a separate color submenu), there is now a single
+  **Keep Awake ▸** submenu holding one radio group: **Off** plus a row per color. Picking a color
+  turns keep-awake on with that tint; **Off** turns it off — so the enabled state and the tint are a
+  single choice. This is an observable menu-structure change; the behavior (idle-sleep inhibition via
+  `caffeinate`, auto-disengage, session-only intent) is unchanged. Menu-only, as before — no CLI/env.
+
 ## [1.10.1] - 2026-07-16
 
 Documentation and distribution-tooling release — no changes to the app binary or its public API.

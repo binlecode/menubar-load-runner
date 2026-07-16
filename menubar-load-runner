@@ -28,8 +28,8 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--no-update-check] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan>] [--overlay-text <text:1..12 chars>] [--no-update-check] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--no-update-check] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--no-update-check] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -47,9 +47,14 @@ Presets:
 
 Options:
   --speed-multiplier <x>     Fixed speed (e.g. 0.5, 1.0, 1.5, 2.0)
-  --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk, fan
+  --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk, fan, battery
                              (also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown/unavailable -> cpu)
-  --overlay-text <text>      Overlay text (up to 12 chars; interactive limit adapts to width), drawn at runtime
+  --show-all-sources         Start with the menu's "Other Sources" list expanded, sampling every available
+                             reader and showing each as a live row (also via MENUBAR_LOAD_RUNNER_SHOW_ALL=1;
+                             click a row to switch source; the active source still drives the animation)
+  --label <off|value|text>   Optional second menu-bar slot: 'value' shows the active source's live reading,
+                             any other text is a fixed label (up to 24 chars), 'off' (default) shows nothing
+                             (also via MENUBAR_LOAD_RUNNER_LABEL; switchable from the menu)
   --no-update-check          Skip the launch check for a newer release (also via MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0)
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)
@@ -71,7 +76,10 @@ Examples:
   $APP_CMD_NAME totoro-white
   $APP_CMD_NAME totoro-black
   $APP_CMD_NAME --load-source gpu
-  $APP_CMD_NAME dog-black --overlay-text CPU
+  $APP_CMD_NAME --load-source battery
+  $APP_CMD_NAME --show-all-sources
+  $APP_CMD_NAME --label value
+  $APP_CMD_NAME dog-black --label BUILD
   $APP_CMD_NAME horse-black --speed-multiplier 1.2
   $APP_CMD_NAME --foreground horse-black
   MENUBAR_LOAD_RUNNER_PATH=/tmp/cat.gif $APP_CMD_NAME

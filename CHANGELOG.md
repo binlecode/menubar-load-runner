@@ -10,11 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATCH bumps apply to is:
 
 - **Launcher CLI** — the positional preset keyword or GIF path, and the flags
-  `--speed-multiplier`, `--overlay-text`, `--load-source`, `--no-update-check`,
+  `--speed-multiplier`, `--label`, `--load-source`, `--no-update-check`,
   `--foreground` / `--no-detach`, `--detach`, `--extra`, `-h` / `--help`.
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
-  `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`, `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`,
-  and the debug/QA hooks `MENUBAR_LOAD_RUNNER_EXIT_AFTER` and `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`.
+  `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`, `MENUBAR_LOAD_RUNNER_LOG_FILE`,
+  `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks `MENUBAR_LOAD_RUNNER_EXIT_AFTER` and
+  `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -23,6 +24,43 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+## [1.10.0] - 2026-07-15
+
+### Added
+
+- **Battery load source.** A seventh reader — `--load-source battery` (or
+  `MENUBAR_LOAD_RUNNER_LOAD_SOURCE=battery`) — drives the animation from the battery's discharge
+  current (a fast drain animates faster; on AC power the draw is zero, so it idles), and the menu
+  shows the live charge level. Reads unprivileged IOKit Power Sources; unavailable on desktop Macs
+  with no battery, which fall back to `cpu`. The trace chart plots charge as an inverted fuel gauge
+  (low reads red).
+- **"Other Sources" multi-source dashboard.** A collapsible section in the status menu lists every
+  *other* available reader (CPU / Memory / GPU / Network / Disk / Fan / Battery, minus the active
+  one) with its live readout; click a row to switch the driving source. Expanding samples every
+  reader each tick; collapsed (the default) keeps the existing active-only sampling. Launch expanded
+  with the new `--show-all-sources` flag or `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`.
+- **Adjacent live-value label (`--label`).** An optional second menu-bar slot beside the animation,
+  switchable at runtime (Off / Live Value / Custom Text). `--label value` shows the active source's
+  compact reading (`CPU 15%`, `MEM 63%`, `BAT 88%`, …) refreshed on the 2s tick; `--label <text>`
+  shows a fixed label (up to 24 chars, handy for disambiguating multiple instances); `--label off`
+  (default) claims no space. Also via `MENUBAR_LOAD_RUNNER_LABEL`. Rendered as a separate
+  `NSStatusItem` in the native menu-bar font, so it never touches the animation's frame pipeline.
+
+### Changed
+
+- **Selection marks in the menu** (Presets, Keep Awake, Keep Awake Color) now render as a small
+  solid dot instead of the native checkmark — sized to the menu font so it matches the disclosure
+  glyph. Presentational only.
+- The former `Load Source` submenu is superseded by the inline "Other Sources" section above; the
+  active source stays on top with the sparkline.
+
+### Removed
+
+- **`--overlay-text`** (and its baked-on-the-GIF text overlay) is replaced by the adjacent
+  `--label` slot above. Baking live text onto the ~22 pt animated icon was barely legible and
+  re-rasterized every frame on each update; the separate label slot stays crisp and is free to
+  update.
 
 ## [1.9.1] - 2026-07-15
 

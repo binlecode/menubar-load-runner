@@ -2,9 +2,11 @@
 
 How to validate `MenuBarLoadRunner.swift` before shipping. There is no automated test suite, so
 this is the manual gate. It exercises the whole lifecycle (launch → run → clean exit), every CLI /
-env surface, all five load-source readers, the error paths (bad GIF *and* bad preset manifest), the
-version surface, and the launcher wrapper. Copy-paste the blocks in order; each is self-scoring
-(PASS/FAIL) or prints a value to eyeball.
+env surface, all **seven** load-source readers (CPU, Memory, GPU, Network, Disk, Fan, Battery), the
+error paths (bad GIF *and* bad preset manifest), the version surface, and the launcher wrapper. The
+menu-only features (Keep Awake + its color, the "Other Sources" dashboard, the update check, the
+adjacent label) can't be clicked from a shell, so they live in the §7 interactive spot-check.
+Copy-paste the blocks in order; each is self-scoring (PASS/FAIL) or prints a value to eyeball.
 
 Run everything from the repo root.
 
@@ -36,10 +38,12 @@ These make a *blocking GUI menu-bar app* testable from a shell:
 - **Raw binary vs launcher** — `tmp/mblr-check` (raw `swiftc` output) has **no singleton guard**;
   the guard lives in the `menubar-load-runner` launcher script. Prefer `EXIT_AFTER` so instances
   can't pile up; if you background raw instances, clean up with `pkill -f 'mblr-check'`.
-- **`MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk`** — marks the listed load sources
-  unavailable regardless of hardware, so the availability-disable + launch-fallback-to-cpu path (§3)
-  is testable on a machine where every reader actually works. Comma-separated source keys; unset = no
-  override.
+- **`MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk,fan,battery`** — marks the listed load
+  sources unavailable regardless of hardware, so the availability-disable + launch-fallback-to-cpu
+  path (§3) is testable on a machine where every reader actually works. Any comma-separated subset of
+  the availability-gated keys (`gpu`, `network`, `disk`, `fan`, `battery` — `cpu`/`memory` are always
+  available); unset = no override. Useful on a fanless/AC-only Mac to force the *reverse* too — you
+  can't fake a fan spinning up, but you can prove the disabled state and the launch fallback.
 
 ### Gotchas that have bitten us
 
@@ -72,10 +76,15 @@ BIN=./tmp/mblr-check; pass=0; fail=0
 chk(){ [ "$2" = "$3" ] && { echo "  PASS [$1] rc=$3"; pass=$((pass+1)); } || { echo "  FAIL [$1] want $2 got $3"; fail=$((fail+1)); }; }
 $BIN --help >/dev/null 2>&1;                    chk "--help" 0 $?
 $BIN --width 2 >/dev/null 2>&1;                 chk "--width removed (rejected)" 1 $?
+$BIN --overlay-text X >/dev/null 2>&1;          chk "--overlay-text removed (rejected)" 1 $?
 $BIN --speed-multiplier 0 >/dev/null 2>&1;      chk "--speed-multiplier 0" 1 $?
 $BIN --speed-multiplier -2 >/dev/null 2>&1;     chk "--speed-multiplier neg" 1 $?
 $BIN --label >/dev/null 2>&1;                   chk "--label no value" 1 $?
 $BIN --load-source >/dev/null 2>&1;             chk "--load-source no value" 1 $?
+# --show-all-sources / --no-update-check are valueless flags: they don't launch the GUI when paired
+# with --help, and must be accepted (rc=0), not rejected.
+$BIN --show-all-sources --help >/dev/null 2>&1; chk "--show-all-sources accepted" 0 $?
+$BIN --no-update-check --help >/dev/null 2>&1;  chk "--no-update-check accepted" 0 $?
 $BIN foo bar >/dev/null 2>&1;                   chk "extra positional" 1 $?
 echo "parse: passes=$pass fails=$fail"
 ```
@@ -88,12 +97,20 @@ VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner
 ./tmp/mblr-check --help 2>&1 | grep -q "MenuBar Load Runner $VER" \
   && echo "  PASS --help shows version $VER" || echo "  FAIL --help missing version $VER"
 grep -q "## \[$VER\]" CHANGELOG.md && echo "  PASS CHANGELOG has [$VER] section" || echo "  FAIL CHANGELOG missing [$VER]"
+# --help must document every current flag (so removed flags don't linger, new ones aren't hidden):
+for f in --speed-multiplier --label --load-source --show-all-sources --no-update-check; do
+  ./tmp/mblr-check --help 2>&1 | grep -q -- "$f" && echo "  PASS --help lists $f" || echo "  FAIL --help missing $f"
+done
 ```
 
 ## 3. Full launch lifecycle (EXIT_AFTER → clean exit 0, no unexpected stderr)
 
-Covers both load sources, auto & fixed speed, the label slot, a wide (high-aspect) preset, a custom path,
-and both env vars. Each run must exit 0 with stderr containing only the expected lines.
+Covers all seven load sources, auto & fixed speed, the adjacent label slot, the "Other Sources"
+expanded launch, the update-check opt-out, a wide (high-aspect) preset, a custom path, and the env
+vars. Each run must exit 0 with stderr containing only the expected lines. Note fan/battery are
+availability-gated — on a fanless or AC-only/desktop Mac the reader is absent and the app logs a
+`unavailable on this machine … falling back to cpu` line at launch (allowed via the `allow` arg),
+which is itself the correct behavior. The forced-unavailable runs prove that path on any hardware.
 
 ```bash
 BIN=./tmp/mblr-check; GIF="$PWD/gifs/totoro.gif"; pass=0; fail=0
@@ -107,13 +124,23 @@ run "load-source cpu"         "" $BIN --load-source cpu
 run "load-source gpu"         "" $BIN --load-source gpu
 run "load-source network"     "" $BIN --load-source network
 run "load-source disk"        "" $BIN --load-source disk
+# fan/battery may be absent (fanless / AC-only / desktop); allow the fallback line so the run still
+# passes on that hardware. On a laptop with both, no fallback line is printed and it still passes.
+run "load-source fan"         "unavailable on this machine" $BIN --load-source fan
+run "load-source battery"     "unavailable on this machine" $BIN --load-source battery
 run "load-source bogus"       "Unknown --load-source" $BIN --load-source bogus
 run "force-unavail gpu->cpu"  "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu $BIN --load-source gpu
 run "force-unavail net(env)"  "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=network,disk MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $BIN
+run "force-unavail fan->cpu"  "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=fan $BIN --load-source fan
+run "force-unavail battery"   "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=battery $BIN --load-source battery
 run "force-unavail, other src" "" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu $BIN --load-source disk
 run "fixed speed"             "" $BIN --speed-multiplier 1.5
 run "fixed + memory"          "" $BIN --speed-multiplier 1.5 --load-source memory
 run "label value + gpu"       "" $BIN --label value --load-source gpu
+run "label custom text"       "" $BIN --label BUILD
+run "show-all-sources (flag)" "" $BIN --show-all-sources
+run "show-all-sources (env)"  "" env MENUBAR_LOAD_RUNNER_SHOW_ALL=1 $BIN --load-source memory
+run "no-update-check"         "" $BIN --no-update-check
 run "wide preset + label"     "" $BIN totoro-group-white --label NET --load-source network
 run "totoro-group + disk"     "" $BIN totoro-group-white --load-source disk
 run "custom path + memory"    "" $BIN "$GIF" --load-source memory
@@ -154,20 +181,31 @@ echo "$err" | grep -q "Could not load preset manifest" && echo "  PASS manifest 
 
 ## 5. Reader correctness (values in range, and sane)
 
-Mirrors the actual readers across all five sources. **Percentage readers** (CPU counter-delta; memory
-used-fraction instantaneous; GPU `Device Utilization %` instantaneous) are natural 0..1 and asserted in
-range directly. **Rate readers** (network + disk throughput, and the memory **swap rate**) are
-counter-deltas divided by real elapsed `systemUptime`, then normalized by the **btop-style adaptive
-scaler** (ceiling = `max(avg(recent) × headroom, floor)`; for a single two-sample check the ceiling
-seeds to `max(rate × 1.3, floor)`, so a non-zero rate normalizes to ≈0.77 and a zero rate to 0). On a
-quiet machine `SWAP-RATE`/`NET`/`DISK` may read `0 B/s` and normalize to `0` — expected, not a failure;
-the invariants (every normalized load in [0,1], `ceiling ≥ floor`, memory composite ≥ used-fraction) are
-what must hold. To see non-zero rates: `memory_pressure -l` (swap), a download (net), or
-`dd if=/dev/zero of=tmp/x bs=1m count=500` (disk), then re-run.
+Mirrors the actual readers. **Percentage readers** (CPU counter-delta; memory used-fraction
+instantaneous; GPU `Device Utilization %` instantaneous; and — not re-ported here, see below — fan
+utilization) are natural 0..1 and asserted in range directly. **Rate readers** (network + disk
+throughput, the memory **swap rate**, and the battery **discharge current**) are instantaneous
+magnitudes or counter-deltas divided by real elapsed `systemUptime`, then normalized by the
+**btop-style adaptive scaler** (ceiling = `max(avg(recent) × headroom, floor)`; for a single
+two-sample check the ceiling seeds to `max(rate × 1.3, floor)`, so a non-zero rate normalizes to
+≈0.77 and a zero rate to 0). On a quiet machine `SWAP-RATE`/`NET`/`DISK` may read `0 B/s` and
+normalize to `0` — expected, not a failure; the invariants (every normalized load in [0,1],
+`ceiling ≥ floor`, memory composite ≥ used-fraction) are what must hold. To see non-zero rates:
+`memory_pressure -l` (swap), a download (net), or `dd if=/dev/zero of=tmp/x bs=1m count=500` (disk),
+then re-run.
+
+The probe below adds **battery** (`IOKit.ps` — charge fraction 0..1 readout, plus the discharge
+current that drives the animation; both `0`/idle on AC power, unavailable on desktop Macs → `nil`).
+The **fan** reader is deliberately *not* re-ported here: it reads AppleSMC via a reverse-engineered
+`SMCKeyData` struct whose Swift layout must match the C ABI byte-for-byte (a known footgun — a
+mis-sized port reads garbage, not an error), so duplicating it in a throwaway probe risks a
+false PASS/FAIL that doesn't reflect the real reader. Fan is instead validated through the §3
+lifecycle runs (launch + availability fallback) and the §7 manual check (menu shows `Fan N: … RPM`,
+value in range, animates under thermal load).
 
 ```bash
 cat > tmp/rcheck.swift <<'EOF'
-import Darwin; import Foundation; import IOKit
+import Darwin; import Foundation; import IOKit; import IOKit.ps
 // Adaptive scaler seed for a single two-sample check: ceiling = max(rate*headroomUp, floor).
 func norm(_ rate:Double,_ floor:Double)->(load:Double,ceil:Double){let c=max(rate*1.3,floor);return (min(rate/c,1),c)}
 func ticks()->(UInt64,UInt64)?{var n:natural_t=0;var i:processor_info_array_t?;var c:mach_msg_type_number_t=0
@@ -207,6 +245,17 @@ print(String(format:"COMPOSITE %.3f in[0,1]:%@ >=used:%@",comp,(comp>=0&&comp<=1
 if let g=gpu(){print(String(format:"GPU %.3f in[0,1]:%@",g,(g>=0&&g<=1) ? "YES":"NO"))}else{print("GPU: unavailable (nil)")}
 if let a=n0,let b=n1{let r=Double(b>=a ? b-a:0)/dt;let x=norm(r,1*1_048_576.0);print(String(format:"NET %.0f B/s load=%.3f in[0,1]:%@ ceil>=floor:%@",r,x.load,(x.load>=0&&x.load<=1) ? "YES":"NO",(x.ceil>=1_048_576.0) ? "YES":"NO"))}else{print("NET: unavailable")}
 if let a=d0,let b=d1{let r=Double(b>=a ? b-a:0)/dt;let x=norm(r,4*1_048_576.0);print(String(format:"DISK %.0f B/s load=%.3f in[0,1]:%@ ceil>=floor:%@",r,x.load,(x.load>=0&&x.load<=1) ? "YES":"NO",(x.ceil>=4*1_048_576.0) ? "YES":"NO"))}else{print("DISK: unavailable")}
+// Battery: charge fraction (readout, 0..1) + discharge mA (drives via the scaler; 0 on AC). nil on desktop Macs.
+func battery()->(charge:Double,mA:Double,onBattery:Bool)?{
+ guard let blob=IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),let list=IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],let first=list.first,
+  let d=IOPSGetPowerSourceDescription(blob,first as CFTypeRef)?.takeUnretainedValue() as? [String:Any] else{return nil}
+ let cap=(d[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 0;let mx=(d[kIOPSMaxCapacityKey] as? NSNumber)?.doubleValue ?? 100
+ let ch=mx>0 ? min(max(cap/mx,0),1):0;let onB=(d[kIOPSPowerSourceStateKey] as? String)==kIOPSBatteryPowerValue
+ let mA=(d[kIOPSCurrentKey] as? NSNumber)?.doubleValue ?? 0;return (ch,onB ? abs(mA):0,onB)}
+if let bt=battery(){let bx=norm(bt.mA,500.0)   // Tuning.batteryFloorMilliamps = 500 mA
+ print(String(format:"BATTERY charge=%.3f in[0,1]:%@ | onBattery=%@ discharge=%.0f mA load=%.3f in[0,1]:%@ ceil>=floor:%@",
+  bt.charge,(bt.charge>=0&&bt.charge<=1) ? "YES":"NO",bt.onBattery ? "YES":"NO",bt.mA,bx.load,(bx.load>=0&&bx.load<=1) ? "YES":"NO",(bx.ceil>=500.0) ? "YES":"NO"))}
+else{print("BATTERY: unavailable (nil) — expected on a desktop Mac")}
 EOF
 swiftc tmp/rcheck.swift -o tmp/rcheck && ./tmp/rcheck; rm -f tmp/rcheck tmp/rcheck.swift
 ```
@@ -285,25 +334,66 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
 ```
 
 - [ ] Icon animates in the menu bar; speed responds to load over ~10s.
+- [ ] Top of the menu shows a **live trace chart** (bar sparkline) of the active source; newest sample
+      at the right edge; color tracks Low/Medium/High (green→red) — except battery, which is an
+      inverted fuel gauge (low charge reads red).
 - [ ] Menu shows **Memory: NN% · swap …** and **Memory Pressure: Normal** (not CPU lines).
 - [ ] Under memory pressure (e.g. `memory_pressure -l` or a big allocation), the memory line adds a
       live **· N.N MB/s** swap-rate segment and the animation speeds up beyond what used-% alone would
       give (composite `max(usedFraction, adaptiveScaled(swapRate))` drives). It disappears when paging stops.
-- [ ] **Load Source** submenu: switching between CPU / Memory / GPU / Network / Disk flips the metric
-      line immediately; radio checkmark moves; speed line shows the active source (`auto Network horse …`).
-      Rate sources (memory/network/disk) re-warm after a switch (no rate for ~1 tick).
-- [ ] **GPU**: line reads **GPU: NN%**; running a GPU load (e.g. a game / WebGL) speeds the animation.
-- [ ] **Network**: line reads **Network: N.N MB/s**; a download speeds it up. Adaptive scale settles —
+
+**"Other Sources" dashboard** (replaced the old `Load Source` submenu in v1.10.0):
+
+- [ ] A collapsible **Other Sources** header (with a ▸/▾ disclosure glyph) sits below the active
+      source's readout. Collapsed by default. Clicking it expands an inline row per *available,
+      non-active* reader (CPU / Memory / GPU / Network / Disk / Fan / Battery, minus the active one),
+      each showing its own live readout.
+- [ ] Clicking a row **switches the driving source**: the active source's metric line + trace flip
+      immediately, the switched-away source drops into the list, the speed line names the new source
+      (`auto Network horse …`). Rate sources (memory/network/disk/battery) re-warm after a switch
+      (no rate for ~1 tick).
+- [ ] Relaunch with `--show-all-sources` (or `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`): the section starts
+      **expanded**, and each row updates live every tick (collapsed = active-source-only sampling).
+- [ ] **GPU**: row/line reads **GPU: NN%**; running a GPU load (e.g. a game / WebGL) speeds the animation.
+- [ ] **Network**: reads **Network: ↓N.N ↑N.N MB/s**; a download speeds it up. Adaptive scale settles —
       a single burst spikes then calms within a few ticks (no permanent max-out, no jitter at idle).
-- [ ] **Disk**: line reads **Disk: N.N MB/s**; `dd if=/dev/zero of=tmp/x bs=1m count=500; rm tmp/x`
-      speeds it up.
+- [ ] **Disk**: reads **Disk: read N.N / write N.N MB/s**; `dd if=/dev/zero of=tmp/x bs=1m count=500;
+      rm tmp/x` speeds it up.
+- [ ] **Fan** (laptops with fans): reads **Fan N: NNNN RPM (NN%)**, one line per fan; value in a sane
+      range; a sustained CPU/GPU load spins fans up and (with a lag) speeds the animation. On a fanless
+      Mac the source is disabled/absent (see Availability).
+- [ ] **Battery** (Macs with a battery): reads **Battery: NN%**; on battery power a heavier workload
+      (higher discharge) speeds the animation, on AC it idles (discharge = 0). The trace is the inverted
+      fuel gauge. On a desktop Mac the source is disabled/absent.
 - [ ] **Availability**: every source with readable hardware is enabled. To see the disabled state on
-      working hardware, relaunch with `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk
-      ./menubar-load-runner --foreground` — those three items are greyed out in the **Load Source**
-      submenu, and requesting one at launch logs a fallback-to-cpu line (also covered automatically in §3).
-- [ ] `Width` line is read-only and shows the GIF-derived width + aspect; Menu Bar Label / Preset
-      submenus still work (Menu Bar Label → Off / Live Value / Custom Text…, the value slot appears/
-      disappears accordingly); **About** shows the current version; Exit works.
+      working hardware, relaunch with `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk,fan,battery
+      ./menubar-load-runner --foreground` — those sources are absent from the **Other Sources** list, and
+      requesting one at launch logs a fallback-to-cpu line (also covered automatically in §3).
+
+**Keep Awake** (v1.8.0/v1.9.0):
+
+- [ ] **Keep Awake** checkbox toggles on: a thin tinted track line appears along the icon's bottom edge
+      while it's actively holding the Mac awake; `pgrep caffeinate` shows a `caffeinate -i -w <pid>`
+      bound to the app's PID. Toggling off removes both. Idle-sleep only — the display may still sleep.
+- [ ] **Keep Awake Color** submenu: **Dusty Teal** (default) / **Sand** — switching recolors the track
+      line live; the radio selection mark moves. (Menu-only; resets each launch.)
+- [ ] Auto-disengage: on battery below ~20% (or serious/critical thermal) the line hides and caffeinate
+      is suspended while the toggle stays checked (intent preserved); it re-engages when the condition
+      clears. Hard to force by hand — spot-check the toggle/color/track behavior and trust §-code path.
+- [ ] Selection marks (Presets, Keep Awake, Keep Awake Color) render as a small solid **dot**, not the
+      native checkmark (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.
+
+**Updates, label, width, misc:**
+
+- [ ] **Update check**: on launch (network permitting) a **Check for Updates…** item is present; when a
+      newer release tag exists it becomes **Update available: vX.Y.Z**. Relaunching with
+      `--no-update-check` (or `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0`) removes the check (no network hit).
+- [ ] **Menu Bar Label** submenu (Off / Live Value / Custom Text…): switching to Live Value shows a
+      second menu-bar slot with the active source's compact reading (`CPU 47%`, `MEM 63%`, `GPU 30%`,
+      `NET ↓… ↑…`, `DSK R… W…`, `FAN 45%`, `BAT 88%`), refreshed on the 2s tick and tracking a source
+      switch; Custom Text… shows a fixed string; Off frees the slot. Also settable via `--label`.
+- [ ] `Width` line is read-only and shows the GIF-derived width + aspect; Preset submenu still switches
+      the animation; **About** shows the current version; Exit works.
 
 ## 8. Cleanup + sign-off
 

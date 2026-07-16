@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.9.1"
+    static let version = "1.10.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -182,6 +182,11 @@ private enum Tuning {
     static let networkFloorBytesPerSec: Double = 1 * bytesPerMiB
     static let diskFloorBytesPerSec: Double = 4 * bytesPerMiB
     static let swapFloorBytesPerSec: Double = 1 * bytesPerMiB
+    // Battery discharge-current ceiling floor (milliamps). Not a byte rate, but the same adaptive
+    // ThroughputScaler normalizes it: idle laptop draw sits a few hundred mA, so this floor keeps a
+    // resting drain from pegging the animation while still letting a real workload's multi-amp draw
+    // rise through the range.
+    static let batteryFloorMilliamps: Double = 500
 
     // Memory used-fraction rests high on a healthy Mac (the OS holds most physical RAM as cache/
     // wired), so a linear map from raw used-fraction would drive the animation well up its speed
@@ -209,23 +214,19 @@ private enum Tuning {
     static let loadAverage15mIndex = 2
     static let minAlphaPixelComponents = 4
     static let alphaVisibleThreshold: UInt8 = 3
-    static let overlayMinFontSize: CGFloat = 8
-    static let overlayMaxFontSize: CGFloat = 14
-    static let overlayHorizontalInset: CGFloat = 2
-    static let overlayVerticalInset: CGFloat = 1
-    static let overlayFontScale: CGFloat = 0.5
-    static let overlayStrokeWidth: CGFloat = -2
-    // Overlay char limit is adaptive to the GIF-derived slot width (see maxOverlayChars):
-    // overlayMaxChars is the absolute ceiling (also the CLI limit, where the width isn't known
-    // yet); overlayMinChars is the floor so even a sliver-width GIF accepts a glyph or two.
-    // overlayCharAdvanceFraction ≈ a monospaced glyph's advance as a fraction of the font size.
-    static let overlayMinChars = 1
-    static let overlayMaxChars = 12
-    static let overlayCharAdvanceFraction: CGFloat = 0.62
+    // Max length of a custom menu-bar label (the adjacent text slot). The slot auto-sizes
+    // (variableLength), so this only bounds how much menu-bar width one instance may claim; live-value
+    // readouts are always short and unaffected.
+    static let labelMaxChars = 24
 
     // Keep Awake auto-disengage: on battery power at or below this charge fraction
     // we kill `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
     static let batteryLowThreshold: Double = 0.20
+
+    // Battery trace-chart color bands (charge fraction). The chart is a fuel gauge for the battery
+    // source — low = alert — so it reuses batteryLowThreshold (≤20% → red) plus this mid band
+    // (≤40% → yellow, else green), mirroring the macOS low-battery convention.
+    static let batteryChargeMediumThreshold: Double = 0.40
 
     // Keep-awake track line tints — a warm/cool pairing (design POC). Each option carries two tones
     // so the 2pt line holds contrast on both menu-bar appearances: lighter on a dark bar, deeper on a
@@ -238,6 +239,11 @@ private enum Tuning {
     static let keepAwakeBarSandDark = NSColor(srgbRed: 0.847, green: 0.765, blue: 0.608, alpha: 1) // #D8C39B
     static let keepAwakeBarSandLight = NSColor(srgbRed: 0.698, green: 0.604, blue: 0.431, alpha: 1) // #B29A6E
     static let keepAwakeBarThickness: CGFloat = 2
+
+    // Selection-mark dot size, as a fraction of the menu font's cap height (the same font the
+    // disclosure header draws its ▸ at), so the dot reads at that toggle's scale rather than the
+    // oversized native ✓. ~0.6 gives a compact bullet, not a heavy blob.
+    static let menuSelectionMarkCapHeightFraction: CGFloat = 0.6
 }
 
 // Centralized menu-item vocabulary — every fixed label and every label *prefix* that a refresh
@@ -257,7 +263,9 @@ private enum MenuTitle {
     static let loadHistory = "Load History"
     static let keepAwake = "Keep Awake"
     static let keepAwakeColor = "Keep Awake Color"
-    static let loadSource = "Load Source"
+    // The disclosure header row uses a view (DisclosureMenuItemView) that draws its own ▸/▾ glyph, so
+    // only the bare label lives here.
+    static let otherSources = "Other Sources"
     static let presets = "Presets"
     static let about = "About"
     static let exit = "Exit"
@@ -268,11 +276,13 @@ private enum MenuTitle {
     static let checkForUpdates = "Check for Updates…"
     static let checkingForUpdates = "Checking for Updates…"
 
-    // Overlay.
-    static let overlayPrefix = "Overlay Text"
-    static func overlay(_ suffix: String) -> String { "\(overlayPrefix): \(suffix)" }
-    static let overlayOff = "off"
-    static func setText(max: Int) -> String { "Set Text... (max \(max))" }
+    // Menu-bar label (the adjacent value/text slot).
+    static let labelPrefix = "Menu Bar Label"
+    static func label(_ suffix: String) -> String { "\(labelPrefix): \(suffix)" }
+    static let labelOff = "off"
+    static let labelOffItem = "Off"
+    static let labelValueItem = "Live Value"
+    static func labelCustomItem(max: Int) -> String { "Custom Text… (max \(max))" }
 
     // Read-only readouts.
     static let widthPrefix = "Width"
@@ -315,6 +325,7 @@ private enum LoadSource: Int, CaseIterable {
     case network = 3
     case disk = 4
     case fan = 5
+    case battery = 6
 
     var key: String {
         switch self {
@@ -324,6 +335,7 @@ private enum LoadSource: Int, CaseIterable {
         case .network: return "network"
         case .disk: return "disk"
         case .fan: return "fan"
+        case .battery: return "battery"
         }
     }
 
@@ -335,12 +347,36 @@ private enum LoadSource: Int, CaseIterable {
         case .network: return "Network"
         case .disk: return "Disk"
         case .fan: return "Fan"
+        case .battery: return "Battery"
         }
     }
 
     static func from(key: String?) -> LoadSource? {
         guard let key = key?.lowercased(), !key.isEmpty else { return nil }
         return allCases.first { $0.key == key }
+    }
+}
+
+// The optional second menu-bar slot's content. `.off` claims no slot; `.value` shows the active
+// source's live reading (refreshed on the 2s tick); `.custom` shows a fixed user string (handy for
+// labeling multiple instances). Replaces the old baked-on overlay, which was illegible atop a 22pt
+// animated icon — an adjacent slot renders in the native menu-bar font instead. Parsed from
+// `--label <off|value|text>` / MENUBAR_LOAD_RUNNER_LABEL; `off` and `value` are reserved keywords, so
+// a literal custom label of "off"/"value" isn't expressible (documented; a non-issue in practice).
+private enum MenuBarLabel: Equatable {
+    case off
+    case value
+    case custom(String)
+
+    // Parse a raw `--label` / env value. nil/empty → .off. "off"/"value" are keywords; anything else
+    // is trimmed and truncated to Tuning.labelMaxChars as custom text (empty after trim → .off).
+    static func parse(_ raw: String?) -> MenuBarLabel {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return .off }
+        switch raw.lowercased() {
+        case "off": return .off
+        case "value": return .value
+        default: return .custom(String(raw.prefix(Tuning.labelMaxChars)))
+        }
     }
 }
 
@@ -383,7 +419,8 @@ private struct Config {
     // so the shell launcher forwards this arg unchanged.
     let presetOrPath: String
     let speedMultiplierOverride: Double?
-    let overlayText: String?
+    // Content of the optional adjacent menu-bar label slot. Resolved from --label / env here.
+    let label: MenuBarLabel
     // Which reader drives the animation. Resolved from --load-source / env here (unknown →
     // .cpu, never a launch failure), so the app receives a concrete source, not a raw string.
     let loadSource: LoadSource
@@ -394,14 +431,19 @@ private struct Config {
     // Whether to probe origin's release tags on launch (and enable the manual "Check for Updates…").
     // Default true; disabled by --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK ∈ {0,false,no}.
     let updateCheckEnabled: Bool
+    // Launch default for the multi-source dashboard mode. Default false (active-only sampling);
+    // enabled by --show-all-sources or MENUBAR_LOAD_RUNNER_SHOW_ALL ∈ {1,true,yes}. Still runtime-
+    // toggleable from the menu regardless.
+    let showAllSources: Bool
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
         var presetOrPath: String?
         var speedMultiplierOverride: Double?
-        var overlayText: String?
+        var labelArg: String?
         var loadSourceArg: String?
         var updateCheckEnabled = true
+        var showAllSources = false
 
         var iterator = args.makeIterator()
         while let arg = iterator.next() {
@@ -416,19 +458,13 @@ private struct Config {
                     return nil
                 }
                 speedMultiplierOverride = parsed
-            case "--overlay-text":
+            case "--label":
                 guard let value = iterator.next() else {
-                    fputs("Invalid value for --overlay-text. Expected a non-empty string.\n", stderr)
+                    fputs("Invalid value for --label. Expected off, value, or custom text.\n", stderr)
                     printUsage()
                     return nil
                 }
-                let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty, text.count <= Tuning.overlayMaxChars else {
-                    fputs("Invalid value for --overlay-text. Expected 1...\(Tuning.overlayMaxChars) characters.\n", stderr)
-                    printUsage()
-                    return nil
-                }
-                overlayText = text
+                labelArg = value
             case "--load-source":
                 guard let value = iterator.next() else {
                     fputs("Invalid value for --load-source. Expected one of: \(LoadSource.allCases.map(\.key).joined(separator: ", ")).\n", stderr)
@@ -438,6 +474,8 @@ private struct Config {
                 loadSourceArg = value
             case "--no-update-check":
                 updateCheckEnabled = false
+            case "--show-all-sources":
+                showAllSources = true
             default:
                 if presetOrPath == nil {
                     presetOrPath = arg
@@ -459,6 +497,11 @@ private struct Config {
         if loadSourceArg == nil {
             loadSourceArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOAD_SOURCE"]
         }
+
+        if labelArg == nil {
+            labelArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LABEL"]
+        }
+        let label = MenuBarLabel.parse(labelArg)
         // Unknown/absent → .cpu (today's behavior). Never a launch failure, per spec.
         var loadSource = LoadSource.from(key: loadSourceArg) ?? .cpu
         if let requested = loadSourceArg, LoadSource.from(key: requested) == nil, !requested.isEmpty {
@@ -494,14 +537,22 @@ private struct Config {
             updateCheckEnabled = false
         }
 
+        // Env can only enable the launch default (the menu toggle covers turning it off at runtime).
+        if !showAllSources,
+           let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_SHOW_ALL"]?.lowercased(),
+           ["1", "true", "yes"].contains(raw) {
+            showAllSources = true
+        }
+
         return .config(
             Config(
                 presetOrPath: NSString(string: positional).expandingTildeInPath,
                 speedMultiplierOverride: speedMultiplierOverride,
-                overlayText: overlayText,
+                label: label,
                 loadSource: loadSource,
                 exitAfterSeconds: exitAfterSeconds,
-                updateCheckEnabled: updateCheckEnabled
+                updateCheckEnabled: updateCheckEnabled,
+                showAllSources: showAllSources
             )
         )
     }
@@ -510,9 +561,11 @@ private struct Config {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("MenuBar Load Runner \(AppInfo.version)")
-        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--no-update-check]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--overlay-text <text:1...\(Tuning.overlayMaxChars) chars>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--no-update-check]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--show-all-sources] [--no-update-check]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--show-all-sources] [--no-update-check]")
         print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
+        print("Label: an optional second menu-bar slot. --label value shows the active source's live reading; --label <text> (up to \(Tuning.labelMaxChars) chars) shows a fixed label; --label off (default) shows nothing. Also via MENUBAR_LOAD_RUNNER_LABEL; switchable from the menu.")
+        print("Show all sources: --show-all-sources (or MENUBAR_LOAD_RUNNER_SHOW_ALL=1) starts with the menu's \"Other Sources\" list expanded, sampling every available reader and showing each as a live row; click a row to switch the driving source. Collapsed by default (active source only). Toggle from the menu's disclosure header.")
         print("Width: the menu-bar item sizes itself to the GIF's aspect ratio at menu-bar height — not configurable.")
         print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
         print("Updates: on launch, checks the git origin's release tags for a newer version (network access). Apply is a menu click; disable with --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0.")
@@ -1191,11 +1244,86 @@ private final class DiskLoadMonitor {
     }
 }
 
-// A compact bar-chart trace of the active load source's recent 0…1 driving fraction, shown as the
-// top item of the status menu (a live counterpart to the numeric readout lines below it). Newest
-// sample sits at the right edge; the buffer fills leftward until full, then scrolls. Bars are
-// colored by the same Low/Medium/High thresholds as the CPU/GPU State line so the chart and the
-// text agree. Non-interactive (hosted in a disabled NSMenuItem); it only ever draws.
+// Battery as a load source — a *mixed domain* like MemoryLoadMonitor: an instantaneous charge-level
+// point read (valid on the first sample) plus an instantaneous discharge *current* (mA, from IOKit
+// Power Sources' "Current" key). The discharge current — NOT a counter-delta, so no one-tick warm-up
+// — is the driver: while on battery its magnitude normalizes through the shared adaptive
+// ThroughputScaler (each machine's draw ceiling differs), so a fast drain → faster animation and AC
+// power (current 0) → idle. Charge level is a readout, not the driver. Available only when a battery
+// exists (desktop Macs → source disabled + launch fallback to CPU, exactly like Fan on fanless Macs).
+// Reuses the same unprivileged IOPSCopyPowerSourcesInfo plumbing as evaluateBatteryLow. `nil` (never a
+// fabricated 0) on read failure.
+@MainActor
+private final class BatteryLoadMonitor {
+    private(set) var currentChargeFraction: Double = 0      // 0…1, readout only
+    private(set) var currentDischargeMilliamps: Double = 0  // magnitude, 0 on AC
+    private(set) var onBattery = false
+    private(set) var currentLoad: Double = 0                // scaler-normalized 0…1 driver
+    private(set) var hasSample = false
+    // Discharge current is an unbounded rate-like signal (mA), so it normalizes through the shared
+    // adaptive scaler like network/disk/swap — just fed an instantaneous magnitude, not a delta.
+    private var scaler = ThroughputScaler(floor: Tuning.batteryFloorMilliamps)
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool {
+        if !availabilityChecked {
+            available = Self.batteryPresent()
+            availabilityChecked = true
+        }
+        return available
+    }
+
+    func sampleUsage() -> Double? {
+        guard let reading = Self.readBattery() else { hasSample = false; return nil }
+        currentChargeFraction = reading.charge
+        onBattery = reading.onBattery
+        // Discharge current only counts while on battery; on AC the draw is 0 → idle animation.
+        currentDischargeMilliamps = reading.onBattery ? abs(reading.currentMilliamps) : 0
+        hasSample = true
+        currentLoad = scaler.normalize(speed: currentDischargeMilliamps)
+        return currentLoad
+    }
+
+    private static func batteryPresent() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any] else { return false }
+        return !list.isEmpty
+    }
+
+    private struct Reading { let charge: Double; let currentMilliamps: Double; let onBattery: Bool }
+
+    private static func readBattery() -> Reading? {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],
+              let first = list.first,
+              let dict = IOPSGetPowerSourceDescription(blob, first as CFTypeRef)?
+                            .takeUnretainedValue() as? [String: Any] else { return nil }
+        // Capacity/max are percentages in IOPS (max is typically 100); their ratio is the charge
+        // fraction, matching how evaluateBatteryLow reads kIOPSCurrentCapacityKey as 0–100.
+        let capacity = (dict[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 0
+        let maxCap = (dict[kIOPSMaxCapacityKey] as? NSNumber)?.doubleValue ?? 100
+        let charge = maxCap > 0 ? min(max(capacity / maxCap, 0), 1) : 0
+        let onBattery = (dict[kIOPSPowerSourceStateKey] as? String) == kIOPSBatteryPowerValue
+        // "Current" (mA) is instantaneous and signed (negative while discharging); may be absent on
+        // some sources → treat as 0 (the source stays available for the charge readout, animation idles).
+        let mA = (dict[kIOPSCurrentKey] as? NSNumber)?.doubleValue ?? 0
+        return Reading(charge: charge, currentMilliamps: mA, onBattery: onBattery)
+    }
+}
+
+// The color ramp direction for the trace chart. For utilization sources high = alert (green→red as
+// the value rises); for the battery fuel gauge low = alert (the ramp inverts).
+private enum ColorPolarity { case highIsHot, lowIsHot }
+
+// A compact bar-chart trace of the active load source's recent 0…1 fraction, shown as the top item
+// of the status menu (a live counterpart to the numeric readout lines below it). Newest sample sits
+// at the right edge; the buffer fills leftward until full, then scrolls. For every source except
+// battery the plotted value is the driving fraction, colored by the same Low/Medium/High thresholds
+// as the CPU/GPU State line (high = red) so the chart and text agree. Battery is a fuel gauge: it
+// plots charge level with an inverted ("low is hot") ramp, so a low battery reads red — the caller
+// sets `colorPolarity`/thresholds per source. Non-interactive (hosted in a disabled NSMenuItem); it
+// only ever draws.
 @MainActor
 private final class LoadHistoryView: NSView {
     // Most-recent-last, 0…1, at most `capacity` entries.
@@ -1204,6 +1332,11 @@ private final class LoadHistoryView: NSView {
     var sourceLabel: String = "" { didSet { needsDisplay = true } }
     // True before the active source has produced a usable sample (empty chart → "measuring…").
     var warmingUp: Bool = true { didSet { needsDisplay = true } }
+    // Coloring config, set per active source by the caller. Defaults reproduce the utilization
+    // behavior (high = red at the CPU State thresholds); battery overrides to an inverted fuel gauge.
+    var colorPolarity: ColorPolarity = .highIsHot { didSet { needsDisplay = true } }
+    var lowThreshold: Double = Tuning.cpuStateLowThreshold { didSet { needsDisplay = true } }
+    var mediumThreshold: Double = Tuning.cpuStateMediumThreshold { didSet { needsDisplay = true } }
 
     private let capacity: Int
 
@@ -1226,9 +1359,16 @@ private final class LoadHistoryView: NSView {
     private let barGap: CGFloat = 1.5
 
     private func color(for value: Double) -> NSColor {
-        if value < Tuning.cpuStateLowThreshold { return .systemGreen }
-        if value < Tuning.cpuStateMediumThreshold { return .systemYellow }
-        return .systemRed
+        switch colorPolarity {
+        case .highIsHot:
+            if value < lowThreshold { return .systemGreen }
+            if value < mediumThreshold { return .systemYellow }
+            return .systemRed
+        case .lowIsHot:
+            if value < lowThreshold { return .systemRed }
+            if value < mediumThreshold { return .systemYellow }
+            return .systemGreen
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1286,6 +1426,64 @@ private final class LoadHistoryView: NSView {
             color(for: clamped).withAlphaComponent(0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 0.75, yRadius: 0.75).fill()
         }
+    }
+}
+
+// View-based menu item used as the "Other Sources" disclosure header. A plain NSMenuItem with an
+// action dismisses the whole menu the instant it's clicked; a *view-based* item does not — the view
+// handles the click itself and the menu stays open. That's what lets this section expand/collapse in
+// place (the toggle flips the sibling rows' `isHidden`, which an open NSMenu re-lays-out live) instead
+// of forcing a close-and-reopen. Draws a native-looking row: a leading disclosure triangle (▸/▾) +
+// title, with an accent highlight while hovered (view-based items must draw their own selection —
+// AppKit doesn't). Title x-inset matches LoadHistoryView's gutter so it lines up with the rows around
+// it.
+@MainActor
+private final class DisclosureMenuItemView: NSView {
+    var title: String = "" { didSet { needsDisplay = true } }
+    var isExpanded: Bool = false { didSet { needsDisplay = true } }
+
+    private let onToggle: () -> Void
+    private var isHighlighted = false { didSet { needsDisplay = true } }
+    private var trackingArea: NSTrackingArea?
+
+    private let insetLeft: CGFloat = 21   // checkmark-gutter column, matching LoadHistoryView
+    private let height: CGFloat = 22
+
+    init(onToggle: @escaping () -> Void) {
+        self.onToggle = onToggle
+        super.init(frame: NSRect(x: 0, y: 0, width: 224, height: height))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHighlighted = true }
+    override func mouseExited(with event: NSEvent) { isHighlighted = false }
+    // Toggle on click without letting the click bubble up as a menu selection (which would dismiss).
+    override func mouseUp(with event: NSEvent) { onToggle() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if isHighlighted {
+            NSColor.selectedContentBackgroundColor.setFill()
+            bounds.fill()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: isHighlighted ? NSColor.selectedMenuItemTextColor : NSColor.labelColor,
+        ]
+        let text = "\(isExpanded ? "▾" : "▸")  \(title)" as NSString
+        let size = text.size(withAttributes: attrs)
+        text.draw(at: NSPoint(x: insetLeft, y: (bounds.height - size.height) / 2), withAttributes: attrs)
     }
 }
 
@@ -1384,6 +1582,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         responseExponent: 1.0
     )
 
+    // The selection mark for every radio/toggle menu item — a small solid dot in place of the heavy
+    // native ✓, matching the minimalist menu-bar aesthetic. Built once as a *template* image so it
+    // adopts the menu's label / highlight tint automatically (no per-appearance color handling), and
+    // assigned as each item's `onStateImage` (the `.off` state stays blank, so the gutter still
+    // aligns).
+    private static let selectionMarkImage: NSImage = {
+        // A small solid dot in place of the heavy native ✓. Diameter is derived from the menu font's
+        // cap height (the same font the disclosure header uses) so the mark sits at that toggle's
+        // scale. Drawn as a *template* image so AppKit tints it to the label / highlight color.
+        let diameter = (NSFont.menuFont(ofSize: 0).capHeight * Tuning.menuSelectionMarkCapHeightFraction).rounded()
+        let image = NSImage(size: NSSize(width: diameter, height: diameter))
+        image.lockFocus()
+        NSColor.black.setFill() // template image; the color is ignored, AppKit re-tints
+        NSBezierPath(ovalIn: NSRect(x: 0, y: 0, width: diameter, height: diameter)).fill()
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
+    }()
+
+    // Applies the shared selection mark to a radio/toggle item so its "selected" state renders as the
+    // filled dot instead of the native ✓. Call at construction for every item whose `.state` toggles.
+    private func useSelectionMark(_ item: NSMenuItem) {
+        item.onStateImage = Self.selectionMarkImage
+    }
+
     private let config: Config
     private let allPresets: [PresetDescriptor]
     // The manifest's declared default preset, resolved once in init. Also the profile fallback for
@@ -1409,6 +1632,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // refresh functions, @objc actions) — never before launch. The `!` reflects that
     // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
+    // Optional second slot for the adjacent label (live value / custom text). Created lazily when the
+    // label mode is not .off and torn down when it returns to .off, so an off label claims no menu-bar
+    // real estate. variableLength — it auto-sizes to its text. See applyLabelMode()/updateValueLabel().
+    private var valueStatusItem: NSStatusItem?
     private var infoMenu: NSMenu!
     // Trace chart of the active source's recent driving fractions, and its ring buffer. The buffer
     // holds only the active source's samples (cleared on a source switch, since a mixed-source
@@ -1424,12 +1651,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var stateItem: NSMenuItem!
     private var speedMultiplierItem: NSMenuItem!
     private var throttleStatusItem: NSMenuItem!
-    private var loadSourceMenuItem: NSMenuItem!
-    private var loadSourceMenuItems: [NSMenuItem] = []
     private var widthStatusItem: NSMenuItem!
-    private var overlayMenuItem: NSMenuItem!
-    private var overlaySetItem: NSMenuItem!
-    private var overlayClearItem: NSMenuItem!
+    // "Menu Bar Label" submenu: a radio group (Off / Live Value / Custom Text…). The parent title
+    // doubles as the current-state readout, like the load-source rows.
+    private var labelMenuItem: NSMenuItem!
+    private var labelOffItem: NSMenuItem!
+    private var labelValueItem: NSMenuItem!
+    private var labelCustomItem: NSMenuItem!
     private var presetMenuItems: [NSMenuItem] = []
     // In-app update check. `latestKnownVersion` is the newest release tag found on origin (nil until a
     // probe completes, or on any failure — fail-silent). `updateItem` is the passive "Update
@@ -1466,15 +1694,29 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var networkMonitor = NetworkLoadMonitor()
     private var diskMonitor = DiskLoadMonitor()
     private var fanMonitor = FanLoadMonitor()
+    private var batteryMonitor = BatteryLoadMonitor()
     private var activeLoadSource: LoadSource
+    // Multi-source dashboard mode / other-sources disclosure state: when on (expanded), every
+    // AVAILABLE reader is sampled each tick (not just the active one) and its live readout is surfaced
+    // as an inline row under the "Other Sources" disclosure header, while the active source alone still
+    // drives the animation. Off by default (collapsed → active-only sampling, the self-throttle ethos);
+    // opt-in via the disclosure header or --show-all-sources / MENUBAR_LOAD_RUNNER_SHOW_ALL.
+    private var showAllSources: Bool
+    // Disclosure header row for the collapsible other-sources section, and the inline per-source
+    // rows nested under it. The rows double as the source switcher (clicking one drives the animation
+    // from that reader), replacing the former Load Source submenu.
+    private var otherSourcesHeaderItem: NSMenuItem!
+    private var otherSourcesHeaderView: DisclosureMenuItemView!
+    private var otherSourceRowItems: [NSMenuItem] = []
     // Last memory-pressure level seen from the dispatch source. Cached because — unlike
     // thermalState/isLowPowerModeEnabled — there is NO synchronous getter for memory pressure;
     // it is event-only, so isUnderPowerPressure reads this stored value.
     private var memoryPressureLevel: DispatchSource.MemoryPressureEvent = .normal
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var speedMultiplier: Double = Tuning.initialSpeedMultiplier
-    private var requestedOverlayText: String?
-    private var requestedOverlayBold = true
+    // Content of the adjacent label slot (see MenuBarLabel). Initialized from config; mutated by the
+    // "Menu Bar Label" menu. applyLabelMode() reconciles valueStatusItem's existence with it.
+    private var labelMode: MenuBarLabel = .off
     private var cachedLoadAverages: (Double, Double, Double)?
     private var screenObserver: NSObjectProtocol?
     private var powerStateObserver: NSObjectProtocol?
@@ -1500,8 +1742,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     init(config: Config) {
         self.config = config
-        self.requestedOverlayText = config.overlayText
+        self.labelMode = config.label
         self.activeLoadSource = config.loadSource
+        self.showAllSources = config.showAllSources
 
         // Resolve the resource base directory (which holds `gifs/`). Prefer the running executable's
         // own directory: the compiled `MenuBarLoadRunner` binary sits next to `gifs/`, and the
@@ -1654,45 +1897,68 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         infoMenu.addItem(NSMenuItem.separator())
 
-        loadSourceMenuItem = NSMenuItem(title: MenuTitle.loadSource, action: nil, keyEquivalent: "")
-        let loadSourceSubmenu = NSMenu(title: MenuTitle.loadSource)
-        for source in LoadSource.allCases {
-            let item = NSMenuItem(title: source.menuTitle, action: #selector(selectLoadSource(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = source.rawValue
-            loadSourceSubmenu.addItem(item)
-            loadSourceMenuItems.append(item)
-        }
-        loadSourceMenuItem.submenu = loadSourceSubmenu
-        infoMenu.addItem(loadSourceMenuItem)
-
         // Availability fallback: if the requested source (--load-source / env) can't produce a value on
         // this hardware — realistically only GPU — degrade to CPU rather than driving off a dead reader.
-        // An absent source never fails launch (design principle 4); the menu item stays disabled.
+        // An absent source never fails launch (design principle 4); its row stays hidden.
         if !isSourceAvailable(activeLoadSource) {
             fputs("Load source \"\(activeLoadSource.key)\" is unavailable on this machine; falling back to cpu.\n", stderr)
             activeLoadSource = .cpu
         }
 
-        // The submenu parent doubles as the status line — its title carries the current overlay
-        // state (text + style, or "off"), so no separate read-only line is needed.
-        overlayMenuItem = NSMenuItem(title: MenuTitle.overlayPrefix, action: nil, keyEquivalent: "")
-        let overlaySubmenu = NSMenu(title: MenuTitle.overlayPrefix)
+        // Unified other-sources section (replaces the old Load Source submenu + Show All Sources
+        // checkbox + All Sources submenu). A disclosure header expands an inline list of every *other*
+        // available reader; each row shows that reader's live readout and, when clicked, switches the
+        // animation's driving source to it. The active source is never listed — it's shown on top with
+        // the sparkline. Collapsing hides the rows AND restores active-only sampling (nothing else is
+        // polled), so the indicator keeps to its self-throttle ethos unless the user opts in. The
+        // `showAllSources` flag is both the expanded state and the sample-everything switch.
+        // View-based so clicking it toggles the section in place instead of dismissing the menu.
+        otherSourcesHeaderItem = NSMenuItem(title: MenuTitle.otherSources, action: nil, keyEquivalent: "")
+        otherSourcesHeaderView = DisclosureMenuItemView(onToggle: { [weak self] in self?.toggleShowAllSources() })
+        otherSourcesHeaderView.title = MenuTitle.otherSources
+        otherSourcesHeaderView.isExpanded = showAllSources
+        otherSourcesHeaderItem.view = otherSourcesHeaderView
+        infoMenu.addItem(otherSourcesHeaderItem)
 
-        overlaySetItem = NSMenuItem(title: MenuTitle.setText(max: Tuning.overlayMaxChars), action: #selector(promptOverlayText), keyEquivalent: "")
-        overlaySetItem.target = self
-        overlaySubmenu.addItem(overlaySetItem)
+        for source in LoadSource.allCases {
+            let item = NSMenuItem(title: source.menuTitle, action: #selector(selectLoadSource(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = source.rawValue
+            item.indentationLevel = 1   // nest visually under the disclosure header
+            item.isHidden = true        // revealed only while expanded (refreshShowAllSourcesState)
+            infoMenu.addItem(item)
+            otherSourceRowItems.append(item)
+        }
 
-        overlayClearItem = NSMenuItem(title: MenuTitle.clear, action: #selector(clearOverlayText), keyEquivalent: "")
-        overlayClearItem.target = self
-        overlaySubmenu.addItem(overlayClearItem)
+        infoMenu.addItem(NSMenuItem.separator())
 
-        overlayMenuItem.submenu = overlaySubmenu
-        infoMenu.addItem(overlayMenuItem)
+        // "Menu Bar Label" radio group. The parent title carries the current state (off / value /
+        // the custom text), so no separate read-only line is needed — mirrors the old overlay item.
+        labelMenuItem = NSMenuItem(title: MenuTitle.labelPrefix, action: nil, keyEquivalent: "")
+        let labelSubmenu = NSMenu(title: MenuTitle.labelPrefix)
+
+        labelOffItem = NSMenuItem(title: MenuTitle.labelOffItem, action: #selector(selectLabelOff), keyEquivalent: "")
+        labelOffItem.target = self
+        useSelectionMark(labelOffItem)
+        labelSubmenu.addItem(labelOffItem)
+
+        labelValueItem = NSMenuItem(title: MenuTitle.labelValueItem, action: #selector(selectLabelValue), keyEquivalent: "")
+        labelValueItem.target = self
+        useSelectionMark(labelValueItem)
+        labelSubmenu.addItem(labelValueItem)
+
+        labelCustomItem = NSMenuItem(title: MenuTitle.labelCustomItem(max: Tuning.labelMaxChars), action: #selector(promptCustomLabel), keyEquivalent: "")
+        labelCustomItem.target = self
+        useSelectionMark(labelCustomItem)
+        labelSubmenu.addItem(labelCustomItem)
+
+        labelMenuItem.submenu = labelSubmenu
+        infoMenu.addItem(labelMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
         keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: #selector(toggleKeepAwake), keyEquivalent: "")
         keepAwakeMenuItem.target = self
+        useSelectionMark(keepAwakeMenuItem)
         infoMenu.addItem(keepAwakeMenuItem)
 
         // Sibling submenu (a radio group) for the track-line tint — the Keep Awake item stays a
@@ -1703,6 +1969,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             let item = NSMenuItem(title: choice.menuTitle, action: #selector(selectKeepAwakeColor(_:)), keyEquivalent: "")
             item.target = self
             item.tag = choice.rawValue
+            useSelectionMark(item)
             keepAwakeColorSubmenu.addItem(item)
             keepAwakeColorMenuItems.append(item)
         }
@@ -1717,6 +1984,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             let item = NSMenuItem(title: preset.menuTitle, action: #selector(selectPreset(_:)), keyEquivalent: "")
             item.target = self
             item.tag = index
+            useSelectionMark(item)
             infoMenu.addItem(item)
             presetMenuItems.append(item)
         }
@@ -1740,8 +2008,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         statusItem.menu = infoMenu
         refreshPresetSelectionState()
         refreshWidthInfo()
-        refreshOverlaySelectionState()
-        refreshLoadSourceSelectionState()
+        refreshLabelSelectionState()
+        applyLabelMode()   // create the value slot now if launched with --label value / custom text
+        refreshShowAllSourcesState()
         refreshKeepAwakeColorSelectionState()
         refreshUpdateStatus()
 
@@ -2161,7 +2430,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Sample only the active source (active-only, per the self-throttle ethos): the inactive
         // monitors aren't polled, so their menu lines aren't shown while another source drives.
         if let usage = sampleActiveSource(elapsed: elapsed) {
-            recordLoadSample(usage)
+            recordLoadSample(chartSample(forDriver: usage))
             if isAutoSpeed {
                 let candidate = speedMultiplier(forUsage: usage)
                 if abs(candidate - speedMultiplier) >= Tuning.speedUpdateHysteresis {
@@ -2172,23 +2441,48 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
         }
 
+        // Show-all mode: also refresh the inactive available readers so the other-sources rows aren't
+        // stale. They share this tick's `elapsed` (correct for counter-delta sources, whose baselines
+        // are kept fresh by priming on engage). Return values are ignored — only the active source
+        // drives speed. Skipped when off, preserving active-only sampling by default.
+        if showAllSources {
+            for source in LoadSource.allCases where source != activeLoadSource && isSourceAvailable(source) {
+                _ = sampleSource(source, elapsed: elapsed)
+            }
+        }
+
         refreshMenuMetrics()
     }
 
     // Sample whichever reader currently drives the animation, returning its 0…1 fraction (or nil
     // if unavailable / not warmed up). The single point where the active source is read for speed.
     private func sampleActiveSource(elapsed: Double?) -> Double? {
-        switch activeLoadSource {
+        sampleSource(activeLoadSource, elapsed: elapsed)
+    }
+
+    // Sample one specific reader (any source, not just the active one), returning its 0…1 fraction.
+    // Used by sampleActiveSource, by the show-all-sources fan-out, and by the baseline-priming pass.
+    private func sampleSource(_ source: LoadSource, elapsed: Double?) -> Double? {
+        switch source {
         case .cpu: return loadMonitor.sampleUsage()
         case .memory: return memoryMonitor.sampleUsage(elapsed: elapsed)
         case .gpu: return gpuMonitor.sampleUsage()
         case .network: return networkMonitor.sampleUsage(elapsed: elapsed)
         case .disk: return diskMonitor.sampleUsage(elapsed: elapsed)
         case .fan: return fanMonitor.sampleUsage()
+        case .battery: return batteryMonitor.sampleUsage()
         }
     }
 
-    // Append a 0…1 driving fraction to the trace-chart ring buffer, trimming to capacity.
+    // The 0…1 value the trace chart should plot for the active source. Identical to the driving
+    // fraction for every source except battery, where the chart is a fuel gauge (charge level) rather
+    // than the discharge-current driver — because on a battery LOW is the alert, not high. Charge is
+    // valid whether plugged in or not, so this works on AC too. The driver still governs speed.
+    private func chartSample(forDriver driver: Double) -> Double {
+        activeLoadSource == .battery ? batteryMonitor.currentChargeFraction : driver
+    }
+
+    // Append a 0…1 chart value to the trace-chart ring buffer, trimming to capacity.
     private func recordLoadSample(_ usage: Double) {
         loadHistory.append(min(max(usage, 0), 1))
         if loadHistory.count > Tuning.loadHistoryCapacity {
@@ -2205,6 +2499,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .network: return networkMonitor.hasSample
         case .disk: return diskMonitor.hasSample
         case .fan: return fanMonitor.hasSample
+        case .battery: return batteryMonitor.hasSample
         }
     }
 
@@ -2219,6 +2514,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .network: return networkMonitor.currentLoad
         case .disk: return diskMonitor.currentLoad
         case .fan: return fanMonitor.currentUtilization
+        case .battery: return batteryMonitor.currentLoad
         }
     }
 
@@ -2226,8 +2522,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshMenuMetrics()
         refreshPresetSelectionState()
         refreshWidthInfo()
-        refreshOverlaySelectionState()
-        refreshLoadSourceSelectionState()
+        refreshLabelSelectionState()
+        refreshShowAllSourcesState()
         refreshKeepAwakeColorSelectionState()
         refreshUpdateStatus()
     }
@@ -2239,6 +2535,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         loadHistoryView.sourceLabel = activeLoadSource.menuTitle
         loadHistoryView.warmingUp = !activeSourceHasSample
         loadHistoryView.samples = loadHistory
+        // Battery is a fuel gauge (charge level, low = alert); everyone else plots the driving
+        // fraction (high = alert) at the CPU State thresholds. See chartSample(forDriver:).
+        if activeLoadSource == .battery {
+            loadHistoryView.colorPolarity = .lowIsHot
+            loadHistoryView.lowThreshold = Tuning.batteryLowThreshold
+            loadHistoryView.mediumThreshold = Tuning.batteryChargeMediumThreshold
+        } else {
+            loadHistoryView.colorPolarity = .highIsHot
+            loadHistoryView.lowThreshold = Tuning.cpuStateLowThreshold
+            loadHistoryView.mediumThreshold = Tuning.cpuStateMediumThreshold
+        }
 
         // Source-conditional: usageItem/stateItem show the ACTIVE source's metric + state. The
         // inactive source isn't sampled (see sampleSystemLoad), so showing its stale line would
@@ -2331,6 +2638,23 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .fan), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring fan load")
             }
+        case .battery:
+            if batteryMonitor.hasSample {
+                usageItem.title = batteryUsageLineText()
+                // State names the drain band while on battery (the driver), or "On AC" when plugged in
+                // (current 0 → idle animation) — more useful than a Low/Med/High of a zero draw.
+                let stateText = batteryMonitor.onBattery ? cpuStateText(for: batteryMonitor.currentLoad) : "On AC"
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .battery), stateText)
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — battery %.0f%%, %@",
+                    batteryMonitor.currentChargeFraction * Tuning.percentScale,
+                    stateText
+                ))
+            } else {
+                usageItem.title = MenuTitle.line(LoadSource.battery.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .battery), MenuTitle.warmingUp)
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring battery load")
+            }
         }
 
         if isAutoSpeed {
@@ -2358,6 +2682,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         } else {
             loadAverageItem.title = MenuTitle.line(MenuTitle.loadAvgPrefix, MenuTitle.loadAvgUnavailable)
         }
+
+        // Refresh the adjacent live-value slot on the same cadence (2s tick + menuWillOpen). Cheap
+        // when the label is off or custom — updateValueLabel() only rebuilds text in .value mode.
+        updateValueLabel()
     }
 
     private func memoryPressureText() -> String {
@@ -2413,23 +2741,27 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return segments.joined(separator: " · ")
     }
 
+    // Battery line: charge % (the readout) plus the discharge current in amps while on battery — the
+    // drain that drives the animation — or "AC" when plugged in. Mirrors the memory line showing the
+    // raw figure alongside what actually drives speed (the scaler-normalized draw).
+    private func batteryUsageLineText() -> String {
+        let pct = batteryMonitor.currentChargeFraction * Tuning.percentScale
+        var line = String(format: "Battery: %.0f%%", pct)
+        if batteryMonitor.onBattery {
+            if batteryMonitor.currentDischargeMilliamps > 0 {
+                line += String(format: " · %.1f A", batteryMonitor.currentDischargeMilliamps / 1000)
+            }
+        } else {
+            line += " · AC"
+        }
+        return line
+    }
+
     private func refreshPresetSelectionState() {
         let fileManager = FileManager.default
         for (item, preset) in zip(presetMenuItems, allPresets) {
             item.isEnabled = fileManager.fileExists(atPath: preset.path)
             item.state = (activePreset?.key == preset.key) ? .on : .off
-        }
-    }
-
-    // Radio group: the active source is `.on`, the rest `.off` — mirrors the width/preset selection
-    // pattern. A source whose reader can't produce a value on this hardware (e.g. no readable GPU
-    // accelerator) is disabled, like refreshPresetSelectionState disables a missing-GIF preset.
-    private func refreshLoadSourceSelectionState() {
-        for item in loadSourceMenuItems {
-            item.state = (item.tag == activeLoadSource.rawValue) ? .on : .off
-            if let source = LoadSource(rawValue: item.tag) {
-                item.isEnabled = isSourceAvailable(source)
-            }
         }
     }
 
@@ -2456,6 +2788,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .network: return networkMonitor.isAvailable
         case .disk: return diskMonitor.isAvailable
         case .fan: return fanMonitor.isAvailable
+        case .battery: return batteryMonitor.isAvailable
         }
     }
 
@@ -2480,29 +2813,88 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         )
     }
 
-    private func refreshOverlaySelectionState() {
-        if let text = requestedOverlayText {
-            let style = requestedOverlayBold ? "bold" : "regular"
-            overlayMenuItem.title = MenuTitle.overlay("\(text) (\(style))")
-            overlayClearItem.isEnabled = true
-        } else {
-            overlayMenuItem.title = MenuTitle.overlay(MenuTitle.overlayOff)
-            overlayClearItem.isEnabled = false
+    // Reflect the current label mode in the submenu: parent title shows the state, and the radio
+    // checks mark the active choice. Called on menuWillOpen and after any mode change.
+    private func refreshLabelSelectionState() {
+        switch labelMode {
+        case .off:
+            labelMenuItem.title = MenuTitle.label(MenuTitle.labelOff)
+        case .value:
+            labelMenuItem.title = MenuTitle.label(MenuTitle.labelValueItem.lowercased())
+        case .custom(let text):
+            labelMenuItem.title = MenuTitle.label("\"\(text)\"")
         }
-        // Limit tracks the current GIF-derived width, so keep the menu prompt title in sync.
-        overlaySetItem.title = MenuTitle.setText(max: maxOverlayChars())
+        labelOffItem.state = (labelMode == .off) ? .on : .off
+        labelValueItem.state = (labelMode == .value) ? .on : .off
+        if case .custom = labelMode { labelCustomItem.state = .on } else { labelCustomItem.state = .off }
     }
 
-    // Adaptive overlay limit: roughly how many monospaced glyphs fit across the current
-    // GIF-derived slot at the overlay font size, clamped to [overlayMinChars, overlayMaxChars].
-    // A narrow GIF caps input lower than a wide one; the absolute ceiling still applies.
-    private func maxOverlayChars() -> Int {
-        let barHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)
-        let fontSize = min(max(barHeight * Tuning.overlayFontScale, Tuning.overlayMinFontSize), Tuning.overlayMaxFontSize)
-        let charAdvance = max(fontSize * Tuning.overlayCharAdvanceFraction, 1)
-        let usableWidth = max(slotLength() - Tuning.overlayHorizontalInset * 2, 1)
-        let fit = Int((usableWidth / charAdvance).rounded(.down))
-        return min(max(fit, Tuning.overlayMinChars), Tuning.overlayMaxChars)
+    // Reconcile the value slot's existence and content with labelMode. .off tears the second status
+    // item down (freeing the menu-bar slot); .value / .custom create it on demand and refresh its text.
+    private func applyLabelMode() {
+        if labelMode == .off {
+            if let item = valueStatusItem {
+                NSStatusBar.system.removeStatusItem(item)
+                valueStatusItem = nil
+            }
+            return
+        }
+        if valueStatusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // Native menu-bar text look; button.title (not attributedTitle) so the color tracks the
+            // menu-bar appearance automatically. Shares the same dropdown as the animation item.
+            item.button?.font = NSFont.menuBarFont(ofSize: 0)
+            item.button?.imagePosition = .noImage
+            item.menu = infoMenu
+            valueStatusItem = item
+        }
+        updateValueLabel()
+    }
+
+    // Write the current label text into the value slot (no-op if the slot doesn't exist). In .value
+    // mode this is the active source's compact live reading; in .custom mode, the fixed user string.
+    private func updateValueLabel() {
+        guard let button = valueStatusItem?.button else { return }
+        switch labelMode {
+        case .off:
+            return
+        case .value:
+            button.title = compactLabelText(for: activeLoadSource)
+        case .custom(let text):
+            button.title = text
+        }
+    }
+
+    // A short, menu-bar-sized readout of a source's live value: "CPU 47%", "MEM 63%", "NET ↓3.4↑0.1",
+    // "DSK R12 W4", "GPU 30%", "FAN 45%", "BAT 88%" (MB/s implied for the rate sources). Compact
+    // deliberately — the dropdown carries the fully-labeled figures; this is the at-a-glance number.
+    private func compactLabelText(for source: LoadSource) -> String {
+        let tag = source.menuTitle.prefix(3).uppercased()
+        guard activeSourceHasSample else { return "\(tag) …" }
+        switch source {
+        case .cpu:
+            return String(format: "CPU %.0f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
+        case .memory:
+            return String(format: "MEM %.0f%%", memoryMonitor.currentUsedFraction * Tuning.percentScale)
+        case .gpu:
+            return String(format: "GPU %.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale)
+        case .network:
+            return String(
+                format: "NET ↓%.1f ↑%.1f",
+                networkMonitor.currentInboundBytesPerSec / Tuning.bytesPerMiB,
+                networkMonitor.currentOutboundBytesPerSec / Tuning.bytesPerMiB
+            )
+        case .disk:
+            return String(
+                format: "DSK R%.0f W%.0f",
+                diskMonitor.currentReadBytesPerSec / Tuning.bytesPerMiB,
+                diskMonitor.currentWriteBytesPerSec / Tuning.bytesPerMiB
+            )
+        case .fan:
+            return String(format: "FAN %.0f%%", fanMonitor.currentUtilization * Tuning.percentScale)
+        case .battery:
+            return String(format: "BAT %.0f%%", batteryMonitor.currentChargeFraction * Tuning.percentScale)
+        }
     }
 
     @objc
@@ -2526,12 +2918,86 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // the on-demand resample if that source already has a usable value (e.g. CPU/GPU/memory).
         loadHistory.removeAll(keepingCapacity: true)
         if let seed = sampleActiveSource(elapsed: nil) {
-            recordLoadSample(seed)
+            recordLoadSample(chartSample(forDriver: seed))
         }
         lastSampleUptime = nil
         reevaluateSpeedForCurrentConditions()
-        refreshLoadSourceSelectionState()
+        // Rebuild the other-source rows so the newly-active source drops out of the list and the
+        // previously-active one (re)joins it — the list only ever shows the *other* readers.
+        refreshShowAllSourcesState()
         refreshMenuMetrics()
+    }
+
+    @objc
+    private func toggleShowAllSources() {
+        showAllSources.toggle()
+        // Priming on engage refreshes the dormant counter-delta readers' baselines, so their first
+        // delta after the mode turns on isn't computed over a stale multi-minute gap (a rate spike).
+        if showAllSources {
+            primeInactiveSources()
+        }
+        refreshShowAllSourcesState()
+        refreshMenuMetrics()
+    }
+
+    // Store fresh counter baselines for readers that haven't been sampled while inactive, so their
+    // first real delta once show-all begins is measured over a single tick, not the whole dormant gap.
+    // elapsed=nil → each counter-delta reader just stores its baseline and reports no rate (it warms up
+    // on the next 2s tick); instantaneous readers (cpu/gpu/fan/battery) are point reads, so this is a
+    // harmless refresh for them. lastSampleUptime is reset so the next tick starts a fresh interval.
+    private func primeInactiveSources() {
+        for source in LoadSource.allCases where source != activeLoadSource && isSourceAvailable(source) {
+            _ = sampleSource(source, elapsed: nil)
+        }
+        lastSampleUptime = nil
+    }
+
+    // Update the disclosure header glyph and the inline per-source rows. Collapsed → every row hidden.
+    // Expanded → one compact readout row per *available, non-active* source (the active source is shown
+    // on top with the sparkline, and unavailable sources — Fan on fanless Macs, Battery on desktops —
+    // stay hidden, mirroring the old disabled Load Source rows). Each visible row is clickable and
+    // switches the animation's driving source (selectLoadSource).
+    private func refreshShowAllSourcesState() {
+        otherSourcesHeaderView.isExpanded = showAllSources
+        for item in otherSourceRowItems {
+            guard let source = LoadSource(rawValue: item.tag) else { continue }
+            if showAllSources, source != activeLoadSource, isSourceAvailable(source) {
+                item.isHidden = false
+                item.title = allSourcesRowText(for: source)
+            } else {
+                item.isHidden = true
+            }
+        }
+    }
+
+    // One compact "<Source>: <value>" row for the other-sources list, reusing the same line builders
+    // as the single-source dashboard so the two never drift. "warming up..." until the reader (a
+    // counter-delta source) has produced its first usable sample.
+    private func allSourcesRowText(for source: LoadSource) -> String {
+        let warming = MenuTitle.line(source.menuTitle, MenuTitle.warmingUp)
+        switch source {
+        case .cpu:
+            guard loadMonitor.hasSample else { return warming }
+            return String(format: "CPU: %.1f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
+        case .memory:
+            guard memoryMonitor.hasSample else { return warming }
+            return memoryUsageLineText()
+        case .gpu:
+            guard gpuMonitor.hasSample else { return warming }
+            return String(format: "GPU: %.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale)
+        case .network:
+            guard networkMonitor.hasSample else { return warming }
+            return networkUsageLineText()
+        case .disk:
+            guard diskMonitor.hasSample else { return warming }
+            return diskUsageLineText()
+        case .fan:
+            guard fanMonitor.hasSample else { return warming }
+            return fanUsageLineText()
+        case .battery:
+            guard batteryMonitor.hasSample else { return warming }
+            return batteryUsageLineText()
+        }
     }
 
     @objc
@@ -2543,42 +3009,45 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     @objc
-    private func promptOverlayText() {
-        let limit = maxOverlayChars()
+    private func selectLabelOff() {
+        setLabelMode(.off)
+    }
+
+    @objc
+    private func selectLabelValue() {
+        setLabelMode(.value)
+    }
+
+    // Prompt for a fixed custom label. Switches to .custom on Apply; an empty field means .off.
+    @objc
+    private func promptCustomLabel() {
         let alert = NSAlert()
-        alert.messageText = "Set Overlay Text"
-        alert.informativeText = "Enter up to \(limit) characters (fits the current \(String(format: "%.0f pt", slotLength())) width)."
+        alert.messageText = "Set Menu Bar Label"
+        alert.informativeText = "Shown in its own menu-bar slot. Up to \(Tuning.labelMaxChars) characters; leave blank for none."
         alert.alertStyle = .informational
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
 
-        let field = NSTextField(string: requestedOverlayText ?? "")
+        let current: String = { if case .custom(let t) = labelMode { return t } else { return "" } }()
+        let field = NSTextField(string: current)
         field.placeholderString = "TEXT"
-        field.frame = NSRect(x: 0, y: 32, width: 260, height: 24)
+        field.frame = NSRect(x: 0, y: 6, width: 260, height: 24)
 
-        let textLabel = NSTextField(labelWithString: "Overlay text")
-        textLabel.frame = NSRect(x: 0, y: 58, width: 260, height: 16)
+        let textLabel = NSTextField(labelWithString: "Label text")
+        textLabel.frame = NSRect(x: 0, y: 32, width: 260, height: 16)
 
-        let boldToggle = NSButton(checkboxWithTitle: "Bold", target: nil, action: nil)
-        boldToggle.state = requestedOverlayBold ? .on : .off
-        boldToggle.frame = NSRect(x: 0, y: 6, width: 120, height: 18)
-
-        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 78))
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 52))
         accessory.addSubview(textLabel)
         accessory.addSubview(field)
-        accessory.addSubview(boldToggle)
         alert.accessoryView = accessory
 
         alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
 
         // Focus the text field. `initialFirstResponder` is the deterministic mechanism —
-        // NSAlert makes its window key during runModal() and honors it — and replaces the
-        // old three staggered post-presentation focus retries. One post-present hop remains
-        // as a belt-and-suspenders (some AppKit versions have ignored initialFirstResponder
-        // on NSAlert accessory views) and to place the caret at the end of any pre-filled
-        // text, which needs the field editor that only exists once the field is focused.
+        // NSAlert makes its window key during runModal() and honors it. One post-present hop
+        // remains as a belt-and-suspenders and to place the caret at the end of any pre-filled text.
         let alertWindow = alert.window
         alertWindow.initialFirstResponder = field
         DispatchQueue.main.async { [weak field, weak alertWindow] in
@@ -2592,34 +3061,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        requestedOverlayBold = boldToggle.state == .on
         let input = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty else {
-            applyOverlayCleared()
-            return
-        }
-
-        guard input.count <= limit else {
-            showRuntimeError("Overlay text must be at most \(limit) characters at this width.")
-            return
-        }
-
-        requestedOverlayText = input
-        updateRenderedFrames()
-        renderCurrentFrame()
-        refreshOverlaySelectionState()
+        setLabelMode(input.isEmpty ? .off : .custom(String(input.prefix(Tuning.labelMaxChars))))
     }
 
-    @objc
-    private func clearOverlayText() {
-        applyOverlayCleared()
-    }
-
-    private func applyOverlayCleared() {
-        requestedOverlayText = nil
-        updateRenderedFrames()
-        renderCurrentFrame()
-        refreshOverlaySelectionState()
+    // Single point that changes the label mode: updates state, reconciles the slot, refreshes the menu.
+    private func setLabelMode(_ mode: MenuBarLabel) {
+        guard mode != labelMode else { return }
+        labelMode = mode
+        applyLabelMode()
+        refreshLabelSelectionState()
     }
 
     private func switchToGif(to path: String, descriptor: PresetDescriptor?) {
@@ -2651,7 +3102,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         applySizing()
         renderCurrentFrame()
         refreshWidthInfo()
-        refreshOverlaySelectionState()
 
         // New frame source: re-sync timing on the running driver rather than tearing it
         // down (the link's button/screen is unchanged, only the frames/durations differ).
@@ -2948,12 +3398,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         layer.contents = renderedFrames[frameIndex]
     }
 
-    private func effectiveOverlayText() -> String? {
-        guard let raw = requestedOverlayText else { return nil }
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
-    }
-
     private func updateRenderedFrames() {
         guard !frames.isEmpty else {
             renderedFrames = []
@@ -2962,7 +3406,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         let availableHeight = max(NSStatusBar.system.thickness - Tuning.renderVerticalInset, 1)
         let availableWidth = max(statusItem.length - Tuning.renderHorizontalInset, 1)
-        let overlayText = effectiveOverlayText()
         // Rasterize at the display's backing scale so the CGImages are crisp on Retina; the
         // layer's contentsScale (set below) must match so CoreAnimation maps pixels 1:1.
         let scale = backingScale()
@@ -3004,32 +3447,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
             let imageRect = NSRect(origin: .zero, size: targetSize)
             rawImage.draw(in: imageRect, from: NSRect(origin: .zero, size: rawImage.size), operation: .sourceOver, fraction: 1.0)
-
-            if let text = overlayText {
-                let fontSize = min(max(targetSize.height * Tuning.overlayFontScale, Tuning.overlayMinFontSize), Tuning.overlayMaxFontSize)
-                let fontWeight: NSFont.Weight = self.requestedOverlayBold ? .bold : .regular
-                let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: fontWeight)
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.alignment = .center
-                paragraph.lineBreakMode = .byTruncatingTail
-
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: NSColor.white,
-                    .strokeColor: NSColor.black,
-                    .strokeWidth: Tuning.overlayStrokeWidth,
-                    .paragraphStyle: paragraph
-                ]
-
-                let textSize = (text as NSString).size(withAttributes: attributes)
-                let textRect = NSRect(
-                    x: Tuning.overlayHorizontalInset,
-                    y: max((targetSize.height - textSize.height) / 2, Tuning.overlayVerticalInset),
-                    width: max(targetSize.width - (Tuning.overlayHorizontalInset * 2), 1),
-                    height: min(textSize.height, max(targetSize.height - (Tuning.overlayVerticalInset * 2), 1))
-                )
-                (text as NSString).draw(in: textRect, withAttributes: attributes)
-            }
 
             NSGraphicsContext.restoreGraphicsState()
             if let cgImage = rep.cgImage {

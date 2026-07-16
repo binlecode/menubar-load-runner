@@ -32,7 +32,7 @@ Run from the repository root:
 ```bash
 ./menubar-load-runner                       # default preset (horse-white), detached
 ./menubar-load-runner --foreground           # run attached to the current shell (see stderr/output directly)
-./menubar-load-runner dog-black --overlay-text CPU
+./menubar-load-runner dog-black --label value   # adjacent slot shows the live source reading
 ./menubar-load-runner --help
 ```
 
@@ -115,12 +115,12 @@ sequence, or `.app` bundle. Use the scripts:
 
 Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bottom as:
 
-- **`Tuning`** — every magic number (icon-aspect clamp, overlay font sizing, alpha trim threshold,
+- **`Tuning`** — every magic number (icon-aspect clamp, label char cap, alpha trim threshold,
   hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
   literals. **Exception:** per-preset speed ranges live in `gifs/presets.json` (see the
   preset-registry note below), not `Tuning`. Width is not tuned per-preset — it derives from each GIF's
   aspect ratio at runtime (`currentGifAspect`/`slotLength`).
-- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--overlay-text`, positional
+- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--label`, positional
   preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
   `presetOrPath`; when absent it is left empty and the app resolves the manifest's `defaultPreset`
   (`horse-white`). Keyword→path resolution
@@ -170,8 +170,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
   - **Two decoupled pipelines**: `frames`/`frameAspects`/`baseDurations` hold the raw decoded GIF (from
     `loadFrames`, which also trims transparent padding via `trimTransparentPadding` so preset art isn't
     padded to a square). `renderedFrames` holds the actual per-frame `NSImage`s sized for the current status
-    item length and with the overlay text (if any) baked in, produced by `updateRenderedFrames()`. Any change
-    to width, overlay text, or overlay bold state must call `updateRenderedFrames()` (usually via
+    item length, produced by `updateRenderedFrames()` (frames render clean — no text is baked in; the label
+    is a separate status item, see below). Any change to width must call `updateRenderedFrames()` (usually via
     `applySizing()`) before `renderCurrentFrame()` picks up the new images.
   - **Game loop**: a `CADisplayLink` (macOS 14+, via `NSView.displayLink` on the status item button; a 60 Hz
     `Timer` fallback on older systems) drives `advanceFrames(now:)`, which accumulates real elapsed time
@@ -193,9 +193,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     three helpers: `sampleActiveSource(elapsed:)` (in `sampleSystemLoad`), `activeSourceHasSample` /
     `activeSourceCurrentUsage` (in `reevaluateSpeedForCurrentConditions`). Sampling is **active-only** (the
     inactive monitor isn't polled), so `refreshMenuMetrics` is **source-conditional**: it shows the active
-    source's metric + state (CPU%/CPU State, or Memory%+swap/Memory Pressure) — not both. The `Load Source`
-    submenu is a radio group wired exactly like width/preset (`selectLoadSource`,
-    `refreshLoadSourceSelectionState`). Adding gpu/network/disk = add a `LoadSource` case + its reader +
+    source's metric + state (CPU%/CPU State, or Memory%+swap/Memory Pressure) — not both. The switcher is
+    the **Other Sources** collapsible section (there is no separate `Load Source` submenu): a disclosure
+    header row (`otherSourcesHeaderItem`, whose view is a `DisclosureMenuItemView` that draws its own ▸/▾
+    glyph since NSMenuItem has no native disclosure control) toggles `showAllSources`, which reveals an inline row per
+    *available, non-active* reader (`otherSourceRowItems`, built in `applicationDidFinishLaunching`, state
+    driven by `refreshShowAllSourcesState`). Each row shows that reader's live readout (`allSourcesRowText`)
+    and, clicked, switches the driving source (`selectLoadSource`) — the active source is never listed (it's
+    on top with the sparkline). Expanded = sample every reader each tick; collapsed = active-only sampling
+    (the self-throttle ethos). Adding gpu/network/disk = add a `LoadSource` case + its reader +
     branches in the three helpers. Counter-delta sources divide by the real elapsed wall time captured
     each tick in `sampleSystemLoad` (`ProcessInfo.systemUptime` → `lastSampleUptime`, threaded as the
     `elapsed:` arg); the memory source's swap rate already uses it, and network/disk reuse it (a source
@@ -231,12 +237,12 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change), keyed on
     `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
     every frame on toggle). Its tint is user-selectable via the sibling **Keep Awake Color** submenu — a
-    radio group wired exactly like Load Source (`KeepAwakeColor` registry, `selectKeepAwakeColor`,
+    radio group wired like the preset/width selectors (`KeepAwakeColor` registry, `selectKeepAwakeColor`,
     `refreshKeepAwakeColorSelectionState`) offering Dusty Teal (default) or Sand, each with a dark/light
     tone chosen per menu-bar appearance. Menu-only (no CLI/env), session-lived like the toggle itself.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
-    `refreshWidthInfo`, `refreshOverlaySelectionState`, `refreshLoadSourceSelectionState`) rather
+    `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshShowAllSourcesState`) rather
     than pushed reactively. When adding
     a new piece of runtime state, wire it into these refresh functions and into the initial
     `applicationDidFinishLaunching` setup.
@@ -246,11 +252,16 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     the status-item length (menu-bar height × aspect, floored at `Tuning.minBaseSlotWidth`) — the sole
     driver of item width, used by both `applySizing()` and the read-only `refreshWidthInfo()` menu line.
     There is no user width control (`--width` / slot submenu removed) and no per-preset slot constant.
-  - **Overlay char limit is width-adaptive**: `maxOverlayChars()` estimates how many monospaced glyphs
-    fit across `slotLength()` at the overlay font size, clamped to `[Tuning.overlayMinChars,
-    Tuning.overlayMaxChars]`. The interactive `Set Text...` prompt and its menu title use it; the
-    `--overlay-text` CLI path validates against the absolute `overlayMaxChars` ceiling since the GIF
-    width isn't known at parse time. Rendering still truncates (`byTruncatingTail`) as a backstop.
+  - **Menu-bar label is a second status item**: `MenuBarLabel` (`.off`/`.value`/`.custom(String)`,
+    parsed from `--label` / `MENUBAR_LOAD_RUNNER_LABEL`) drives an optional `valueStatusItem` — a
+    *separate* `NSStatusItem` (variableLength), NOT text baked onto the animation (that was the old
+    overlay; it was illegible on a 22pt icon and re-rasterized frames on every value change). `applyLabelMode()`
+    creates the second item on demand for `.value`/`.custom` and tears it down for `.off` (freeing the slot);
+    `updateValueLabel()` (called from `refreshMenuMetrics`, so it tracks the 2s tick) writes the text — the
+    active source's compact reading via `compactLabelText(for:)` in `.value` mode, or the fixed string in
+    `.custom`. The item shares `infoMenu` (same dropdown) and uses `NSFont.menuBarFont` so its color tracks
+    the menu-bar appearance. Menu switcher: the **Menu Bar Label** submenu (`labelOffItem`/`labelValueItem`/
+    `labelCustomItem`, radio group via `refreshLabelSelectionState`, mutated through `setLabelMode`).
 
 ## Adding a new built-in preset
 

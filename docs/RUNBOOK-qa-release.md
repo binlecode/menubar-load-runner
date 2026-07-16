@@ -74,8 +74,7 @@ $BIN --help >/dev/null 2>&1;                    chk "--help" 0 $?
 $BIN --width 2 >/dev/null 2>&1;                 chk "--width removed (rejected)" 1 $?
 $BIN --speed-multiplier 0 >/dev/null 2>&1;      chk "--speed-multiplier 0" 1 $?
 $BIN --speed-multiplier -2 >/dev/null 2>&1;     chk "--speed-multiplier neg" 1 $?
-$BIN --overlay-text "" >/dev/null 2>&1;         chk "--overlay-text empty" 1 $?
-$BIN --overlay-text THIRTEENCHARS >/dev/null 2>&1; chk "--overlay-text >12" 1 $?
+$BIN --label >/dev/null 2>&1;                   chk "--label no value" 1 $?
 $BIN --load-source >/dev/null 2>&1;             chk "--load-source no value" 1 $?
 $BIN foo bar >/dev/null 2>&1;                   chk "extra positional" 1 $?
 echo "parse: passes=$pass fails=$fail"
@@ -93,7 +92,7 @@ grep -q "## \[$VER\]" CHANGELOG.md && echo "  PASS CHANGELOG has [$VER] section"
 
 ## 3. Full launch lifecycle (EXIT_AFTER → clean exit 0, no unexpected stderr)
 
-Covers both load sources, auto & fixed speed, overlay, a wide (high-aspect) preset, a custom path,
+Covers both load sources, auto & fixed speed, the label slot, a wide (high-aspect) preset, a custom path,
 and both env vars. Each run must exit 0 with stderr containing only the expected lines.
 
 ```bash
@@ -114,8 +113,8 @@ run "force-unavail net(env)"  "unavailable on this machine" env MENUBAR_LOAD_RUN
 run "force-unavail, other src" "" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu $BIN --load-source disk
 run "fixed speed"             "" $BIN --speed-multiplier 1.5
 run "fixed + memory"          "" $BIN --speed-multiplier 1.5 --load-source memory
-run "overlay + gpu"           "" $BIN --overlay-text GPU --load-source gpu
-run "wide preset + overlay"   "" $BIN totoro-group-white --overlay-text NET --load-source network
+run "label value + gpu"       "" $BIN --label value --load-source gpu
+run "wide preset + label"     "" $BIN totoro-group-white --label NET --load-source network
 run "totoro-group + disk"     "" $BIN totoro-group-white --load-source disk
 run "custom path + memory"    "" $BIN "$GIF" --load-source memory
 run "env LOAD_SOURCE"         "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $BIN
@@ -302,9 +301,9 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
       working hardware, relaunch with `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk
       ./menubar-load-runner --foreground` — those three items are greyed out in the **Load Source**
       submenu, and requesting one at launch logs a fallback-to-cpu line (also covered automatically in §3).
-- [ ] `Width` line is read-only and shows the GIF-derived width + aspect; Overlay / Preset submenus
-      still work (the overlay `Set Text...` limit tracks the preset's width); **About** shows the
-      current version; Exit works.
+- [ ] `Width` line is read-only and shows the GIF-derived width + aspect; Menu Bar Label / Preset
+      submenus still work (Menu Bar Label → Off / Live Value / Custom Text…, the value slot appears/
+      disappears accordingly); **About** shows the current version; Exit works.
 
 ## 8. Cleanup + sign-off
 

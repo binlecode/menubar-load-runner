@@ -5,9 +5,9 @@
 </p>
 
 Small macOS menu bar app that renders an animated GIF in the status bar.
-Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, or fan — see Load source below).
+Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
 
-Current version: **1.9.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.10.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -207,16 +207,25 @@ gets a narrow item. The current width is shown read-only in the menu (see below)
 ./menubar-load-runner --speed-multiplier 1.2
 ```
 
-## Runtime text overlay
+## Menu-bar label (adjacent value / text slot)
 
 ```bash
-./menubar-load-runner dog-black --overlay-text CPU
+./menubar-load-runner --label value      # live reading of the active source, e.g. "CPU 15%"
+./menubar-load-runner dog-black --label BUILD   # a fixed label in its own slot
 ```
 
-`--overlay-text` draws text on each rendered frame at runtime without modifying the GIF file.
-The character limit is adaptive to the item width — from 1 up to 12 characters, with narrower GIFs
-allowing fewer (the interactive `Set Text...` prompt shows the current limit). The `--overlay-text`
-flag validates against the absolute ceiling of 12, since the GIF's width isn't known at parse time.
+`--label` adds an optional **second menu-bar slot** next to the animation:
+
+- `--label value` shows the active source's live reading, refreshed on the 2s tick — `CPU 15%`,
+  `MEM 63%`, `NET ↓3.4 ↑0.1`, `DSK R12 W4`, `GPU 30%`, `FAN 45%`, `BAT 88%` (MB/s implied for the rate
+  sources). The full, fully-labeled figures still live in the dropdown; this is the at-a-glance number.
+- `--label <text>` shows a fixed label (up to 24 chars) — handy for telling apart multiple instances
+  (e.g. one on `--load-source cpu` labeled `CPU`, another on `net` labeled `NET`).
+- `--label off` (the default) shows nothing and claims no extra menu-bar space.
+
+Also settable via `MENUBAR_LOAD_RUNNER_LABEL`, and switchable at runtime from the menu's **Menu Bar
+Label** submenu (Off / Live Value / Custom Text…). It renders in the native menu-bar font in its own
+slot rather than being drawn onto the tiny animated icon, so it stays legible.
 
 ## The menu (live dashboard)
 
@@ -225,9 +234,12 @@ source, refreshed while it's open:
 
 - **Trace chart** at the top — a small bar chart of the last ~60s of the source's 0–1 driving
   fraction (the same value that maps to animation speed). Bars are colored by the same Low/Medium/High
-  thresholds as the state line below, so the chart and text agree. Switching source resets it.
+  thresholds as the state line below, so the chart and text agree. The **Battery** source is the
+  exception: it's a charge-level fuel gauge with an inverted ramp — a low battery reads red (≤20%),
+  amber near ~40%, green when healthy — since for battery *low* is the alert, not high. Switching
+  source resets it.
 - **Numeric readouts** below — current usage, state, speed multiplier, and system load average.
-- A read-only **Width** readout, plus selectors for **Load Source**, **Overlay Text**, and the **preset** list.
+- A read-only **Width** readout, an **Other Sources** collapsible list (the load-source switcher), plus selectors for the **Menu Bar Label** (Off / Live Value / Custom Text) and the **preset** list.
 
 ## Load source (what drives the animation)
 
@@ -237,9 +249,10 @@ MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network ./menubar-load-runner
 ```
 
 `--load-source` (or the `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` env var) selects which system reader
-drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, `disk`, or `fan`. Unknown values —
+drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, `disk`, `fan`, or `battery`. Unknown values —
 or a source with no readable hardware on this machine — fall back to `cpu` (unavailable sources are
-disabled in the menu). It can also be switched live from the `Load Source` menu. All readers are
+disabled in the menu). It can also be switched live by expanding the **Other Sources** list in the menu
+and clicking a reader (see below). All readers are
 unprivileged (no `sudo`); the app only ever *reads* load.
 
 - **cpu** (default): CPU usage across all cores.
@@ -248,10 +261,24 @@ unprivileged (no `sudo`); the app only ever *reads* load.
 - **network**: total interface throughput (rx+tx, loopback excluded).
 - **disk**: total block-device throughput (read+write across all drives).
 - **fan**: fan speed as a thermal/cooling signal (RPM as a fraction of the fan's max; max across fans). A lagging signal that trails actual work and only ramps under sustained thermal load, but idle fans still spin — so it keeps some visible motion (a genuinely stopped fan still crawls at the preset's minimum speed). Unavailable on fanless Macs (e.g. MacBook Air, which have zero fans), which fall back to `cpu`.
+- **battery**: discharge current (instantaneous draw, in amps) while on battery — a fast drain animates faster; on AC power the draw is zero, so the animation idles. The menu also shows the charge level. Unavailable on desktop Macs with no battery, which fall back to `cpu`.
 
 Without `--speed-multiplier`, animation speed adapts to the selected load source. Per-preset speed
 ranges are defined in `gifs/presets.json`; edit that file to change a range or add a preset (the app
 loads it at startup). Switching source changes *which* load value is mapped, not the preset's range.
+
+### Other sources (the switcher + multi-metric view)
+
+The active source is shown on top with the sparkline. Every *other* source lives under the
+**Other Sources** disclosure row in the menu: click the row (▸ / ▾) to expand or collapse an inline
+list of the remaining available readers, each showing its live readout. Clicking a reader's row
+switches the driving source to it — it moves up top and drops out of the list.
+
+By default only the active source is sampled (so the indicator doesn't add to the load it visualizes),
+and the list starts collapsed. Expanding it samples *every* available reader each tick, turning the
+menu into a compact multi-metric monitor; collapsing restores active-only sampling. Launch with the
+list already expanded via `--show-all-sources` (or `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`). The active source
+still drives the animation; the history sparkline still tracks the active source only.
 
 > How each source is measured and normalized — EMA smoothing, the memory + swap composite,
 > btop-style adaptive auto-scaling for the throughput (bytes/sec) sources, and self-throttling under
@@ -301,12 +328,12 @@ If a detached instance won't stop or a launch silently fails, check `/tmp/menuba
 
 Click the menu bar item to open:
 
-- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`
+- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`; or `Battery` (charge % + discharge A, or `AC`) / `Battery State`
 - `Load Avg (1/5/15m)`
 - `Speed Multiplier` (shows the active load source and mode; a separate `Slowing animation — <cause>` line appears only when a self-throttle condition is active, naming the cause: thermal throttling, Low Power Mode, or memory pressure)
-- `Load Source` (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan`; radio selection, takes effect immediately; sources with no readable hardware are disabled)
+- `▸ Other Sources` (disclosure row) — click to expand/collapse an inline list of every *other* available reader (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan` / `Battery`, minus the active one; sources with no readable hardware are omitted). Each row shows that reader's live readout; clicking it switches the driving source to it (takes effect immediately). Expanding samples every reader each tick; collapsed (the default) samples only the active source. The active source still drives the animation. Launch expanded with `--show-all-sources` / `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
-- `Overlay Text` (`Set Text...` with a width-adaptive char limit + bold toggle, `Clear`)
+- `Menu Bar Label` -> `Off` / `Live Value` (the active source's compact live reading in its own slot) / `Custom Text…` (a fixed label, up to 24 chars). Off by default; the parent title shows the current state. Also settable at launch via `--label` / `MENUBAR_LOAD_RUNNER_LABEL`
 - `Keep Awake` (checkbox) — keeps the Mac awake while the app runs by spawning `caffeinate -i -w <pid>` (idle-sleep only; the display may still sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake — its color is selectable via the **Keep Awake Color** submenu (**Dusty Teal**, the default, or **Sand**). Resets to off on launch.
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)

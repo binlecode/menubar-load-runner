@@ -110,7 +110,6 @@ of the public API and may change in any release.
     re-rasterization.
   - Intent is memory-only: the toggle resets to off on launch. Auto-restore across launches and an
     activate/deactivate notification are deferred.
-  - See `docs/DESIGN-system.md` §22 for the full design.
 
 ## [1.7.1] - 2026-07-10
 
@@ -351,10 +350,10 @@ of the public API and may change in any release.
 ### Changed
 
 - Documentation only: split the login-item docs to match the repo convention (README = usage,
-  `docs/DESIGN-system.md` = source-anchored mechanism). The README "Start at login" section is
+  the internal design doc = source-anchored mechanism). The README "Start at login" section is
   trimmed to install/uninstall usage; the full LaunchAgent mechanics — `--no-detach` supervision,
   `RunAtLoad` timing, the `bootout` reload race, and Background Task Management ("Allow in the
-  Background") behavior — now live in `docs/DESIGN-system.md` §19.
+  Background") behavior — live in the internal design doc.
 
 ## [1.1.1] - 2026-07-07
 
@@ -429,8 +428,7 @@ Initial stable release.
 - Debug / QA hooks: `MENUBAR_LOAD_RUNNER_EXIT_AFTER` (self-terminate after N seconds) and
   `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE` (force a load source unavailable).
 - In-app version string, shown in the About dialog and `--help`.
-- Documentation: `README.md`, `docs/DESIGN-system.md` (source-anchored architecture map),
-  `docs/RUNBOOK-qa-release.md` (release QA gate), and `CLAUDE.md`.
+- Documentation: `README.md`, `docs/RUNBOOK-qa-release.md` (release QA gate), and `CLAUDE.md`.
 
 ### Engineering notes
 

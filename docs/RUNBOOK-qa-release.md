@@ -319,9 +319,13 @@ swiftc tmp/scalercheck.swift -o tmp/scalercheck && ./tmp/scalercheck; rm -f tmp/
 pkill -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
 # forwards --load-source, self-exits:
 MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./menubar-load-runner --foreground --load-source memory 2>&1 | tail -2
-# singleton: 2nd instance rejected
-MENUBAR_LOAD_RUNNER_EXIT_AFTER=8 ./menubar-load-runner --load-source memory >/dev/null 2>&1; sleep 1
-./menubar-load-runner --load-source cpu 2>&1 | grep -qi 'already running' && echo "  PASS singleton rejects 2nd" || echo "  FAIL singleton"
+# singleton: 2nd instance rejected. Launch the victim with a generous self-exit window and poll for
+# it to register, then capture the 2nd launch's output and match WITHOUT a pipe — under `set -o
+# pipefail` a `| grep -q` makes the launcher take SIGPIPE (141) when grep closes early, a false FAIL.
+MENUBAR_LOAD_RUNNER_EXIT_AFTER=30 ./menubar-load-runner --load-source memory >/dev/null 2>&1
+for _ in $(seq 10); do pgrep -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
+out=$(./menubar-load-runner --load-source cpu 2>&1)
+case "$out" in *"already running"*) echo "  PASS singleton rejects 2nd" ;; *) echo "  FAIL singleton (got: $out)" ;; esac
 pkill -f 'MenuBarLoadRunner' 2>/dev/null
 ```
 

@@ -80,10 +80,17 @@ fi
 
 # --- 4. Install directory --------------------------------------------------
 if [ -d "$INSTALL_DIR/.git" ]; then
-  remove="yes"
-  if [ "$ASSUME_YES" != "yes" ] && { : < /dev/tty; } 2>/dev/null; then
+  # Deleting is destructive, so default to KEEP unless consent is explicit: --yes, or an
+  # interactive y/N answer. A non-interactive run without --yes (piped/automation, no tty) leaves
+  # the dir in place rather than silently `rm -rf`-ing it — pass --yes to delete unattended.
+  remove="no"
+  if [ "$ASSUME_YES" = "yes" ]; then
+    remove="yes"
+  elif { : < /dev/tty; } 2>/dev/null; then
     read -r -p "Delete the install dir $INSTALL_DIR? [y/N] " reply < /dev/tty || reply=""
-    case "$reply" in [Yy]*) ;; *) remove="no" ;; esac
+    case "$reply" in [Yy]*) remove="yes" ;; esac
+  else
+    warn "No terminal and --yes not given; leaving $INSTALL_DIR (re-run with --yes to delete)"
   fi
   if [ "$remove" = "yes" ]; then
     rm -rf "$INSTALL_DIR"

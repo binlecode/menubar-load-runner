@@ -380,8 +380,9 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
       (**Dusty Teal** (default) / **Sand** / **Graphite** / **Mauve** / **Sage**). There is no separate
       on/off checkbox or Keep Awake Color submenu anymore.
 - [ ] Picking a color engages Keep Awake with that tint: a thin tinted track line appears along the
-      icon's bottom edge and `pgrep caffeinate` shows a `caffeinate -i -w <pid>` bound to the app's PID.
-      Idle-sleep only — the display may still sleep. Picking **Off** removes both. The radio dot follows
+      icon's bottom edge and `pgrep -fl caffeinate` shows a `caffeinate -di -w <pid>` bound to the app's PID.
+      `-di` prevents both display and idle system sleep (an idle-only lock lets modern Macs sleep once the
+      screen naps). Picking **Off** removes both. The radio dot follows
       the selection (Off when disengaged, else the active color).
 - [ ] Switching between colors while engaged recolors the track line live. **Sage** should read clearly
       green, distinct from **Dusty Teal**'s cyan lean. (Menu-only; resets to Off + Dusty Teal each launch.)

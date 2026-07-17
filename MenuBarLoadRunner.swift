@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.11.0"
+    static let version = "1.11.1"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -1511,9 +1511,12 @@ private final class DisclosureMenuItemView: NSView {
 // total function safe to call on every condition change and on toggle: it spawns iff the user wants
 // it AND no condition suspends it, otherwise it kills.
 //
-// `caffeinate -i -w <pid>`: `-i` prevents idle sleep only (the display may still sleep — intended for
-// keeping work running, not the screen on); `-w <pid>` binds the child to MLR's PID so the OS reaps
-// it automatically if MLR crashes or is force-quit, so there's never an orphaned sleep lock.
+// `caffeinate -di -w <pid>`: `-d` prevents display sleep and `-i` prevents idle system sleep. Both are
+// needed to reliably keep the Mac awake — on modern macOS (notably Apple Silicon) an `-i`-only
+// assertion is unreliable: once the display sleeps the system frequently follows it down, so the Mac
+// slept even though caffeinate was running. Preventing display sleep too is what actually holds it
+// awake (this matches KeepingYouAwake's default). `-w <pid>` binds the child to MLR's PID so the OS
+// reaps it automatically if MLR crashes or is force-quit, so there's never an orphaned sleep lock.
 @MainActor
 private final class SleepPreventer {
     private static let caffeinatePath = "/usr/bin/caffeinate"
@@ -1536,7 +1539,7 @@ private final class SleepPreventer {
         }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: Self.caffeinatePath)
-        proc.arguments = ["-i", "-w", String(ProcessInfo.processInfo.processIdentifier)]
+        proc.arguments = ["-di", "-w", String(ProcessInfo.processInfo.processIdentifier)]
         do {
             try proc.run()
             process = proc
@@ -3243,9 +3246,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     // Conditions under which we kill caffeinate even while the user's toggle is on. Deliberately
     // minimal: battery critically low (unattended drain protection) and serious/critical thermal
-    // (fighting sleep while overheating makes it worse). NOT triggered by lid/display sleep (`-i`
-    // intentionally allows the display to sleep), memory pressure (sleep costs negligible RAM),
-    // or Low Power Mode (a performance policy, not a sleep policy — battery-low already guards drain).
+    // (fighting sleep while overheating makes it worse). NOT triggered by memory pressure (sleep
+    // costs negligible RAM) or Low Power Mode (a performance policy, not a sleep policy — battery-low
+    // already guards drain). Note caffeinate now holds the display awake too (`-di`), so the
+    // battery-low guard matters more than under the old idle-only behavior.
     private var shouldDisengageSleepPrevention: Bool {
         if batteryLow { return true }
         let t = ProcessInfo.processInfo.thermalState

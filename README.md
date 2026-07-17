@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
 
-Current version: **1.10.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.11.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -341,7 +341,7 @@ Click the menu bar item to open:
 - `▸ Other Sources` (disclosure row) — click to expand/collapse an inline list of every *other* available reader (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan` / `Battery`, minus the active one; sources with no readable hardware are omitted). Each row shows that reader's live readout; clicking it switches the driving source to it (takes effect immediately). Expanding samples every reader each tick; collapsed (the default) samples only the active source. The active source still drives the animation. Launch expanded with `--show-all-sources` / `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Menu Bar Label` -> `Off` / `Live Value` (the active source's compact live reading in its own slot) / `Custom Text…` (a fixed label, up to 24 chars). Off by default; the parent title shows the current state. Also settable at launch via `--label` / `MENUBAR_LOAD_RUNNER_LABEL`
-- `Keep Awake` (submenu) — keeps the Mac awake while the app runs by spawning `caffeinate -i -w <pid>` (idle-sleep only; the display may still sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake. The submenu is a single radio group — **Off** plus five track-line colors (**Dusty Teal**, the default, **Sand**, **Graphite**, **Mauve**, **Sage**): picking a color turns Keep Awake on with that tint, **Off** turns it off. Resets to off on launch.
+- `Keep Awake` (submenu) — keeps the Mac awake while the app runs by spawning `caffeinate -di -w <pid>` (prevents both display and idle system sleep — an idle-only assertion is unreliable on modern macOS, where the system follows the display into sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake. The submenu is a single radio group — **Off** plus five track-line colors (**Dusty Teal**, the default, **Sand**, **Graphite**, **Mauve**, **Sage**): picking a color turns Keep Awake on with that tint, **Off** turns it off. Resets to off on launch.
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`

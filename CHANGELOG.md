@@ -25,6 +25,21 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-07-17
+
+Bugfix: **Keep Awake now actually keeps the Mac awake.**
+
+### Fixed
+
+- **Keep Awake no longer lets the system sleep.** The `caffeinate` child is now spawned with `-di`
+  (prevent both **d**isplay and **i**dle system sleep) instead of `-i` (idle only). On modern macOS
+  — notably Apple Silicon — an idle-only assertion is unreliable: once the display sleeps the system
+  frequently follows it down, so the Mac slept even with Keep Awake enabled and `caffeinate` running.
+  Preventing display sleep too is what reliably holds the machine awake. This matches
+  [KeepingYouAwake](https://github.com/newmarcel/KeepingYouAwake)'s default. Battery-low and
+  serious/critical-thermal auto-disengage are unchanged (the battery-low guard now matters a bit more
+  since the display is held on). Menu-only; no CLI/env change.
+
 ## [1.11.0] - 2026-07-16
 
 Keep Awake menu is now a single control with an expanded, restraint-first color palette.

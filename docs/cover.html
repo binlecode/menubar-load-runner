@@ -614,8 +614,8 @@
     <div class="awake">
       <div class="awake-copy">
         <p>Flip <b>Keep&nbsp;Awake</b> in the menu and the app spawns
-          <span class="mono">caffeinate -i -w &lt;pid&gt;</span> — idle sleep is held off while long work
-          runs, but the display can still nap. The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
+          <span class="mono">caffeinate -di -w &lt;pid&gt;</span> — both display and idle system sleep are held
+          off while long work runs (an idle-only lock lets modern Macs sleep once the screen naps). The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
           the app, so it's <b>reaped the instant the app quits or crashes</b>; no orphaned sleep lock.</p>
         <ul class="awake-list">
           <li><b>Auto-disengages</b> on critically low battery (≤20%, on battery) or serious/critical
@@ -711,7 +711,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.11.0</span>
+        <span class="badge">v1.11.1</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
@@ -792,7 +792,7 @@
       awState.textContent='off · caffeinate not running';
       if(awCaption) awCaption.textContent='toggle it — the track line is the “ground it runs on”';
     } else if(running){
-      awState.textContent='holding awake · caffeinate -i -w <pid>';
+      awState.textContent='holding awake · caffeinate -di -w <pid>';
       if(awCaption) awCaption.textContent='● holding the Mac awake';
     } else {
       awState.textContent='paused · '+reasons[cause]+' · re-engages when clear';

@@ -223,13 +223,16 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     entirely when the item is fully occluded (notch/overflow, another Space, display off) and restarts
     it when visible — no re-rasterizing frames no one can see. It only ever pauses in response to a
     positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
-  - **Keep Awake**: a menu checkbox spawns `caffeinate -i -w <pid>` (idle-sleep only,
-    bound to the app's PID) via the `SleepPreventer` class, which separates *intent* (`isEnabled`, the
-    toggle) from *running state* (the process may be suspended/respawned by conditions without losing
-    intent). `applyConditions(suspend:)` is the total function. Auto-disengage conditions
+  - **Keep Awake**: a menu checkbox spawns `caffeinate -di -w <pid>` (prevents both display and
+    idle system sleep, bound to the app's PID) via the `SleepPreventer` class, which separates *intent*
+    (`isEnabled`, the toggle) from *running state* (the process may be suspended/respawned by conditions
+    without losing intent). `applyConditions(suspend:)` is the total function. `-di` (not the earlier
+    `-i`-only) is deliberate: on modern macOS an idle-only assertion is unreliable — once the display
+    sleeps the system follows it down, so the Mac slept with Keep Awake on. Preventing display sleep is
+    what actually holds it awake (matches KeepingYouAwake's default). Auto-disengage conditions
     (`shouldDisengageSleepPrevention`): battery ≤ `Tuning.batteryLowThreshold` on battery, or serious/
-    critical thermal — deliberately NOT lid/display sleep (`-i` intentionally lets the display
-    sleep), memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
+    critical thermal — deliberately NOT
+    memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
     not a sleep policy; the battery-low threshold already guards drain). The power/thermal/battery
     observers fan through
     `conditionsDidChange()` (calls the guarded speed recompute AND the *unguarded* `updateSleepPrevention()`),

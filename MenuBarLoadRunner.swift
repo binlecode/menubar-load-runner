@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.11.1"
+    static let version = "1.11.2"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -1652,10 +1652,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // refresh functions, @objc actions) — never before launch. The `!` reflects that
     // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
-    // Optional second slot for the adjacent label (live value / custom text). Created lazily when the
-    // label mode is not .off and torn down when it returns to .off, so an off label claims no menu-bar
-    // real estate. variableLength — it auto-sizes to its text. See applyLabelMode()/updateValueLabel().
-    private var valueStatusItem: NSStatusItem?
+    // Second slot for the adjacent label (live value / custom text). Created ONCE, unconditionally, and
+    // *before* the animation statusItem (see applicationDidFinishLaunching) — macOS orders status items
+    // by creation time (oldest = rightmost) with no API to reorder, so making it the older item pins it
+    // to the right of the animation, adjacent to the system icons. That keeps a wide GIF (which grows
+    // the animation item leftward, toward the notch) from shoving the label into the space macOS hides
+    // when the bar is crowded — the wide icon gets clipped there instead of the number. It stays
+    // permanently visible; `.off` just sets length = 0 (zero footprint, no clickable gap, slot position
+    // retained) so a later toggle-on reappears on the right, and on/custom use variableLength to
+    // auto-size to the text. See applyLabelMode()/updateValueLabel().
+    private var valueStatusItem: NSStatusItem!
     private var infoMenu: NSMenu!
     // Trace chart of the active source's recent driving fractions, and its ring buffer. The buffer
     // holds only the active source's samples (cleared on a source switch, since a mixed-source
@@ -1856,6 +1862,19 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return
         }
 
+        // Create the value slot FIRST so it's the older *visible* status item and thus sits to the right
+        // of the animation (see the valueStatusItem doc comment). macOS assigns an item's position when
+        // it becomes visible, not when created — and never re-assigns it while it stays visible. So we
+        // keep this item permanently visible and let applyLabelMode() switch its WIDTH (length = 0 when
+        // .off → zero footprint, no clickable gap; variableLength when on). Toggling isVisible instead
+        // would surrender the slot and re-insert the item leftmost on the next reveal. Menu wired up
+        // later, once infoMenu exists.
+        valueStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        valueStatusItem.button?.font = NSFont.menuBarFont(ofSize: 0)
+        valueStatusItem.button?.imagePosition = .noImage
+        valueStatusItem.isVisible = true
+        if labelMode == .off { valueStatusItem.length = 0 }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else {
             showStartupErrorAndQuit("Unable to create NSStatusItem button.")
@@ -2031,6 +2050,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.items.forEach { $0.target = self }
         presetsHeaderItem.isEnabled = false
         statusItem.menu = infoMenu
+        valueStatusItem.menu = infoMenu   // value slot shares the same dropdown as the animation
         refreshPresetSelectionState()
         refreshWidthInfo()
         refreshLabelSelectionState()
@@ -2861,22 +2881,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // Reconcile the value slot's existence and content with labelMode. .off tears the second status
     // item down (freeing the menu-bar slot); .value / .custom create it on demand and refresh its text.
     private func applyLabelMode() {
+        // The value slot is created once, up front, and kept permanently visible (see
+        // applicationDidFinishLaunching), so here we only switch its WIDTH — never create/remove or
+        // hide/show — to preserve its right-of-animation slot order. length = 0 gives .off a zero-width
+        // footprint (no clickable gap); variableLength lets it auto-size to its text when on.
+        guard valueStatusItem != nil else { return }
         if labelMode == .off {
-            if let item = valueStatusItem {
-                NSStatusBar.system.removeStatusItem(item)
-                valueStatusItem = nil
-            }
+            valueStatusItem.length = 0
             return
         }
-        if valueStatusItem == nil {
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            // Native menu-bar text look; button.title (not attributedTitle) so the color tracks the
-            // menu-bar appearance automatically. Shares the same dropdown as the animation item.
-            item.button?.font = NSFont.menuBarFont(ofSize: 0)
-            item.button?.imagePosition = .noImage
-            item.menu = infoMenu
-            valueStatusItem = item
-        }
+        valueStatusItem.length = NSStatusItem.variableLength
         updateValueLabel()
     }
 

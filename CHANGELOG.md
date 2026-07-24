@@ -25,7 +25,23 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
-## [1.11.1] - 2026-07-17
+## [1.11.2] - 2026-07-24
+
+Bugfix: **the adjacent value label no longer disappears behind a wide GIF.**
+
+### Fixed
+
+- **Menu-bar label stays visible with wide presets.** The optional value/custom label
+  (`--label value` / `--label <text>`) is a second `NSStatusItem`, and macOS orders status items by
+  the time each becomes *visible* (oldest = rightmost) with no API to reorder. The label item used to
+  be created lazily *after* the animation item, so it landed to the animation's **left** — the first
+  slot macOS hides when the menu bar runs out of room. A wide, high-aspect preset (e.g.
+  `totoro-group-white`, aspect ≈ 4.8) widened the animation item enough to push the label off/under
+  the notch, so the reading vanished. The label item is now created **once, up front, before the
+  animation item, and kept permanently visible** (width `0` when off — no clickable gap — and
+  `variableLength` when on), pinning it to the **right** of the animation, adjacent to the system
+  icons. A wide GIF now gets clipped near the notch before the number does. Affects every load source
+  (CPU / Memory / GPU / Network / Disk / Fan / Battery). No CLI/env/behavior change.
 
 Bugfix: **Keep Awake now actually keeps the Mac awake.**
 

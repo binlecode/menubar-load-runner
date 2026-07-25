@@ -248,6 +248,14 @@ private enum Tuning {
     static let keepAwakeBarSageLight = NSColor(srgbRed: 0.392, green: 0.522, blue: 0.353, alpha: 1) // #64855A
     static let keepAwakeBarThickness: CGFloat = 2
 
+    // Keep Awake timed release. The preset windows offered in the Keep Awake submenu (seconds), plus
+    // the bounds for a custom "__ hr __ min" entry. Biased toward multi-hour unattended runs — the
+    // window exists so a Mac left working overnight sleeps on its own once the time budget is up.
+    // `caffeinate -t` performs the release; nothing here polls for expiry.
+    static let keepAwakeDurations: [TimeInterval] = [30 * 60, 60 * 60, 2 * 60 * 60, 4 * 60 * 60, 8 * 60 * 60]
+    static let keepAwakeMaxHours = 24
+    static let keepAwakeMaxMinutes = 59
+
     // Selection-mark dot size, as a fraction of the menu font's cap height (the same font the
     // disclosure header draws its ▸ at), so the dot reads at that toggle's scale rather than the
     // oversized native ✓. ~0.6 gives a compact bullet, not a heavy blob.
@@ -321,6 +329,18 @@ private enum MenuTitle {
 
     // Self-throttle line.
     static let slowingAnimation = "Slowing animation"
+
+    // Keep Awake timed release. `keepAwake` above is the submenu's own title; these are the duration
+    // group's rows and the two places the remaining time is rendered (the parent row, so the window is
+    // visible without opening the submenu, and the countdown readout inside it).
+    static let keepAwakeDurationHeader = "Duration"
+    static let keepAwakeIndefinite = "Until turned off"
+    static let keepAwakeCustomDuration = "Custom…"
+    static func keepAwakeRemaining(_ remaining: String) -> String { "\(keepAwake): \(remaining)" }
+    // Both halves of the answer: time left, and the wall-clock moment it ends.
+    static func keepAwakeRemainingRow(_ remaining: String, until: String) -> String {
+        "\(remaining) left (until \(until))"
+    }
 }
 
 // Which system reader drives the animation speed. A single registry (key + menu title) so the
@@ -421,6 +441,66 @@ private enum KeepAwakeColor: Int, CaseIterable {
         case .mauve: return dark ? Tuning.keepAwakeBarMauveDark : Tuning.keepAwakeBarMauveLight
         case .sage: return dark ? Tuning.keepAwakeBarSageDark : Tuning.keepAwakeBarSageLight
         }
+    }
+}
+
+// A Keep Awake window: indefinite (the default — runs until turned off or the app quits) or a fixed
+// length, after which `caffeinate -t` exits by itself and the Mac is free to sleep again. A registry
+// like KeepAwakeColor, so the menu rows, the radio-selection check, and the arming path share one
+// source of truth. Menu-only, session-lived: no CLI/env, nothing persisted.
+private enum KeepAwakeDuration: Equatable {
+    case indefinite
+    case seconds(TimeInterval)
+
+    // The rows offered in the submenu's duration group, in display order.
+    static var presetRows: [KeepAwakeDuration] {
+        [.indefinite] + Tuning.keepAwakeDurations.map { .seconds($0) }
+    }
+
+    // nil for indefinite — the same nil that means "no `-t`" at the spawn site.
+    var seconds: TimeInterval? {
+        switch self {
+        case .indefinite: return nil
+        case .seconds(let value): return value
+        }
+    }
+
+    var menuTitle: String {
+        guard let seconds else { return MenuTitle.keepAwakeIndefinite }
+        return Self.format(seconds, style: .full) ?? MenuTitle.keepAwakeIndefinite
+    }
+
+    // Localized row titles ("30 minutes", "2 hours"). Formatters are built per call rather than cached
+    // in a static: DateComponentsFormatter isn't Sendable, and this runs a handful of times per refresh.
+    static func format(_ seconds: TimeInterval, style: DateComponentsFormatter.UnitsStyle) -> String? {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = style
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter.string(from: seconds)
+    }
+
+    // Countdown rendering: positional, second-resolution, zero-padded — "29:58", "1:29:58". This is a
+    // live count-down, so it has to visibly tick; a duration rounded to the minute reads as the length
+    // the user picked rather than the time left (and looks frozen for a minute at a stretch). Seconds
+    // round UP so the last partial second still shows a value instead of 00:00.
+    static func countdown(_ remaining: TimeInterval) -> String? {
+        let seconds = max(remaining.rounded(.up), 0)
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .positional
+        formatter.allowedUnits = seconds >= 3600 ? [.hour, .minute, .second] : [.minute, .second]
+        formatter.zeroFormattingBehavior = .pad
+        return formatter.string(from: seconds)
+    }
+
+    // Wall-clock time the window ends, in the user's locale/12-24h preference ("7:44 PM"). The
+    // countdown answers "how long left"; this answers "until when" — the form that matters when you're
+    // deciding whether the window covers the job before going to bed.
+    static func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
@@ -1523,23 +1603,72 @@ private final class SleepPreventer {
     private var process: Process?
     private(set) var isEnabled = false          // the user's toggle (intent)
     var isRunning: Bool { process != nil }      // whether caffeinate is actually spawned right now
+    // Bumped on every spawn and kill, and captured by each child's termination handler, so a handler
+    // belonging to an already-replaced/already-killed child can't clear state that a newer one owns.
+    // (An Int token rather than the Process itself: Process isn't Sendable, and the handler is.)
+    private var generation = 0
+
+    // Called on the main actor when caffeinate exited on its OWN — i.e. a `-t` window elapsed, so the
+    // timed release just happened. Deliberately NOT called for our own kills (see kill()).
+    var onWindowExpired: (() -> Void)?
 
     func setEnabled(_ on: Bool) { isEnabled = on }  // caller then drives applyConditions()
 
     // Spawn iff the user wants it AND no condition suspends it; otherwise kill. Idempotent.
-    func applyConditions(suspend: Bool) {
-        if isEnabled && !suspend { spawn() } else { kill() }
+    // `remaining` is the timed window's balance (nil = indefinite, no `-t`): a respawn after a
+    // condition-suspend must pass what is LEFT, not the window's original length.
+    func applyConditions(suspend: Bool, remaining: TimeInterval?) {
+        if isEnabled && !suspend { spawn(remaining: remaining) } else { kill() }
     }
 
-    private func spawn() {
+    // Replace a running child so it picks up a new window. `spawn` is a no-op while a child exists —
+    // which is what makes a tint change free — but the `-t` value is baked in at spawn time, so
+    // *changing the window* has to restart the process. No-op when nothing is running: the caller's
+    // applyConditions() then does the spawn (or leaves it suspended).
+    func restartForNewWindow(remaining: TimeInterval?) {
+        guard isRunning else { return }
+        kill()
+        spawn(remaining: remaining)
+    }
+
+    private func spawn(remaining: TimeInterval?) {
         guard process == nil else { return }
         guard FileManager.default.isExecutableFile(atPath: Self.caffeinatePath) else {
             fputs("SleepPreventer: \(Self.caffeinatePath) is not available; cannot prevent sleep.\n", stderr)
             return
         }
+        var arguments = ["-di"]
+        // `-t <secs>` IS the timed release: caffeinate drops the assertion and exits on its own when
+        // the window elapses, so the app needs no timer of its own. Floored at 1s — `-t 0` would
+        // assert indefinitely, the opposite of what an already-elapsed window means.
+        if let remaining {
+            arguments += ["-t", String(max(Int(remaining.rounded()), 1))]
+        }
+        arguments += ["-w", String(ProcessInfo.processInfo.processIdentifier)]
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: Self.caffeinatePath)
-        proc.arguments = ["-di", "-w", String(ProcessInfo.processInfo.processIdentifier)]
+        proc.arguments = arguments
+        generation += 1
+        let token = generation
+        // Fires on ANY exit of this child. Our own terminate() detaches the handler first (see kill()),
+        // so reaching here means caffeinate exited by itself — the window elapsed. Process calls this
+        // on a background queue, hence the hop to main.
+        // Strong capture, deliberately: `terminationHandler` is @Sendable, and capturing a weak var
+        // inside it is a Swift 6 error. The transient cycle (proc → handler → self → proc) breaks on
+        // either exit path — kill() nils the handler, and this handler nils `process` — after which
+        // proc deallocates and releases its reference back to us. SleepPreventer is app-lifetime
+        // regardless, so there is nothing to leak.
+        proc.terminationHandler = { [self] _ in
+            DispatchQueue.main.async { [self] in
+                MainActor.assumeIsolated {
+                    guard self.generation == token else { return }
+                    self.process = nil
+                    self.isEnabled = false   // the window is over; intent ends with it
+                    self.onWindowExpired?()
+                }
+            }
+        }
         do {
             try proc.run()
             process = proc
@@ -1549,6 +1678,12 @@ private final class SleepPreventer {
     }
 
     private func kill() {
+        // Detach the handler BEFORE terminating: an intentional kill (Off, or a condition-suspend)
+        // must not be mistaken for a window elapsing, which would clear the user's intent — the exact
+        // thing the isEnabled/isRunning split exists to preserve. The generation bump makes any
+        // handler already in flight a no-op too.
+        generation += 1
+        process?.terminationHandler = nil
         process?.terminate()
         process = nil
     }
@@ -1759,6 +1894,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var keepAwakeOptionItems: [NSMenuItem] = []
     // Sentinel tag for the submenu's "Off" row — distinct from every KeepAwakeColor.rawValue (0, 1, …).
     private static let keepAwakeOffTag = -1
+    // Second, independent radio group in the same submenu: the timed window. Its rows carry indices
+    // into KeepAwakeDuration.presetRows and are read ONLY by selectKeepAwakeDuration, so this tag
+    // space is disjoint from the tint group's (which selectKeepAwakeOption owns) despite the overlap.
+    private var keepAwakeDurationItems: [NSMenuItem] = []
+    private var keepAwakeCustomDurationItem: NSMenuItem!
+    private var keepAwakeCountdownItem: NSMenuItem!
+    // The armed window, kept alongside the deadline because remaining time alone can't say which row
+    // to mark (it shrinks). `.indefinite` whenever no window is armed.
+    private var keepAwakeSelectedDuration: KeepAwakeDuration = .indefinite
+    // When the armed window ends, or nil when indefinite. The single source of truth for both the
+    // countdown readout and the `-t` balance a respawn passes. caffeinate performs the release itself,
+    // so nothing polls this for expiry.
+    private var keepAwakeDeadline: Date?
+    // 1s ticker that runs ONLY while the menu is open, so the countdown reads as a countdown (the 2s
+    // load tick can't render seconds smoothly). See startKeepAwakeCountdownTicker.
+    private var keepAwakeCountdownTicker: Timer?
     // Keep-awake bar tint, user-selectable via the Keep Awake submenu. Menu-only (no CLI/env),
     // so it starts at the default and lives only for the session, like the Keep Awake toggle itself.
     private var activeKeepAwakeColor: KeepAwakeColor = .teal
@@ -2017,6 +2168,37 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             keepAwakeSubmenu.addItem(item)
             keepAwakeOptionItems.append(item)
         }
+
+        // Second radio group: the timed window. Picking any row arms Keep Awake (see
+        // selectKeepAwakeDuration) — arming a window and turning it on are one gesture.
+        keepAwakeSubmenu.addItem(NSMenuItem.separator())
+        let durationHeaderItem = NSMenuItem(title: MenuTitle.keepAwakeDurationHeader, action: nil, keyEquivalent: "")
+        durationHeaderItem.isEnabled = false
+        keepAwakeSubmenu.addItem(durationHeaderItem)
+        for (index, duration) in KeepAwakeDuration.presetRows.enumerated() {
+            let item = NSMenuItem(title: duration.menuTitle, action: #selector(selectKeepAwakeDuration(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            useSelectionMark(item)
+            keepAwakeSubmenu.addItem(item)
+            keepAwakeDurationItems.append(item)
+        }
+        keepAwakeCustomDurationItem = NSMenuItem(
+            title: MenuTitle.keepAwakeCustomDuration,
+            action: #selector(promptCustomKeepAwakeDuration),
+            keyEquivalent: ""
+        )
+        keepAwakeCustomDurationItem.target = self
+        useSelectionMark(keepAwakeCustomDurationItem)
+        keepAwakeSubmenu.addItem(keepAwakeCustomDurationItem)
+
+        // Countdown readout for the armed window; hidden while indefinite (nothing to count down).
+        keepAwakeCountdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        keepAwakeCountdownItem.isEnabled = false
+        keepAwakeCountdownItem.isHidden = true
+        keepAwakeSubmenu.addItem(NSMenuItem.separator())
+        keepAwakeSubmenu.addItem(keepAwakeCountdownItem)
+
         keepAwakeMenuItem.submenu = keepAwakeSubmenu
         infoMenu.addItem(keepAwakeMenuItem)
 
@@ -2056,6 +2238,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshLabelSelectionState()
         applyLabelMode()   // create the value slot now if launched with --label value / custom text
         refreshShowAllSourcesState()
+        // caffeinate exited on its own → an armed window elapsed. Drop the window and let the UI fall
+        // back to Off; the Mac is free to sleep from here. This is the whole timed release.
+        sleepPreventer.onWindowExpired = { [weak self] in
+            guard let self else { return }
+            self.clearKeepAwakeWindow()
+            self.refreshKeepAwakeSelectionState()
+            self.updateKeepAwakeBar()
+        }
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
 
@@ -2158,6 +2348,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     func applicationWillTerminate(_ notification: Notification) {
         stopGameLoop()
         loadTimer?.invalidate()
+        stopKeepAwakeCountdownTicker()
         for observer in [screenObserver, powerStateObserver, thermalStateObserver, occlusionObserver] {
             if let observer {
                 NotificationCenter.default.removeObserver(observer)
@@ -2170,7 +2361,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // `-w <pid>` already reaps caffeinate on a crash, but a clean exit should terminate it
         // explicitly and tear down the power-source run-loop source. isEnabled is left intact; the
         // process is what we kill (suspend: true forces the kill branch).
-        sleepPreventer.applyConditions(suspend: true)
+        sleepPreventer.applyConditions(suspend: true, remaining: nil)
         if let source = batteryRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
             batteryRunLoopSource = nil
@@ -2497,6 +2688,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
 
         refreshMenuMetrics()
+        // Keep Awake's countdown is the one selection-state row that changes on its own, so it refreshes
+        // on the tick as well as on menuWillOpen — an open menu counts down live.
+        refreshKeepAwakeSelectionState()
     }
 
     // Sample whichever reader currently drives the animation, returning its 0…1 fraction (or nil
@@ -2571,6 +2765,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshShowAllSourcesState()
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
+        startKeepAwakeCountdownTicker()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        stopKeepAwakeCountdownTicker()
+    }
+
+    // The countdown lives inside the dropdown, so it is only ever *seen* while the menu is open — which
+    // is exactly when the 2s load tick is too coarse for a seconds-resolution readout. Run a 1s ticker
+    // for the lifetime of the open menu and nothing more: no cost when closed, and it keeps the
+    // self-throttle ethos (the 2s tick still refreshes the row for the next open). `.common` mode is
+    // required — a menu puts the run loop in modal tracking, where a default-mode timer wouldn't fire.
+    private func startKeepAwakeCountdownTicker() {
+        stopKeepAwakeCountdownTicker()
+        guard keepAwakeDeadline != nil else { return }   // nothing to count down
+        let ticker = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshKeepAwakeSelectionState() }
+        }
+        keepAwakeCountdownTicker = ticker
+        RunLoop.main.add(ticker, forMode: .common)
+    }
+
+    private func stopKeepAwakeCountdownTicker() {
+        keepAwakeCountdownTicker?.invalidate()
+        keepAwakeCountdownTicker = nil
     }
 
     private func refreshMenuMetrics() {
@@ -2820,6 +3039,35 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             let selected = item.tag == Self.keepAwakeOffTag ? !enabled : (enabled && item.tag == activeKeepAwakeColor.rawValue)
             item.state = selected ? .on : .off
         }
+
+        // Duration group. The armed window's row is marked; a custom length that matches no preset row
+        // marks Custom… instead. With no window armed, "Until turned off" holds the mark — it describes
+        // what turning Keep Awake on from here would do.
+        let rows = KeepAwakeDuration.presetRows
+        var matchedPresetRow = false
+        for (index, item) in keepAwakeDurationItems.enumerated() where index < rows.count {
+            let selected = rows[index] == keepAwakeSelectedDuration
+            if selected { matchedPresetRow = true }
+            item.state = selected ? .on : .off
+        }
+        keepAwakeCustomDurationItem.state = matchedPresetRow ? .off : .on
+
+        // Countdown: seconds-resolution time left plus the wall-clock time the window ends.
+        if enabled, let deadline = keepAwakeDeadline, case let remaining = deadline.timeIntervalSinceNow,
+           remaining > 0, let text = KeepAwakeDuration.countdown(remaining) {
+            // Monospaced digits: the countdown refreshes on the 2s tick, including while the menu is
+            // open, and proportional digits would make the row twitch as they change.
+            keepAwakeCountdownItem.attributedTitle = NSAttributedString(
+                string: MenuTitle.keepAwakeRemainingRow(text, until: KeepAwakeDuration.clockTime(deadline)),
+                attributes: [.font: NSFont.monospacedDigitSystemFont(
+                    ofSize: NSFont.menuFont(ofSize: 0).pointSize, weight: .regular)]
+            )
+            keepAwakeCountdownItem.isHidden = false
+            keepAwakeMenuItem.title = MenuTitle.keepAwakeRemaining(text)
+        } else {
+            keepAwakeCountdownItem.isHidden = true
+            keepAwakeMenuItem.title = MenuTitle.keepAwake
+        }
     }
 
     // Whether a source's reader can produce a value on this machine. CPU/memory are always available
@@ -3049,11 +3297,96 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private func selectKeepAwakeOption(_ sender: NSMenuItem) {
         if sender.tag == Self.keepAwakeOffTag {
             if sleepPreventer.isEnabled { sleepPreventer.setEnabled(false) }
+            clearKeepAwakeWindow()   // Off ends any armed window too
         } else if let choice = KeepAwakeColor(rawValue: sender.tag) {
             activeKeepAwakeColor = choice
             if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
         }
         updateSleepPrevention()   // spawns/suspends caffeinate, re-tints the bar, refreshes the group
+    }
+
+    // Duration group handler. Reads only its own rows' tags (indices into presetRows) — the sibling
+    // tint group's tag space is selectKeepAwakeOption's business.
+    @objc
+    private func selectKeepAwakeDuration(_ sender: NSMenuItem) {
+        let rows = KeepAwakeDuration.presetRows
+        guard sender.tag >= 0, sender.tag < rows.count else { return }
+        armKeepAwake(with: rows[sender.tag])
+    }
+
+    // Arm a window (or clear it, for .indefinite) and engage Keep Awake. Picking a duration while it's
+    // off turns it on with the current tint — arming and enabling are one gesture.
+    private func armKeepAwake(with duration: KeepAwakeDuration) {
+        keepAwakeSelectedDuration = duration
+        keepAwakeDeadline = duration.seconds.map { Date(timeIntervalSinceNow: $0) }
+        if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
+        // A child already running carries the OLD window's `-t`, so it has to be replaced.
+        sleepPreventer.restartForNewWindow(remaining: keepAwakeRemainingSeconds)
+        updateSleepPrevention()
+    }
+
+    private func clearKeepAwakeWindow() {
+        keepAwakeSelectedDuration = .indefinite
+        keepAwakeDeadline = nil
+    }
+
+    // Seconds left in the armed window, or nil when indefinite (→ no `-t` at the spawn site). Floored
+    // at 1s: a window that elapsed while caffeinate was condition-suspended respawns for a moment,
+    // exits on its own, and disengages through the normal expiry path — no separate check needed.
+    private var keepAwakeRemainingSeconds: TimeInterval? {
+        guard let keepAwakeDeadline else { return nil }
+        return max(keepAwakeDeadline.timeIntervalSinceNow, 1)
+    }
+
+    // Prompt for a custom window. Minutes clamp to 0…59 and hours to Tuning.keepAwakeMaxHours rather
+    // than erroring (KeepingYouAwake rejects out-of-range input with an inline error; a clamp is kinder
+    // at bedtime). 0 hr 0 min is treated as Cancel — never arm a zero-length window.
+    @objc
+    private func promptCustomKeepAwakeDuration() {
+        let alert = NSAlert()
+        alert.messageText = "Keep Awake For…"
+        alert.informativeText = "The Mac stays awake this long, then sleeps on its own. Up to \(Tuning.keepAwakeMaxHours) hours."
+        alert.alertStyle = .informational
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+
+        let hoursField = NSTextField(string: "1")
+        hoursField.frame = NSRect(x: 0, y: 6, width: 56, height: 24)
+        let hoursLabel = NSTextField(labelWithString: "Hours")
+        hoursLabel.frame = NSRect(x: 0, y: 32, width: 56, height: 16)
+
+        let minutesField = NSTextField(string: "0")
+        minutesField.frame = NSRect(x: 76, y: 6, width: 56, height: 24)
+        let minutesLabel = NSTextField(labelWithString: "Minutes")
+        minutesLabel.frame = NSRect(x: 76, y: 32, width: 60, height: 16)
+
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 52))
+        for view in [hoursLabel, hoursField, minutesLabel, minutesField] {
+            accessory.addSubview(view)
+        }
+        alert.accessoryView = accessory
+
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+
+        // Same focus mechanism as promptCustomLabel: initialFirstResponder is the deterministic part,
+        // the async hop places the caret at the end of the pre-filled value.
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = hoursField
+        DispatchQueue.main.async { [weak hoursField, weak alertWindow] in
+            guard let hoursField, let alertWindow else { return }
+            alertWindow.makeFirstResponder(hoursField)
+            hoursField.selectText(nil)
+        }
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let hours = min(max(Int(hoursField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 0, 0), Tuning.keepAwakeMaxHours)
+        let minutes = min(max(Int(minutesField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 0, 0), Tuning.keepAwakeMaxMinutes)
+        let total = TimeInterval(hours * 3600 + minutes * 60)
+        guard total > 0 else { return }
+        armKeepAwake(with: .seconds(total))
     }
 
     @objc
@@ -3271,7 +3604,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     }
 
     private func updateSleepPrevention() {
-        sleepPreventer.applyConditions(suspend: shouldDisengageSleepPrevention)
+        sleepPreventer.applyConditions(
+            suspend: shouldDisengageSleepPrevention,
+            remaining: keepAwakeRemainingSeconds
+        )
         refreshKeepAwakeSelectionState()   // move the Off/color mark to match the new intent
         updateKeepAwakeBar()
     }

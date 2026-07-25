@@ -25,6 +25,20 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+### Added
+
+- **Keep Awake: timed release.** The `Keep Awake` submenu gained a `Duration` radio group — `Until
+  turned off` (the previous, still-default behavior), `30 minutes`, `1 hour`, `2 hours`, `4 hours`,
+  `8 hours`, and `Custom…` (hours + minutes, up to 24h). Picking a duration engages Keep Awake, so
+  arming a window is a single click. It reads as a real countdown, not a chosen duration: the
+  `Keep Awake` row shows `Keep Awake: 29:24` and the submenu shows `29:24 left (until 8:18 PM)` —
+  seconds resolution plus the wall-clock end time, ticking once a second while the menu is open (a 1s
+  ticker that exists only for the open menu; the countdown isn't visible otherwise). The release
+  itself is `caffeinate -t <seconds>`, so the assertion drops
+  and the Mac may sleep exactly when the window ends, with no timer of the app's own. An intentional
+  `Off` (or a battery-low/thermal suspend) is distinguished from a window elapsing, so a suspend still
+  preserves your intent and a resume re-spawns with the *remaining* time rather than the full window.
+
 ## [1.11.2] - 2026-07-24
 
 Bugfix: **the adjacent value label no longer disappears behind a wide GIF.**

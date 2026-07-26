@@ -1553,7 +1553,7 @@ private final class DiskLoadMonitor {
 // ThroughputScaler (each machine's draw ceiling differs), so a fast drain → faster animation and AC
 // power (current 0) → idle. Charge level is a readout, not the driver. Available only when a battery
 // exists (desktop Macs → source disabled + launch fallback to CPU, exactly like Fan on fanless Macs).
-// Reuses the same unprivileged IOPSCopyPowerSourcesInfo plumbing as evaluateBatteryLow. `nil` (never a
+// Reuses the same unprivileged IOPSCopyPowerSourcesInfo plumbing as evaluateBatteryState. `nil` (never a
 // fabricated 0) on read failure.
 @MainActor
 private final class BatteryLoadMonitor {
@@ -1602,7 +1602,7 @@ private final class BatteryLoadMonitor {
               let dict = IOPSGetPowerSourceDescription(blob, first as CFTypeRef)?
                             .takeUnretainedValue() as? [String: Any] else { return nil }
         // Capacity/max are percentages in IOPS (max is typically 100); their ratio is the charge
-        // fraction, matching how evaluateBatteryLow reads kIOPSCurrentCapacityKey as 0–100.
+        // fraction, matching how evaluateBatteryState reads kIOPSCurrentCapacityKey as 0–100.
         let capacity = (dict[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 0
         let maxCap = (dict[kIOPSMaxCapacityKey] as? NSNumber)?.doubleValue ?? 100
         let charge = maxCap > 0 ? min(max(capacity / maxCap, 0), 1) : 0

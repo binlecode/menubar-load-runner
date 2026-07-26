@@ -6,9 +6,9 @@
 #   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler + semver.
 #             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
 #             a headless CI runner). This is the required gate.
-#   gui       §3 launch lifecycle · §4 error paths. These boot NSApplication + create an
-#             NSStatusItem, so they need an active WindowServer (GUI) session. Fine on a
-#             logged-in Mac; best-effort on hosted runners (some are headless).
+#   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §4 error paths. These boot
+#             NSApplication + create an NSStatusItem, so they need an active WindowServer (GUI)
+#             session. Fine on a logged-in Mac; best-effort on hosted runners (some are headless).
 #   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
 #             so it STOPS any running instance (incl. a login-item one). Opt-in only.
 #   §7        interactive menu spot-check — always manual, never scripted.
@@ -80,8 +80,12 @@ fi
 if [ "$RUN_GUI" = 1 ]; then
 section "§3 launch lifecycle [gui — needs WindowServer]"
 pass=0; fail=0
+# STATE_FILE is redirected for every launch: the app persists Keep Awake intent on termination, so
+# without this each of these 21 runs writes the developer's real state file and would clobber an armed
+# window. RUNBOOK §3a already required this of its own block; §3 never did.
 run(){ desc="$1"; allow="$2"; shift 2
-  err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" 2>&1 >/dev/null); rc=$?
+  err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
+        MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" 2>&1 >/dev/null); rc=$?
   un=$(echo "$err" | grep -v 'MENUBAR_LOAD_RUNNER_EXIT_AFTER=' | { [ -n "$allow" ] && grep -v "$allow" || cat; } | grep -v '^$')
   [ "$rc" = 0 ] && [ -z "$un" ] && { echo "  PASS [$desc]"; pass=$((pass+1)); } || { echo "  FAIL [$desc] rc=$rc <<$un>>"; fail=$((fail+1)); }; }
 run "default cpu/auto"         "" $BIN
@@ -108,12 +112,49 @@ run "env LOAD_SOURCE"          "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $B
 run "env PATH=<gif>"           "" env MENUBAR_LOAD_RUNNER_PATH="$GIF" $BIN --load-source disk
 echo "  lifecycle: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
+# --- §3a Keep Awake battery conditions [gui] -------------------------------
+# Asserts whether `caffeinate` actually runs under each power state, which is the only way to catch a
+# keep-awake that *looks* armed and holds nothing — the R1 bug. MENUBAR_LOAD_RUNNER_FORCE_BATTERY pins
+# the power-source read, so this needs no real battery and works on a desktop or on AC.
+#
+# Two things this deliberately does NOT test: the override (only a menu click sets it, and menus are
+# not scriptable here — see RUNBOOK §7), and thermal (no way to force a thermal state). `--keep-awake`
+# is used precisely BECAUSE it is not an override gesture, so these assert the raw conditions.
+section "§3a Keep Awake battery conditions [gui — needs WindowServer]"
+pass=0; fail=0
+ka(){ desc="$1"; force="$2"; expect="$3"          # expect: run | paused
+  rm -f ./tmp/qa-ka-state.json
+  MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-ka-state.json" \
+  MENUBAR_LOAD_RUNNER_FORCE_BATTERY="$force" \
+  MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 \
+    $BIN --keep-awake 30m >/dev/null 2>&1 &
+  kapid=$!
+  sleep 3
+  got=paused
+  # Match the child by its `-w <pid>` signature, never by name: the developer's own running instance
+  # legitimately holds a caffeinate, and matching on the name would see it and pass everything.
+  pgrep -fl caffeinate 2>/dev/null | grep -q -- "-w $kapid" && got=run
+  if [ "$got" = "$expect" ]; then echo "  PASS [$desc]"; pass=$((pass+1))
+  else echo "  FAIL [$desc] force=$force expect=$expect got=$got"; fail=$((fail+1)); fi
+  wait "$kapid" 2>/dev/null
+  if pgrep -fl caffeinate 2>/dev/null | grep -q -- "-w $kapid"; then
+    echo "  FAIL [$desc: leaked caffeinate for dead pid $kapid]"; fail=$((fail+1)); fi; }
+ka "healthy charge -> holds"        50:battery run
+ka "on AC at 15% -> holds"          15:ac      run
+ka "low battery -> releases"        15:battery paused
+ka "at 20% boundary -> releases"    20:battery paused
+ka "critical floor -> releases"     4:battery  paused
+rm -f ./tmp/qa-ka-state.json
+echo "  keep-awake conditions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
 # --- §4 Error paths [gui] --------------------------------------------------
 section "§4 error paths (fast, no modal) [gui — needs WindowServer]"
-err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN /no/such/file.gif 2>&1 >/dev/null); rc=$?
+err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
+      MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN /no/such/file.gif 2>&1 >/dev/null); rc=$?
 { [ "$rc" = 0 ] && echo "$err" | grep -q "GIF file not found"; } && echo "  PASS bad GIF" || { echo "  FAIL bad GIF (rc=$rc)"; total_fail=$((total_fail+1)); }
 mv gifs/presets.json gifs/presets.json.bak
-err=$(MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN 2>&1 >/dev/null); rc=$?
+err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
+      MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN 2>&1 >/dev/null); rc=$?
 mv gifs/presets.json.bak gifs/presets.json
 { [ "$rc" = 0 ] && echo "$err" | grep -q "Could not load preset manifest"; } && echo "  PASS missing manifest" || { echo "  FAIL missing manifest (rc=$rc)"; total_fail=$((total_fail+1)); }
 [ -f gifs/presets.json ] && echo "  PASS manifest restored" || { echo "  FAIL manifest NOT restored"; total_fail=$((total_fail+1)); }
@@ -160,7 +201,7 @@ else
 fi
 
 # --- Cleanup + verdict -----------------------------------------------------
-rm -f "$BIN"
+rm -f "$BIN" ./tmp/qa-lifecycle-state.json ./tmp/qa-ka-state.json
 printf '\n'
 if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (§7 interactive spot-check still manual)"; exit 0
 else echo "QA: $total_fail FAILING section(s)"; exit 1; fi

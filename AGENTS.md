@@ -70,6 +70,14 @@ Run from the repository root:
   a test run can't read or clobber the real `~/Library/Application Support` state — and check for a
   leaked `caffeinate` by its `-w <pid>` signature, not by name (the developer's own running instance
   legitimately holds one).
+- `MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac]` pins the power-source read (default `:battery`),
+  so the low-battery and 5%-floor keep-awake paths are testable without draining a real battery — and on a
+  desktop. Covered by `tests/qa.sh` §3a. This hook exists because the absence of it is *why* arming below
+  20% stayed a silent no-op long enough to ship:
+  ```bash
+  MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 \
+    ./tmp/mblr-check --keep-awake 30m     # expect: no caffeinate child, menu says paused
+  ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
   the process args, since args no longer carry a `.gif` path now that Swift resolves preset keywords. The
@@ -252,12 +260,22 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     without losing intent). `applyConditions(suspend:)` is the total function. `-di` (not the earlier
     `-i`-only) is deliberate: on modern macOS an idle-only assertion is unreliable — once the display
     sleeps the system follows it down, so the Mac slept with Keep Awake on. Preventing display sleep is
-    what actually holds it awake (matches KeepingYouAwake's default). Auto-disengage conditions
-    (`shouldDisengageSleepPrevention`): battery ≤ `Tuning.batteryLowThreshold` on battery, or serious/
-    critical thermal — deliberately NOT
+    what actually holds it awake (matches KeepingYouAwake's default). Auto-disengage conditions are a
+    **reason, not a Bool** (`keepAwakeSuspension` → `KeepAwakeSuspension?`, `nil` = run): serious/critical
+    thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤ `Tuning.batteryLowThreshold`
+    (20%) — deliberately NOT
     memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
-    not a sleep policy; the battery-low threshold already guards drain). The power/thermal/battery
-    observers fan through
+    not a sleep policy; the battery-low threshold already guards drain).
+    Only `.batteryLow` is **overridable**: arming from the menu on a low battery sets
+    `keepAwakeBatteryOverride`, so an explicit arm is honored instead of being a silent no-op, and
+    `effectiveKeepAwakeSuspension` (what the spawn decision, menu, and bar all read) drops it. The
+    override is **memory-only and gesture-only** — never persisted, and never set by `--keep-awake` or a
+    restored window, both of which fire with nobody present; it is cleared by Off, window expiry,
+    plugging in, and crossing the 5% floor. `startBatteryMonitoring()` **must** run before
+    `applyLaunchKeepAwakeState()`: arming reads `batteryState`, so the old ordering armed against a `nil`
+    reading and spawned caffeinate even at a critical charge. A paused keep-awake is **never silent** —
+    the parent row says `(paused)` and the status row says why (see the menu section below). The
+    power/thermal/battery observers fan through
     `conditionsDidChange()` (calls the guarded speed recompute AND the *unguarded* `updateSleepPrevention()`),
     so keep-awake still disengages under `--speed-multiplier`; memory pressure keeps calling the reevaluate
     directly (not a sleep trigger). Battery is an event-driven IOKit Power Sources run-loop source
@@ -291,6 +309,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     solely while the menu is open** (`startKeepAwakeCountdownTicker` from `menuWillOpen`, torn down in
     `menuDidClose`; `.common` run-loop mode, since an open menu puts the loop in modal tracking). The 2s
     load tick still refreshes it so the row is current at the next open.
+    That row is `keepAwakeStatusItem` (renamed from `…CountdownItem`) and has **two modes**: the countdown,
+    or `paused — <reason>` when `effectiveKeepAwakeSuspension` is non-nil; it hides only when there is
+    nothing to say (running, indefinite). The parent row composes with it — `Keep Awake: 3:59:12 (paused)`
+    when both a window and a pause are live. Two gotchas: the countdown sets `title` **as well as**
+    `attributedTitle` (the monospaced digits need the attributed form, but accessibility reads only
+    `title`, so an attributed-only row is silent to VoiceOver), and the paused form sets `title` and nils
+    `attributedTitle`, or a previous countdown render keeps winning for display. Anything scripting this
+    menu must resolve items **by index, not by title** — the parent title ticks every second while open,
+    so a title-based reference goes stale mid-script (`-1728`).
   - **Keep Awake at launch and across launches** (`applyLaunchKeepAwakeState`, run from
     `applicationDidFinishLaunching` before the first `refreshKeepAwakeSelectionState`). Precedence:
     `--keep-awake` / `MENUBAR_LOAD_RUNNER_KEEP_AWAKE` (parsed by `KeepAwakeDuration.parse` into a

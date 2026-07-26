@@ -223,6 +223,15 @@ private enum Tuning {
     // we kill `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
     static let batteryLowThreshold: Double = 0.20
 
+    // The floor under the override. Arming Keep Awake *while already* below batteryLowThreshold is an
+    // explicit "I know, do it anyway" and is honored (keepAwakeBatteryOverride) — otherwise arming was
+    // a silent no-op, the bug this exists to fix. But an override is not a licence to drain to a hard
+    // power-off, so it stops being honored here and keep-awake releases regardless of intent.
+    // Sleep policy ONLY: the battery trace chart's red band deliberately still keys off
+    // batteryLowThreshold (see batteryChargeMediumThreshold) — these two must not be conflated, or
+    // changing the sleep floor would silently recolor the sparkline.
+    static let batteryCriticalThreshold: Double = 0.05
+
     // Battery trace-chart color bands (charge fraction). The chart is a fuel gauge for the battery
     // source — low = alert — so it reuses batteryLowThreshold (≤20% → red) plus this mid band
     // (≤40% → yellow, else green), mirroring the macOS low-battery convention.
@@ -341,6 +350,24 @@ private enum MenuTitle {
     static func keepAwakeRemainingRow(_ remaining: String, until: String) -> String {
         "\(remaining) left (until \(until))"
     }
+
+    // Paused = the user's intent is on but a condition has caffeinate killed, so the Mac CAN sleep.
+    // Said on the parent row (visible without opening the submenu) because the alternative — a ticked
+    // color row and an absent 2pt track line — is not a signal anyone reads. The status row then says
+    // which condition and, for battery, at what charge, so "why" needs no guessing.
+    static let keepAwakePausedSuffix = "(paused)"
+    static let keepAwakePausedBare = "\(keepAwake): paused"
+    static func keepAwakePausedWithWindow(_ remaining: String) -> String {
+        "\(keepAwake): \(remaining) \(keepAwakePausedSuffix)"
+    }
+    static func keepAwakePausedRow(_ reason: String) -> String { "paused — \(reason)" }
+    static func batteryLowReason(_ percent: Double) -> String {
+        String(format: "battery low (%.0f%%)", percent)
+    }
+    static func batteryCriticalReason(_ percent: Double) -> String {
+        String(format: "battery critical (%.0f%%)", percent)
+    }
+    static let thermalReason = "Mac is too warm"
 }
 
 // Which system reader drives the animation speed. A single registry (key + menu title) so the
@@ -548,6 +575,33 @@ private enum KeepAwakeDuration: Equatable {
 private enum KeepAwakeLaunchOption {
     case off
     case window(KeepAwakeDuration)
+}
+
+// Why keep-awake is suspended right now, or nil to run. This replaced a plain `Bool`, because the
+// reason has to be *shown* (a suspended keep-awake used to be silent — the tint stayed ticked, only
+// the 2pt track line vanished) and because the reasons are no longer interchangeable: `.batteryLow`
+// is the one an explicit user gesture may override, while `.batteryCritical` and `.thermal` always
+// win. `.batteryCritical` is the floor under that override; `.thermal` isn't overridable at all,
+// since overheating is genuinely transient and holding the Mac awake through it is a hardware risk,
+// not a preference.
+private enum KeepAwakeSuspension: Equatable {
+    case batteryLow(percent: Double)
+    case batteryCritical(percent: Double)
+    case thermal
+
+    // Whether an explicit arm-anyway gesture is allowed to ignore this.
+    var isOverridable: Bool {
+        if case .batteryLow = self { return true }
+        return false
+    }
+
+    var reasonText: String {
+        switch self {
+        case .batteryLow(let percent): return MenuTitle.batteryLowReason(percent)
+        case .batteryCritical(let percent): return MenuTitle.batteryCriticalReason(percent)
+        case .thermal: return MenuTitle.thermalReason
+        }
+    }
 }
 
 private struct Config {
@@ -2051,7 +2105,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // space is disjoint from the tint group's (which selectKeepAwakeOption owns) despite the overlap.
     private var keepAwakeDurationItems: [NSMenuItem] = []
     private var keepAwakeCustomDurationItem: NSMenuItem!
-    private var keepAwakeCountdownItem: NSMenuItem!
+    private var keepAwakeStatusItem: NSMenuItem!
     // The armed window, kept alongside the deadline because remaining time alone can't say which row
     // to mark (it shrinks). `.indefinite` whenever no window is armed.
     private var keepAwakeSelectedDuration: KeepAwakeDuration = .indefinite
@@ -2066,10 +2120,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // persisted: it is cosmetic and carries no sleep consequence, so it is restored unconditionally
     // at launch even when the saved window isn't.
     private var activeKeepAwakeColor: KeepAwakeColor = .teal
-    // Updated by the IOKit power-source notification. Stays false on a desktop Mac (no battery), so
-    // battery is never a disengage trigger there.
-    private var batteryLow = false
+    // Updated by the IOKit power-source notification. `nil` on a desktop Mac (no battery) or a failed
+    // read, so battery is never a disengage trigger there. Carries the charge FIGURE, not just a
+    // low/not-low flag, because the paused menu row shows the percentage — and batteryMonitor can't
+    // supply it, since reader sampling is active-only and Battery usually isn't the driving source.
+    private var batteryState: (onBattery: Bool, percent: Double)?
     private var batteryRunLoopSource: CFRunLoopSource?
+    // An explicit user gesture to keep the Mac awake despite a low battery. Set only by the two menu
+    // paths (a color row, or arming a duration) — deliberately NOT by --keep-awake or the restored
+    // window, both of which fire with nobody present, which is the same stale-flag risk that already
+    // keeps an *indefinite* saved window from being restored. Memory-only for the same reason: a
+    // relaunch is a fresh decision, so this never reaches state.json.
+    private var keepAwakeBatteryOverride = false
     // Sibling overlay layer on animationView.layer, on top of the frame contents. The keep-awake
     // track line; hidden unless caffeinate is actually running. NEVER composited into renderedFrames.
     private var keepAwakeBar: CALayer?
@@ -2345,12 +2407,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         useSelectionMark(keepAwakeCustomDurationItem)
         keepAwakeSubmenu.addItem(keepAwakeCustomDurationItem)
 
-        // Countdown readout for the armed window; hidden while indefinite (nothing to count down).
-        keepAwakeCountdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        keepAwakeCountdownItem.isEnabled = false
-        keepAwakeCountdownItem.isHidden = true
+        // Live sub-state of Keep Awake, in one row with two modes: the countdown for an armed window,
+        // or why keep-awake is paused. Hidden only when there is nothing to say (running, indefinite).
+        keepAwakeStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        keepAwakeStatusItem.isEnabled = false
+        keepAwakeStatusItem.isHidden = true
         keepAwakeSubmenu.addItem(NSMenuItem.separator())
-        keepAwakeSubmenu.addItem(keepAwakeCountdownItem)
+        keepAwakeSubmenu.addItem(keepAwakeStatusItem)
 
         keepAwakeMenuItem.submenu = keepAwakeSubmenu
         infoMenu.addItem(keepAwakeMenuItem)
@@ -2396,10 +2459,19 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         sleepPreventer.onWindowExpired = { [weak self] in
             guard let self else { return }
             self.clearKeepAwakeWindow()
+            // The gesture is spent with the window it authorized. Without this, a later arm from a
+            // non-gesture path (a restored window) would inherit an override nobody granted it.
+            self.keepAwakeBatteryOverride = false
             self.refreshKeepAwakeSelectionState()
             self.updateKeepAwakeBar()
             self.persistKeepAwakeState()   // the window is spent; don't resume it on the next launch
         }
+        // MUST precede applyLaunchKeepAwakeState(): arming reads `batteryState` to decide whether a
+        // condition suspends the window, and this is what populates it. Registered later in this
+        // function historically, which meant a launch-time arm saw a nil battery state and spawned
+        // caffeinate even at a critical charge, self-correcting only on the next power-source
+        // notification (minutes, at a charge where minutes matter).
+        startBatteryMonitoring()
         applyLaunchKeepAwakeState()
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
@@ -2447,7 +2519,6 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.conditionsDidChange() }
         }
-        startBatteryMonitoring()
 
         // Memory pressure is the third self-throttle input alongside low-power/thermal, but its
         // lifecycle differs: it is event-only (no synchronous getter), so we cache the level and
@@ -3211,20 +3282,49 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         }
         keepAwakeCustomDurationItem.state = matchedPresetRow ? .off : .on
 
-        // Countdown: seconds-resolution time left plus the wall-clock time the window ends.
-        if enabled, let deadline = keepAwakeDeadline, case let remaining = deadline.timeIntervalSinceNow,
-           remaining > 0, let text = KeepAwakeDuration.countdown(remaining) {
+        // Status row + parent title. Three things can be true — keep-awake is on, a window is armed,
+        // a condition has it paused — so both surfaces are composed rather than branched pairwise.
+        // The paused state is stated on the PARENT row deliberately: it is the one line visible without
+        // opening the submenu, and a paused keep-awake used to be signalled only by the absence of a
+        // 2pt track line, which is not a signal anyone reads. `enabled` is intent; the pause comes from
+        // the effective suspension, so an honored override reads as running, not paused.
+        let countdown: (text: String, deadline: Date)? = {
+            guard enabled, let deadline = keepAwakeDeadline else { return nil }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0, let text = KeepAwakeDuration.countdown(remaining) else { return nil }
+            return (text, deadline)
+        }()
+        let suspension = enabled ? effectiveKeepAwakeSuspension : nil
+
+        if let suspension {
+            // Why beats how-long: the countdown keeps ticking on the parent row (the window is a
+            // wall-clock deadline and elapses whether or not caffeinate is holding), but the row says
+            // what to do about it. Plain `title`, not `attributedTitle`: this is prose that never ticks
+            // so it needs no monospaced digits, and only `title` is exposed to accessibility — an
+            // attributed-only row reads as an empty item to VoiceOver. Nil the attributed form or a
+            // previous countdown render would keep winning for display.
+            keepAwakeStatusItem.attributedTitle = nil
+            keepAwakeStatusItem.title = MenuTitle.keepAwakePausedRow(suspension.reasonText)
+            keepAwakeStatusItem.isHidden = false
+            keepAwakeMenuItem.title = countdown.map { MenuTitle.keepAwakePausedWithWindow($0.text) }
+                ?? MenuTitle.keepAwakePausedBare
+        } else if let countdown {
             // Monospaced digits: the countdown refreshes on the 2s tick, including while the menu is
-            // open, and proportional digits would make the row twitch as they change.
-            keepAwakeCountdownItem.attributedTitle = NSAttributedString(
-                string: MenuTitle.keepAwakeRemainingRow(text, until: KeepAwakeDuration.clockTime(deadline)),
+            // open, and proportional digits would make the row twitch as they change. `title` is set
+            // too, and first: attributedTitle drives what's drawn, but accessibility reads `title`, so
+            // an attributed-only row is silent to VoiceOver.
+            let rowText = MenuTitle.keepAwakeRemainingRow(
+                countdown.text, until: KeepAwakeDuration.clockTime(countdown.deadline))
+            keepAwakeStatusItem.title = rowText
+            keepAwakeStatusItem.attributedTitle = NSAttributedString(
+                string: rowText,
                 attributes: [.font: NSFont.monospacedDigitSystemFont(
                     ofSize: NSFont.menuFont(ofSize: 0).pointSize, weight: .regular)]
             )
-            keepAwakeCountdownItem.isHidden = false
-            keepAwakeMenuItem.title = MenuTitle.keepAwakeRemaining(text)
+            keepAwakeStatusItem.isHidden = false
+            keepAwakeMenuItem.title = MenuTitle.keepAwakeRemaining(countdown.text)
         } else {
-            keepAwakeCountdownItem.isHidden = true
+            keepAwakeStatusItem.isHidden = true
             keepAwakeMenuItem.title = MenuTitle.keepAwake
         }
     }
@@ -3457,7 +3557,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if sender.tag == Self.keepAwakeOffTag {
             if sleepPreventer.isEnabled { sleepPreventer.setEnabled(false) }
             clearKeepAwakeWindow()   // Off ends any armed window too
+            keepAwakeBatteryOverride = false   // Off withdraws the arm-anyway gesture with the intent
         } else if let choice = KeepAwakeColor(rawValue: sender.tag) {
+            grantKeepAwakeBatteryOverrideIfOffered()
             activeKeepAwakeColor = choice
             if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
         }
@@ -3476,14 +3578,32 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     // Arm a window (or clear it, for .indefinite) and engage Keep Awake. Picking a duration while it's
     // off turns it on with the current tint — arming and enabling are one gesture.
-    private func armKeepAwake(with duration: KeepAwakeDuration) {
+    private func armKeepAwake(with duration: KeepAwakeDuration, isUserGesture: Bool = true) {
         keepAwakeSelectedDuration = duration
         keepAwakeDeadline = duration.seconds.map { Date(timeIntervalSinceNow: $0) }
         if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
+        // Picking a duration from the menu is an explicit arm — honor it despite a low battery, which
+        // is otherwise the case where arming appears to work and silently does nothing. The launch path
+        // passes false: --keep-awake and a restored window both fire with nobody present to decide.
+        if isUserGesture { grantKeepAwakeBatteryOverrideIfOffered() }
         // A child already running carries the OLD window's `-t`, so it has to be replaced.
         sleepPreventer.restartForNewWindow(remaining: keepAwakeRemainingSeconds)
         updateSleepPrevention()
         persistKeepAwakeState()
+    }
+
+    // Grant the battery override iff an overridable condition is actually in force right now. The
+    // override answers a specific question — "the battery is low, still keep it awake?" — and that
+    // question is only ever *asked* while keep-awake reads paused for a low battery. So this covers
+    // both arming while already low and re-affirming while paused (clicking the row that is already
+    // ticked, which would otherwise be a no-op at exactly the moment the user is reacting to it).
+    //
+    // Deliberately does NOT grant on an arm at a healthy charge: if the battery later crosses the
+    // threshold, keep-awake pauses and *says why*, and the user can answer then. Granting up front
+    // would bank a drain override against a question nobody put to them — and would behave differently
+    // on AC than on battery for the very same click.
+    private func grantKeepAwakeBatteryOverrideIfOffered() {
+        if effectiveKeepAwakeSuspension?.isOverridable == true { keepAwakeBatteryOverride = true }
     }
 
     private func clearKeepAwakeWindow() {
@@ -3529,7 +3649,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .off:
             return                          // explicit CLI off — ignore any saved window
         case .window(let duration):
-            armKeepAwake(with: duration)    // engages, persists, and spawns caffeinate
+            // Not a user gesture: the flag can be baked into the login item, so it re-arms at every
+            // login with nobody there to weigh a low battery against the task.
+            armKeepAwake(with: duration, isUserGesture: false)   // engages, persists, spawns caffeinate
             return
         case nil:
             break                           // no flag — fall through to the saved window
@@ -3813,15 +3935,43 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // costs negligible RAM) or Low Power Mode (a performance policy, not a sleep policy — battery-low
     // already guards drain). Note caffeinate now holds the display awake too (`-di`), so the
     // battery-low guard matters more than under the old idle-only behavior.
-    private var shouldDisengageSleepPrevention: Bool {
-        if batteryLow { return true }
+    //
+    // Thermal is checked BEFORE battery: both can hold at once, and a too-warm Mac is the more urgent
+    // thing to report. Battery reports the tighter band first so the row never says "low" at 4%.
+    private var keepAwakeSuspension: KeepAwakeSuspension? {
         let t = ProcessInfo.processInfo.thermalState
-        return t == .serious || t == .critical
+        if t == .serious || t == .critical { return .thermal }
+        guard let batteryState, batteryState.onBattery else { return nil }
+        let fraction = batteryState.percent / Tuning.percentScale
+        if fraction <= Tuning.batteryCriticalThreshold {
+            return .batteryCritical(percent: batteryState.percent)
+        }
+        if fraction <= Tuning.batteryLowThreshold {
+            return .batteryLow(percent: batteryState.percent)
+        }
+        return nil
+    }
+
+    // The suspension actually in force: an overridable one the user has explicitly overridden doesn't
+    // suspend anything. Everything downstream (the spawn decision, the menu, the bar) reads THIS, so
+    // an honored override is consistently reflected rather than showing as paused-but-running.
+    private var effectiveKeepAwakeSuspension: KeepAwakeSuspension? {
+        guard let suspension = keepAwakeSuspension else { return nil }
+        if keepAwakeBatteryOverride && suspension.isOverridable { return nil }
+        return suspension
     }
 
     private func updateSleepPrevention() {
+        // Crossing the critical floor retires the override for good: at that point the user's
+        // "do it anyway" has been honored as far as it safely can be, and leaving the flag set would
+        // silently re-engage keep-awake if the charge ticked back up to 6% without them asking again.
+        if case .batteryCritical = keepAwakeSuspension { keepAwakeBatteryOverride = false }
+        // Plugged in → the override is moot. Clear it so a later unplug at 15% doesn't inherit a
+        // stale "yes" from a decision made in a different power context.
+        if let batteryState, !batteryState.onBattery { keepAwakeBatteryOverride = false }
+
         sleepPreventer.applyConditions(
-            suspend: shouldDisengageSleepPrevention,
+            suspend: effectiveKeepAwakeSuspension != nil,
             remaining: keepAwakeRemainingSeconds
         )
         refreshKeepAwakeSelectionState()   // move the Off/color mark to match the new intent
@@ -3830,8 +3980,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     // IOKit Power Sources — event-driven, mirroring the power/thermal notification pattern. Fires on
     // every power-source change (plug/unplug, % delta). A desktop Mac (no battery) skips setup
-    // entirely, so batteryLow stays false and is never a disengage trigger there.
+    // entirely, so batteryState stays nil and is never a disengage trigger there.
     private func startBatteryMonitoring() {
+        // A forced state is static, so there is nothing to observe: adopt it and skip the run-loop
+        // source. Checked BEFORE the power-source probe so the hook also works on a desktop, where
+        // the probe below bails out and would otherwise leave the forced value unread.
+        if let forced = Self.forcedBatteryState {
+            batteryState = forced
+            updateSleepPrevention()   // see below — apply, don't just record
+            return
+        }
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],
               !list.isEmpty else { return }
@@ -3840,7 +3998,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             guard let ctx else { return }
             let app = Unmanaged<MenuBarLoadRunnerApp>.fromOpaque(ctx).takeUnretainedValue()
             MainActor.assumeIsolated {
-                app.batteryLow = MenuBarLoadRunnerApp.evaluateBatteryLow()
+                app.batteryState = MenuBarLoadRunnerApp.evaluateBatteryState()
                 app.conditionsDidChange()
             }
         }
@@ -3849,19 +4007,42 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let source = batteryRunLoopSource {
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
         }
-        batteryLow = Self.evaluateBatteryLow()   // initial read — don't wait for the first notification
+        batteryState = Self.evaluateBatteryState()  // initial read — don't wait for the first notification
+        // Apply it, don't just record it. Harmless at launch (keep-awake intent is still off, so this
+        // is a no-op), but it means the initial read can never again leave a stale suspension decision
+        // in place if this call moves relative to the arming path — the ordering trap fixed above.
+        updateSleepPrevention()
     }
 
-    private static func evaluateBatteryLow() -> Bool {
+    // Returns the charge figure and power state, not a low/not-low verdict: the thresholds are applied
+    // in keepAwakeSuspension (one place), and the paused menu row needs the number to display.
+    // `nil` = no battery (desktop) or an unreadable power source → battery never suspends keep-awake.
+    private static func evaluateBatteryState() -> (onBattery: Bool, percent: Double)? {
+        if let forced = forcedBatteryState { return forced }
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [Any],
               let first = list.first,
               let dict = IOPSGetPowerSourceDescription(blob, first as CFTypeRef)?
-                            .takeUnretainedValue() as? [String: Any] else { return false }
-        let capacity = (dict[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? 100   // 0–100
+                            .takeUnretainedValue() as? [String: Any] else { return nil }
+        let capacity = (dict[kIOPSCurrentCapacityKey] as? NSNumber)?.doubleValue ?? Tuning.percentScale
         let onBattery = (dict[kIOPSPowerSourceStateKey] as? String) == kIOPSBatteryPowerValue
-        return onBattery && capacity <= Tuning.batteryLowThreshold * 100
+        return (onBattery: onBattery, percent: capacity)   // capacity is 0–100
     }
+
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac] pins the power-source read
+    // so the low-battery and critical-floor paths are testable without draining a real battery — the
+    // reason they went unverified long enough for arming below 20% to stay a silent no-op. Power state
+    // defaults to `battery` (the interesting case); `:ac` exercises "threshold irrelevant". Unset or
+    // unparseable = no override, real IOKit read. Mirrors MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE.
+    private static let forcedBatteryState: (onBattery: Bool, percent: Double)? = {
+        guard let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_FORCE_BATTERY"],
+              !raw.isEmpty else { return nil }
+        let parts = raw.lowercased().split(separator: ":", omittingEmptySubsequences: false)
+        guard let percent = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+              percent >= 0, percent <= Tuning.percentScale else { return nil }
+        let onBattery = parts.count < 2 || parts[1].trimmingCharacters(in: .whitespaces) != "ac"
+        return (onBattery: onBattery, percent: percent)
+    }()
 
     // Built once during animation-view setup. A sibling sublayer ON TOP of the frame-content layer,
     // hidden by default. It NEVER touches the frame contents, so a toggle costs no re-rasterization.

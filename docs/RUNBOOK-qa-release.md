@@ -47,8 +47,17 @@ These make a *blocking GUI menu-bar app* testable from a shell:
 
 - **`MENUBAR_LOAD_RUNNER_STATE_FILE=<path>`** — redirects the persisted Keep Awake state
   (`~/Library/Application Support/menubar-load-runner/state.json`, v1.13.0) somewhere throwaway.
-  **Set it for every run that touches Keep Awake.** Without it a QA run writes the real file, and an
-  armed window from a test is restored by the developer's next real launch.
+  **Set it for every run that launches the app — not just the ones "about" Keep Awake.** The app
+  persists intent in `applicationWillTerminate`, so *any* launch rewrites the file. `tests/qa.sh` §3
+  and §4 did not redirect it until v1.14.0 and so silently rewrote real state on every QA run (an
+  armed window would have been cleared); all four launch sites now redirect, and `qa.sh` cleans the
+  scratch files up at the end. Verify with `stat -f %m` on the real file across a run if you touch
+  this.
+- **`MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac]`** — pins the IOKit power-source read
+  (default `:battery`; unset or unparseable = real read). Makes the Keep Awake battery conditions and
+  the 5% floor testable with no real battery and on a desktop (§3b), and makes the §3a arming checks
+  deterministic — pin `100:ac` there, or a tester running below 20% sees every "arms `-t N`" case fail
+  because the battery condition is correctly releasing the child.
 
 ### Gotchas that have bitten us
 
@@ -177,7 +186,11 @@ BIN=./tmp/mblr-check; ST=$PWD/tmp/qa-state.json; pass=0; fail=0
 ck(){ [ "$2" = "EMPTY" ] && { [ -z "$3" ] && r=0 || r=1; } || case "$3" in *"$2"*) r=0;; *) r=1;; esac
      [ $r = 0 ] && { echo "  PASS $1"; pass=$((pass+1)); } || { echo "  FAIL $1: want [$2] got [${3:-<empty>}]"; fail=$((fail+1)); }; }
 # Launch, capture the caffeinate child bound to THIS app, wait for its timed exit.
-arm(){ MENUBAR_LOAD_RUNNER_STATE_FILE=$ST MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN --no-update-check "$@" \
+# FORCE_BATTERY pins a healthy charge on AC so these arming checks are deterministic: without it, a
+# tester running below 20% on battery would see every "arms -t N" case fail, because the battery
+# condition correctly releases the child. §3b is where the battery conditions themselves are asserted.
+arm(){ MENUBAR_LOAD_RUNNER_STATE_FILE=$ST MENUBAR_LOAD_RUNNER_FORCE_BATTERY=100:ac \
+         MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN --no-update-check "$@" \
          >/dev/null 2>tmp/qa-ka-err.txt & app=$!; sleep 1.2
        CHILD=$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true); wait $app; }
 
@@ -237,6 +250,47 @@ MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./tmp/mblr-check --no-update-check --keep-awake
 cat "$HOME/Library/Application Support/menubar-load-runner/state.json"   # dir created, JSON written
 rm -rf "$HOME/Library/Application Support/menubar-load-runner"      # clean up the QA artifact
 ```
+
+## 3b. Keep Awake — battery conditions, the 5% floor, and the override (v1.14.0)
+
+`MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac]` pins the power-source read, so none of this
+needs a real low battery — or any battery. The scripted matrix is `tests/qa.sh` §3a; run it directly:
+
+```bash
+tests/qa.sh --gui        # includes §3a: 5 cases, asserts caffeinate presence per power state
+```
+
+Or by hand, one state at a time. `--keep-awake` is used deliberately because it is **not** an override
+gesture, so these assert the raw conditions:
+
+```bash
+ST=$PWD/tmp/qa-state.json
+probe(){ rm -f $ST; MENUBAR_LOAD_RUNNER_STATE_FILE=$ST MENUBAR_LOAD_RUNNER_FORCE_BATTERY=$1 \
+           MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 ./tmp/mblr-check --keep-awake 30m >/dev/null 2>&1 & p=$!
+         sleep 3; echo -n "$1 -> "; pgrep -fl caffeinate | grep -q -- "-w $p" && echo holds || echo released
+         wait $p; }
+probe 50:battery   # holds     — healthy charge
+probe 15:ac        # holds     — on AC, threshold irrelevant
+probe 20:battery   # released  — boundary, inclusive
+probe 15:battery   # released  — low, and the flag is not a gesture
+probe 4:battery    # released  — below the 5% floor
+```
+
+**The override is interactive** — only a live menu click sets it, by design. Once per release:
+
+- [ ] Launch at a forced low charge, keep-awake **off**:
+      `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery ./tmp/mblr-check`
+- [ ] Open the menu → pick **Dusty Teal**. The track line appears and **stays**, and
+      `pgrep -fl caffeinate | grep -- "-w <pid>"` shows the child. The parent row must **not** say paused.
+      (This is the fix: before it, the child was killed instantly and the row lied.)
+- [ ] Relaunch the same way but with `--keep-awake 30m` (not a gesture). Parent row reads
+      `Keep Awake: 29:5x (paused)`, the submenu row reads `paused — battery low (15%)`, no child.
+- [ ] Same with `FORCE_BATTERY=4:battery` → `paused — battery critical (4%)`.
+- [ ] With the override active (tint clicked at `15:battery`), the **countdown still ticks** if a window
+      is armed — the window is a wall-clock deadline and elapses whether or not the child is holding.
+
+Scripting note: resolve menu items **by index, not by title**. The parent row carries a 1s-ticking
+countdown, so a title-based `System Events` reference goes stale between statements (`-1728`).
 
 ## 4. Error paths (must exit fast, NO modal box)
 

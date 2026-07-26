@@ -15,8 +15,8 @@ MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATC
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
   `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
   `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
-  `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`, and
-  `MENUBAR_LOAD_RUNNER_STATE_FILE`.
+  `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`,
+  `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, and `MENUBAR_LOAD_RUNNER_STATE_FILE`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -27,6 +27,34 @@ of the public API and may change in any release.
 ## [Unreleased]
 
 ### Fixed
+
+- **Keep Awake no longer pretends to work on a low battery.** Arming it while on battery at or below 20%
+  used to engage and then release immediately — the tint stayed ticked in the menu, but `caffeinate` was
+  killed, so the Mac slept anyway. The only hint was the absence of a 2pt track line. Two changes:
+
+  - **An explicit arm from the menu is now honored.** Turning Keep Awake on, picking a duration, or
+    clicking a tint row while it reads paused all count as "I know the battery is low, do it anyway."
+    A **new 5% floor** (`Tuning.batteryCriticalThreshold`) still ends it regardless, so an override
+    can't drain the Mac to a hard power-off. Above the 20% threshold nothing changes.
+  - **A paused Keep Awake is never silent.** The menu's `Keep Awake` row shows `(paused)` — visible
+    without opening the submenu — and the row inside states why: `paused — battery low (15%)`,
+    `paused — battery critical (4%)`, or `paused — Mac is too warm`. This covers the thermal pause too,
+    which was equally invisible before.
+
+  The override is deliberately **not persisted** and is set only by a live menu gesture — never by
+  `--keep-awake` or a restored window, which fire at login with nobody present to weigh a low battery
+  against the task. Thermal pauses remain non-overridable: overheating is transient, and holding the Mac
+  awake through it is a hardware risk rather than a preference.
+
+- **A launch-time Keep Awake window ignored the battery entirely.** `--keep-awake`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`,
+  and a restored window were all applied *before* battery monitoring started, so they armed against an
+  unknown charge and spawned `caffeinate` even at a critical level, correcting only when the next
+  power-source notification arrived — minutes, at a charge where minutes matter. Battery monitoring now
+  starts first, and the initial reading applies conditions rather than merely recording them.
+
+- **The Keep Awake countdown row is now readable by VoiceOver.** It set only `attributedTitle` (needed for
+  the monospaced digits that stop the countdown twitching), which accessibility does not expose, so the
+  row announced as empty. It now sets `title` as well.
 
 - **The launcher's single-instance guard is now per-user.** It matched running instances with
   `pgrep -f`, which searches **every** user's processes, not the caller's. On a Mac with fast user
@@ -42,6 +70,13 @@ of the public API and may change in any release.
   tint live in `~/Library/Application Support/`, so each account has always had its own. The *effect* of
   Keep Awake is inherently machine-wide: `caffeinate` holds the whole Mac awake, so the machine stays
   awake while any user holds a window.
+
+### Added
+
+- **`MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac]`** — a debug/QA hook that pins the
+  power-source read, so the low-battery and critical-floor Keep Awake paths can be tested without
+  draining a real battery, and on machines that have none. New `tests/qa.sh` §3a asserts the whole
+  matrix by checking whether a `caffeinate` child bound to that run's PID exists.
 
 ### Changed
 

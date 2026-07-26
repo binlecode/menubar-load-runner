@@ -21,7 +21,6 @@ sake. Nothing here is a commitment or a date.
 
 | ID | Item | Pri | Blocked by |
 |---|---|---|---|
-| R1 | **Keep Awake arming is a silent no-op below the battery threshold.** On battery at ≤20%, arming Keep Awake (menu, `--keep-awake`, or a restored window) engages and is then disengaged immediately by the battery condition, with no feedback that nothing will happen. Needs either an explicit user override ("I know, do it anyway") or a visible refusal. Prefer the override: a refusal still leaves the user unable to do a legitimate thing. | P1 | — |
 | R2 | **No automation interface of the app's own.** `--keep-awake` and every other flag are launch-time only, and the per-user singleton refuses a second invocation, so a *running* instance can't be driven by any interface this app declares. (Accessibility scripting can puppet any app's menus, but that's an OS affordance, not an interface this app offers, and it depends on menu wording that changes.) The obvious answer, a URL scheme, wants an app bundle — so this is coupled to R3. | P2 | R3 |
 | R3 | **Bundle-or-not is undecided, and three items depend on it.** The app ships as a `swiftc`-compiled bare binary with no bundle, no signature, no notarization. That choice is what blocks a URL scheme (R2), a Homebrew cask, and a Sparkle-style updater; it's also why state lives in a hand-rolled JSON file rather than `UserDefaults`. Deciding it either way unblocks or permanently closes those. Treat as one architectural decision, not several features. | P2 | — |
 | R4 | **No home for settings, which gates every new setting.** The app is menu-only by design, and the Keep Awake submenu already carries 13 rows plus a live countdown. Any proposal that adds more than one toggle needs a decision about *where settings live* first, or the menu becomes a preferences window by accretion. This is a prerequisite item, not a feature. | P2 | — |
@@ -61,15 +60,23 @@ Reasons are one line by design. Re-propose only with a concrete report of the be
 | Keep Awake's *effect* is machine-wide, not per-user | `caffeinate` holds the whole Mac awake. Sleep is a machine-level property, so two users' windows don't compose — the Mac stays awake while *either* holds one. Per-user *state* is already correct (`~/Library/Application Support`, per-account). |
 | A Keep Awake window held by a background login session is invisible from the foreground one | Consequence of the above. Nothing to store or sync differently. |
 | Clamshell (lid-close) sleep can't be prevented | `caffeinate` cannot inhibit it at all. |
+| Below the 5% Keep Awake floor, the Mac will sleep | Deliberate (added with R1's override): an explicit "keep it awake anyway" is honored from 20% down to 5%, but not into a hard power-off. |
 | The interpreted-`swift` fallback isn't singleton-guarded | Deliberate: it runs only when `swiftc` fails, and the guard matches the compiled binary's path. |
+
+## Done
+
+| ID | Item | Landed |
+|---|---|---|
+| R1 | Keep Awake was a silent no-op below the battery threshold. An explicit menu arm now overrides the battery pause down to a 5% floor, and every paused state names its reason on the parent row and in the submenu. Two adjacent bugs fell out of it: a launch-time window armed before battery monitoring started (so it ignored the charge entirely), and the countdown row was invisible to VoiceOver. New `MENUBAR_LOAD_RUNNER_FORCE_BATTERY` hook + `tests/qa.sh` §3a made the whole matrix testable without a real battery. | unreleased |
 
 ## Verification debt
 
 | Claim | State |
 |---|---|
 | The single-instance guard is per-user (v1.13.0+, `pgrep -U "$(id -u)"`) | `pgrep -U` scoping proven in isolation; same-user rejection tested live. **The cross-user case is unverified** — needs a second account plus fast user switching. See `RUNBOOK-qa-release.md` §6. |
-| Keep Awake radio-mark glyphs | Unverifiable by script: marks are drawn with a custom `onStateImage`, so `AXMenuItemMarkChar` reads empty and `System Events` menus aren't rendered for screenshot. The parent title and countdown row are covered. |
+| Keep Awake radio-mark glyphs | Unverifiable by script: marks are drawn with a custom `onStateImage`, so `AXMenuItemMarkChar` reads empty and `System Events` menus aren't rendered for screenshot. The parent title and status row are covered — both are read by index in the scripted checks, since the ticking parent title makes a title-based reference go stale. |
+| Thermal pause rendering (`paused — Mac is too warm`) | Unverified: there is no way to force a thermal state. The battery reasons share the same code path and are covered by §3a; only the thermal *trigger* is untested. |
 
 ## Release hygiene
 
-- `[Unreleased]` in `CHANGELOG.md` currently holds the per-user singleton fix, shipped in no version yet — wants a **1.13.1** patch. A version bump moves four things together: `Tuning.version` in `MenuBarLoadRunner.swift`, the `CHANGELOG.md` heading, the `docs/cover.html` badge, and the git tag the in-app update check reads.
+- `[Unreleased]` in `CHANGELOG.md` holds the per-user singleton fix **and** R1 — neither shipped in a version yet. R1 adds observable behavior and a new env hook, so this wants a **1.14.0** minor, not the 1.13.1 a lone singleton fix would have taken. A version bump moves four things together: `Tuning.version` in `MenuBarLoadRunner.swift`, the `CHANGELOG.md` heading, the `docs/cover.html` badge, and the git tag the in-app update check reads.

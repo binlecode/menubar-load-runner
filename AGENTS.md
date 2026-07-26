@@ -63,9 +63,12 @@ Run from the repository root:
   a test run can't read or clobber the real `~/Library/Application Support` state — and check for a
   leaked `caffeinate` by its `-w <pid>` signature, not by name (the developer's own running instance
   legitimately holds one).
-- The launcher enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` — only one instance runs unless
-  `--extra` is passed. (The pattern matches the compiled binary path, not the process args, since args no
-  longer carry a `.gif` path now that Swift resolves preset keywords.) When iterating locally, stop any
+- The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
+  instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
+  the process args, since args no longer carry a `.gif` path now that Swift resolves preset keywords. The
+  `-U` scope is load-bearing: unscoped `pgrep -f` sees every account, so with fast user switching it refused
+  a second user's *first* launch by naming a PID they can't see or kill. `uninstall.sh` and `tests/qa.sh`
+  scope their `pgrep`/`pkill` the same way, for the same reason.) When iterating locally, stop any
   running instance first:
   ```bash
   pkill -f 'MenuBarLoadRunner'
@@ -257,7 +260,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
     every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
-    `KeepAwakeColor` (Dusty Teal (default) / Sand, each a dark/light tone chosen per menu-bar appearance).
+    `KeepAwakeColor` case — Dusty Teal (default), Sand, Graphite, Mauve, Sage — each a dark/light tone
+    chosen per menu-bar appearance. The enum drives the rows, so adding a case needs no menu edit; it does
+    need the user-facing lists updated in lockstep (`README.md`, `docs/cover.html`,
+    `docs/RUNBOOK-qa-release.md` §Keep Awake), which name the tints deliberately.
     Off disengages caffeinate; a color row engages it *and* sets that tint (`selectKeepAwakeOption`,
     `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). The tint is menu-only (no CLI/env)
     but persisted. A **second, independent radio group** in the same submenu is the **timed release** (`Duration`):

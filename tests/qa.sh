@@ -136,13 +136,16 @@ fi
 # --- §6 Launcher wrapper [launcher] (opt-in; disruptive) -------------------
 if [ "$RUN_LAUNCHER" = 1 ]; then
   section "§6 launcher wrapper + singleton [launcher — stops running instances]"
-  pkill -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
+  # Every pgrep/pkill here is `-U "$(id -u)"`-scoped to match the launcher's guard: the poll has to
+  # observe the same process set the guard does, and a QA run must never signal another account's
+  # instance on a machine with fast user switching.
+  pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./menubar-load-runner --foreground --load-source memory 2>&1 | tail -1
   # Launch the "victim" instance with a generous self-exit window (a long QA run leaves the machine
   # busy, so a short EXIT_AFTER could fire before the singleton check completes), then poll up to ~10s
   # for it to finish AppKit init and register before the 2nd launch. pkill cleans up after.
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=30 ./menubar-load-runner --load-source memory >/dev/null 2>&1
-  for _ in $(seq 10); do pgrep -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
+  for _ in $(seq 10); do pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
   # Capture into a var, then match without a pipe: under `set -o pipefail`, `… | grep -q` makes the
   # launcher take SIGPIPE (141) when grep closes the pipe after matching its first line, and pipefail
   # would report that as a false failure even though the singleton correctly printed "already running".
@@ -151,7 +154,7 @@ if [ "$RUN_LAUNCHER" = 1 ]; then
     *"already running"*) echo "  PASS singleton rejects 2nd" ;;
     *) echo "  FAIL singleton (got: $out)"; total_fail=$((total_fail+1)) ;;
   esac
-  pkill -f 'MenuBarLoadRunner' 2>/dev/null
+  pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null
 else
   skip "§6 launcher wrapper [launcher]" "disruptive — re-run with: tests/qa.sh --launcher"
 fi

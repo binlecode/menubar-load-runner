@@ -63,7 +63,10 @@ if [ -e "$PLIST" ]; then
 fi
 
 # --- 2. Stop any running instance -----------------------------------------
-if pkill -f "/MenuBarLoadRunner( |$)" 2>/dev/null; then
+# `-U "$(id -u)"` for the same reason as the launcher's singleton guard: unscoped, this
+# targets every user's instances, so it would try (and under sudo, succeed) to kill an
+# instance belonging to another logged-in account. Uninstalling is a per-user operation.
+if pkill -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" 2>/dev/null; then
   ok "Stopped running instance"
 fi
 

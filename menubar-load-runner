@@ -166,8 +166,13 @@ main() {
     # (The interpreted `swift …/MenuBarLoadRunner.swift` fallback, used only when swiftc
     # fails, is intentionally not singleton-guarded.) pgrep -f excludes its own process;
     # the lowercase launcher path `menubar-load-runner` never matches this pattern.
+    #
+    # `-U "$(id -u)"` scopes the search to the calling user: plain `pgrep -f` sees every
+    # user's processes, so with fast user switching this refused user B's *first* launch by
+    # naming a PID in user A's session — one B can't see, click, or kill. The guard means
+    # "don't stack instances in *my* menu bar", and the menu bar is per-session.
     local existing_pids
-    existing_pids=($(pgrep -f "/MenuBarLoadRunner( |$)" || true))
+    existing_pids=($(pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" || true))
     if [[ ${#existing_pids[@]} -gt 0 ]]; then
       print -u2 "$APP_CMD_NAME: An instance of MenuBarLoadRunner is already running (PID: ${existing_pids[*]})."
       print -u2 "Use --extra to launch multiple instances."

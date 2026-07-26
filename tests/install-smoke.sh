@@ -33,7 +33,10 @@ chk "$?" 0 "launcher --help rc=0"
 # Sandbox uninstall: neutralize the two global-state steps (real plist + real pkill) so the smoke
 # test only exercises the sandbox-scoped symlink + dir removal.
 say "uninstall (sandboxed: global steps neutralized)"
-sed -e 's#^PLIST=.*#PLIST="$INSTALL_DIR/nonexistent.plist"#' -e 's#if pkill -f#if true#' \
+# The pkill neutralizer matches the whole `if pkill …` line, not a `pkill -f` substring: the real
+# line carries a `-U "$(id -u)"` scope flag, and a substring pattern would silently stop matching
+# the next time its flags change — letting the smoke test kill the developer's live instance.
+sed -e 's#^PLIST=.*#PLIST="$INSTALL_DIR/nonexistent.plist"#' -e 's#^if pkill .*#if true; then#' \
   uninstall.sh > "$ROOT/uninstall-sandbox.sh"
 MENUBAR_LOAD_RUNNER_HOME="$ROOT/share/menubar-load-runner" BIN_DIR="$ROOT/bin" \
   bash "$ROOT/uninstall-sandbox.sh" --yes >/dev/null 2>&1

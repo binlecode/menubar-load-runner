@@ -642,6 +642,16 @@
             own</b> when the time is up, so a Mac left working overnight goes to sleep without you.
             The menu shows a real countdown — <span class="mono">29:24 left (until 8:18&nbsp;PM)</span>, ticking
             once a second — not the length you picked.</li>
+          <li><b>The window survives a reboot.</b> What's saved is the moment it <i>ends</i>, not the length —
+            so a restart at 2am resumes the <b>remainder</b>, never a fresh four hours, and a window that
+            already elapsed while the Mac was down doesn't come back at all. (A window with no end
+            <i>isn't</i> restored: it has no stopping condition, and a stale flag holding your Mac awake
+            after every reboot is the worse failure.)</li>
+          <li><b>Scriptable.</b> <span class="mono">--keep-awake 4h</span> (or
+            <span class="mono">30m</span>, <span class="mono">1h30m</span>,
+            <span class="mono">on</span>) arms it at launch, so it can be baked straight into the
+            login item. A unit is required — a bare number reads as either minutes or hours, and guessing
+            wrong is a 60× error in how long your Mac stays awake.</li>
           <li>A thin line rides the bottom edge of the icon. The <span class="mono">Keep&nbsp;Awake</span>
             submenu is one radio group — <b>Off</b> plus five track-line tints
             (<b>Dusty&nbsp;Teal</b> default, <b>Sand</b>, <b>Graphite</b>, <b>Mauve</b>, <b>Sage</b>):
@@ -742,7 +752,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.12.0</span>
+        <span class="badge">v1.13.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

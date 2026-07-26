@@ -19,6 +19,14 @@ files. This `CLAUDE.md` stays focused on build/run commands and architecture gui
 Claude Code; longer-form design and task tracking documents belong in `docs/` instead of the
 repo root.
 
+`tmp/` is **scratch only, and gitignored** — treat everything in it as deletable at any moment. Nothing
+durable may live there: not the source of a tracked asset, not a test whose coverage exists nowhere else,
+not writing you'd mind losing. This has bitten twice: a `build_cover.py` + template pair sat in `tmp/`
+looking like the cover's source long after `docs/cover.html` outgrew it (running it would have reverted the
+cover ten versions), and launch copy accumulated there instead of the vault. If a scratch file turns out to
+matter, promote it — tracked `tests/`/`scripts/` for tooling, `docs/` for SDLC, the vault for strategy
+and marketing — and delete the scratch copy so there is one source of truth.
+
 `docs/ROADMAP.md` is the **standing** tracker: every open item, declined proposal, known limit, and
 verification gap, each with a stable `R<n>` ID. Check it before proposing work — an idea may already be
 there as declined-with-a-reason or as a candidate whose design question is unsettled. Keep it at

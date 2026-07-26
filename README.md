@@ -353,7 +353,7 @@ CPU low. Reproduce it:
 
 ```bash
 ./menubar-load-runner                                    # start (detached)
-PID=$(pgrep -f '/MenuBarLoadRunner( |$)')
+PID=$(pgrep -U "$(id -u)" -f '/MenuBarLoadRunner( |$)')   # -U: your instance, not another account's
 top -pid "$PID" -l 6 -s 1 -stats pid,command,cpu,mem     # CPU + memory
 footprint -p "$PID"                                      # phys_footprint (true memory)
 ```

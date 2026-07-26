@@ -26,6 +26,31 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The launcher's single-instance guard is now per-user.** It matched running instances with
+  `pgrep -f`, which searches **every** user's processes, not the caller's. On a Mac with fast user
+  switching that meant a second logged-in user's *first* launch was refused with "*An instance of
+  MenuBarLoadRunner is already running (PID: …)*", naming a process inside another account's session —
+  one they cannot see, click, or quit. Their only way in was `--extra`, whose help text says it launches
+  a *second* instance when in fact they would be launching their first. The guard is now scoped with
+  `pgrep -U "$(id -u)"`: its purpose is "don't stack instances in *my* menu bar", and a menu bar is
+  per-session. `uninstall.sh` is scoped the same way, so uninstalling as one user no longer targets
+  another user's running instance. Single-user Macs see no behavior change.
+
+  Note that per-user *state* was already correct — the armed Keep Awake window, deadline, and track-line
+  tint live in `~/Library/Application Support/`, so each account has always had its own. The *effect* of
+  Keep Awake is inherently machine-wide: `caffeinate` holds the whole Mac awake, so the machine stays
+  awake while any user holds a window.
+
+### Changed
+
+- **QA harness + docs.** `tests/qa.sh` §6 and the profiling recipes in `README.md` scope their
+  `pgrep`/`pkill` to the calling user, matching the guard under test. `tests/install-smoke.sh`'s
+  sandbox neutralizer now matches the whole `if pkill …` line instead of the substring `if pkill -f`,
+  which the new `-U` flag would have silently broken — the smoke test would have run the real `pkill`
+  against a live instance while still reporting all-pass. Harness/docs only; no app behavior change.
+
 ## [1.13.0] - 2026-07-26
 
 ### Added

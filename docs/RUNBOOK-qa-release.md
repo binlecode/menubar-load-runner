@@ -404,19 +404,26 @@ swiftc tmp/scalercheck.swift -o tmp/scalercheck && ./tmp/scalercheck; rm -f tmp/
 
 ## 6. Launcher wrapper (compile-on-run, arg forwarding, singleton)
 
+Every `pgrep`/`pkill` below is `-U "$(id -u)"`-scoped to match the launcher's guard — the poll must see the
+same process set the guard does, and a QA run must not signal another account's instance.
+
 ```bash
-pkill -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
+pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
 # forwards --load-source, self-exits:
 MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./menubar-load-runner --foreground --load-source memory 2>&1 | tail -2
 # singleton: 2nd instance rejected. Launch the victim with a generous self-exit window and poll for
 # it to register, then capture the 2nd launch's output and match WITHOUT a pipe — under `set -o
 # pipefail` a `| grep -q` makes the launcher take SIGPIPE (141) when grep closes early, a false FAIL.
 MENUBAR_LOAD_RUNNER_EXIT_AFTER=30 ./menubar-load-runner --load-source memory >/dev/null 2>&1
-for _ in $(seq 10); do pgrep -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
+for _ in $(seq 10); do pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
 out=$(./menubar-load-runner --load-source cpu 2>&1)
 case "$out" in *"already running"*) echo "  PASS singleton rejects 2nd" ;; *) echo "  FAIL singleton (got: $out)" ;; esac
-pkill -f 'MenuBarLoadRunner' 2>/dev/null
+pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null
 ```
+
+The per-user scoping itself can't be exercised from one account. `pgrep -U` semantics are provable in
+isolation (`pgrep -f /usr/sbin/syslogd` finds root's PID; `pgrep -U "$(id -u)" -f /usr/sbin/syslogd` finds
+nothing); the end-to-end case needs a second account + fast user switching and is manual-only.
 
 ## 7. Interactive spot-check (manual, ~1 min)
 

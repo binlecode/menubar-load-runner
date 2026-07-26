@@ -10,12 +10,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATCH bumps apply to is:
 
 - **Launcher CLI** — the positional preset keyword or GIF path, and the flags
-  `--speed-multiplier`, `--label`, `--load-source`, `--no-update-check`,
+  `--speed-multiplier`, `--label`, `--load-source`, `--keep-awake`, `--no-update-check`,
   `--foreground` / `--no-detach`, `--detach`, `--extra`, `-h` / `--help`.
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
-  `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`, `MENUBAR_LOAD_RUNNER_LOG_FILE`,
-  `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks `MENUBAR_LOAD_RUNNER_EXIT_AFTER` and
-  `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`.
+  `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
+  `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
+  `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`, and
+  `MENUBAR_LOAD_RUNNER_STATE_FILE`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -24,6 +25,30 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+### Added
+
+- **Keep Awake survives a relaunch.** An armed window is saved to
+  `~/Library/Application Support/menubar-load-runner/state.json` and resumed on the next launch, so a
+  reboot in the middle of an overnight window no longer silently drops it. The *end instant* is what
+  gets saved, not the length, so what comes back is the remainder — a window that elapsed while the
+  app was down doesn't come back at all. The track-line color is restored too. A saved *indefinite*
+  window is deliberately **not** restored: it has no stopping condition, and a stale flag keeping the
+  Mac awake after every reboot is a worse failure than re-arming by hand. (No bundle id was needed for
+  any of this — `UserDefaults` requires one, a file we open by path doesn't.)
+- **`--keep-awake <off|on|duration>`** (also `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`) arms Keep Awake at
+  launch — `on` for no window, or a unit-suffixed duration (`30m`, `2h`, `1h30m`, up to 24h). A unit
+  is required: a bare number is rejected rather than read as minutes-or-hours, where guessing wrong is
+  a 60× error. Unrecognized values warn on stderr and launch with Keep Awake off instead of failing,
+  since this can be baked into a login item
+  (`./scripts/install-login-item.sh --keep-awake 4h`). Passing the flag — including
+  `--keep-awake off` — overrides the persisted window. This is launch-time arming only: the launcher's
+  singleton means it cannot re-arm an instance that is already running.
+
+### Notes
+
+- The state file is a convenience, never a dependency: if it's missing, unreadable, unwritable, or
+  corrupt, the app launches normally with Keep Awake off. No alert, no startup error.
 
 ## [1.12.0] - 2026-07-25
 

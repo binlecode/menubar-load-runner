@@ -59,6 +59,10 @@ Run from the repository root:
   ```
   Prefer this (or `timeout 5 …`) over launch-then-`kill`. Note the raw binary bypasses the launcher's
   singleton, so stacked instances / a run wedged in a modal alert are what otherwise force a manual `pkill`.
+  Pair it with `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/state.json` for anything touching Keep Awake, so
+  a test run can't read or clobber the real `~/Library/Application Support` state — and check for a
+  leaked `caffeinate` by its `-w <pid>` signature, not by name (the developer's own running instance
+  legitimately holds one).
 - The launcher enforces a singleton via `pgrep -f "/MenuBarLoadRunner( |$)"` — only one instance runs unless
   `--extra` is passed. (The pattern matches the compiled binary path, not the process args, since args no
   longer carry a `.gif` path now that Swift resolves preset keywords.) When iterating locally, stop any
@@ -121,12 +125,21 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
   literals. **Exception:** per-preset speed ranges live in `gifs/presets.json` (see the
   preset-registry note below), not `Tuning`. Width is not tuned per-preset — it derives from each GIF's
   aspect ratio at runtime (`currentGifAspect`/`slotLength`).
-- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--label`, positional
+- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--label`, `--keep-awake`, positional
   preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
   `presetOrPath`; when absent it is left empty and the app resolves the manifest's `defaultPreset`
   (`horse-white`). Keyword→path resolution
   happens in `MenuBarLoadRunnerApp.init` (matching `allPresets` by `key`, then by `path`), *not* in the shell
   launcher, which now forwards the arg unchanged.
+- **`PersistedState` / `StateStore`** — the app's only on-disk state, a JSON file at
+  `~/Library/Application Support/menubar-load-runner/state.json` (override with
+  `MENUBAR_LOAD_RUNNER_STATE_FILE` — test scaffolding, point it under `tmp/`). Deliberately **not**
+  `UserDefaults`: a bundle-less binary has no defaults domain, but a file opened by path needs no
+  bundle — which is why the old "can't persist without a bundle id" comment was wrong. Every field is
+  Optional so an older/newer file degrades instead of failing to decode, and both load and save are
+  **fail-silent** (missing/corrupt/unwritable → defaults, never a startup error or a modal). Contrast
+  `gifs/presets.json`, whose failure IS fatal — that's app identity, this is a convenience. Today it
+  carries Keep Awake only; the struct is shaped to grow.
 - **`CPULoadMonitor`** — reads `host_processor_info`/`PROCESSOR_CPU_LOAD_INFO` via Mach APIs and exposes an
   EMA-smoothed CPU usage fraction (`Tuning.cpuSmoothingAlpha`). Requires two samples to produce a delta, so
   usage is nil until the second `sampleSystemLoad` tick.
@@ -246,8 +259,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
     `KeepAwakeColor` (Dusty Teal (default) / Sand, each a dark/light tone chosen per menu-bar appearance).
     Off disengages caffeinate; a color row engages it *and* sets that tint (`selectKeepAwakeOption`,
-    `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). Menu-only (no CLI/env), session-lived.
-    A **second, independent radio group** in the same submenu is the **timed release** (`Duration`):
+    `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). The tint is menu-only (no CLI/env)
+    but persisted. A **second, independent radio group** in the same submenu is the **timed release** (`Duration`):
     `KeepAwakeDuration` (`.indefinite` + `Tuning.keepAwakeDurations`) plus a `Custom…` hr/min prompt,
     handled by `selectKeepAwakeDuration` / `promptCustomKeepAwakeDuration` → `armKeepAwake`. Its rows'
     tags are indices into `presetRows` and are read ONLY by that handler, so they don't collide with the
@@ -265,6 +278,21 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     solely while the menu is open** (`startKeepAwakeCountdownTicker` from `menuWillOpen`, torn down in
     `menuDidClose`; `.common` run-loop mode, since an open menu puts the loop in modal tracking). The 2s
     load tick still refreshes it so the row is current at the next open.
+  - **Keep Awake at launch and across launches** (`applyLaunchKeepAwakeState`, run from
+    `applicationDidFinishLaunching` before the first `refreshKeepAwakeSelectionState`). Precedence:
+    `--keep-awake` / `MENUBAR_LOAD_RUNNER_KEEP_AWAKE` (parsed by `KeepAwakeDuration.parse` into a
+    `KeepAwakeLaunchOption`) beats the `StateStore` file; `.off` is distinct from *absent* precisely so
+    an explicit off can suppress a saved window. **Only a bounded window is restored** — a saved
+    *indefinite* one is activate-on-launch with no stopping condition, so a stale flag would hold the
+    Mac awake after every reboot; a bounded one is self-limiting. The saved value is the **deadline**,
+    not the length (a length would silently extend the window on every relaunch), which also makes an
+    elapsed window restore as "expired" for free. The restored row marks `Custom…`, correctly: what
+    resumed is the remainder, not the 4 hours originally picked. `persistKeepAwakeState()` is called
+    from exactly the three intent mutators (`selectKeepAwakeOption`, `armKeepAwake`, the
+    `onWindowExpired` callback) plus `applicationWillTerminate` — **not** from
+    `updateSleepPrevention()`, which also runs on every thermal/battery/power event and would write
+    disk for a change in *running* state. Persist intent, never running state: the
+    `isEnabled`/`isRunning` split has to survive a relaunch too.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshShowAllSourcesState`) rather

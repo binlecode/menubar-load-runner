@@ -8,6 +8,7 @@
 # Any extra args are baked into the login item (preset keyword, --load-source, etc.):
 #   ./scripts/install-login-item.sh
 #   ./scripts/install-login-item.sh dog-black --load-source memory
+#   ./scripts/install-login-item.sh --keep-awake 4h        # arm Keep Awake at every login
 set -euo pipefail
 
 LABEL="ai.bera.menubarloadrunner"

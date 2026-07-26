@@ -25,6 +25,8 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-07-25
+
 ### Added
 
 - **Keep Awake: timed release.** The `Keep Awake` submenu gained a `Duration` radio group — `Until

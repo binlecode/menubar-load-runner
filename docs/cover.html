@@ -316,6 +316,20 @@
     background:color-mix(in srgb, var(--ember) 10%, transparent)}
   .awake-conditions .cond:focus-visible{outline:2px solid var(--ember); outline-offset:2px}
 
+  /* duration picker (mirrors the "Duration" radio group in the Keep Awake submenu) */
+  .awake-durations{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
+  .awake-durations .dur{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; cursor:pointer;
+    color:var(--fg-soft); background:var(--surface); border:1px solid var(--hair); border-radius:999px;
+    padding:4px 11px; transition:color .18s, border-color .18s, background .18s}
+  .awake-durations .dur:hover{color:var(--fg); border-color:var(--teal)}
+  .awake-durations .dur[aria-pressed="true"]{color:var(--teal); border-color:var(--teal);
+    background:color-mix(in srgb, var(--teal) 10%, transparent)}
+  .awake-durations .dur:focus-visible{outline:2px solid var(--teal); outline-offset:2px}
+  /* the countdown readout — tabular digits so it doesn't twitch as it ticks, like the real menu row */
+  .awake-countdown{font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:var(--teal);
+    font-variant-numeric:tabular-nums}
+
   /* the live menu-bar stage — creature + track line beneath the icon */
   .awake-stage{background:var(--bar); border:1px solid var(--bar-line); border-radius:16px;
     padding:26px 22px; display:flex; flex-direction:column; align-items:center; gap:18px;
@@ -622,6 +636,12 @@
             thermal — then <b>re-engages</b> the moment the condition clears.</li>
           <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
             instant a condition suspends it, even with the toggle still on.</li>
+          <li><b>Or give it a deadline.</b> Pick a window — 30&nbsp;min, 1, 2, 4, 8&nbsp;hours, or a custom
+            <span class="mono">hr&nbsp;+&nbsp;min</span> — and the spawn becomes
+            <span class="mono">caffeinate -di -t&nbsp;&lt;secs&gt;</span>: it drops the lock and exits <b>on its
+            own</b> when the time is up, so a Mac left working overnight goes to sleep without you.
+            The menu shows a real countdown — <span class="mono">29:24 left (until 8:18&nbsp;PM)</span>, ticking
+            once a second — not the length you picked.</li>
           <li>A thin line rides the bottom edge of the icon. The <span class="mono">Keep&nbsp;Awake</span>
             submenu is one radio group — <b>Off</b> plus five track-line tints
             (<b>Dusty&nbsp;Teal</b> default, <b>Sand</b>, <b>Graphite</b>, <b>Mauve</b>, <b>Sage</b>):
@@ -633,6 +653,7 @@
             <span class="sw-track"><span class="sw-knob"></span></span> Keep Awake
           </button>
           <span class="awake-state" id="awakeState">off · caffeinate not running</span>
+          <span class="awake-countdown" id="awakeCountdown" hidden></span>
         </div>
         <div class="awake-swatches" aria-label="Track-line color (Keep Awake submenu radio group)">
           <span>line color:</span>
@@ -651,6 +672,15 @@
           <button class="swatch" type="button" data-color="sage" aria-pressed="false">
             <span class="dot" style="background:var(--sage-bar)"></span> Sage
           </button>
+        </div>
+        <div class="awake-durations" aria-label="Keep Awake duration (the submenu's Duration radio group)">
+          <span>duration:</span>
+          <button class="dur" type="button" data-secs="0" aria-pressed="true">until turned off</button>
+          <button class="dur" type="button" data-secs="1800" aria-pressed="false">30m</button>
+          <button class="dur" type="button" data-secs="3600" aria-pressed="false">1h</button>
+          <button class="dur" type="button" data-secs="7200" aria-pressed="false">2h</button>
+          <button class="dur" type="button" data-secs="14400" aria-pressed="false">4h</button>
+          <button class="dur" type="button" data-secs="28800" aria-pressed="false">8h</button>
         </div>
         <div class="awake-conditions" aria-label="Simulate an auto-disengage condition">
           <span>try a condition →</span>
@@ -672,8 +702,9 @@
         <span class="caption" id="awakeCaption">toggle it — the track line is the “ground it runs on”</span>
       </div>
     </div>
-    <p class="heroBar cap">Idle-sleep only (the screen may still sleep), unprivileged, OS-reaped. Lid-close,
-      Low Power Mode, and memory pressure are deliberately <b>not</b> disengage triggers.</p>
+    <p class="heroBar cap">Display <b>and</b> idle system sleep are held (<span class="mono">-di</span>),
+      unprivileged, OS-reaped. A timed window releases on its own; Low Power Mode and memory pressure are
+      deliberately <b>not</b> disengage triggers.</p>
   </section>
 
   <section id="start">
@@ -711,7 +742,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.11.2</span>
+        <span class="badge">v1.12.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
@@ -782,6 +813,42 @@
   var reasons={battery:'battery ≤ 20%',thermal:'serious thermal'};
   function firstActive(){ if(active.battery)return 'battery';
     if(active.thermal)return 'thermal'; return null; }
+
+  // timed release — mirrors the submenu's Duration group. windowSecs 0 = indefinite; the deadline is
+  // wall-clock, so it keeps running through a simulated suspend exactly as the app's does.
+  var awCountdown=document.getElementById('awakeCountdown');
+  var durs=document.querySelectorAll('.awake-durations .dur');
+  var windowSecs=0, deadline=null, ticker=null;
+  function pad(n){ return (n<10?'0':'')+n; }
+  // "29:24" / "1:29:24" — positional, seconds resolution, like KeepAwakeDuration.countdown
+  function fmtLeft(ms){
+    var s=Math.max(Math.ceil(ms/1000),0);
+    var h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    return h>0 ? h+':'+pad(m)+':'+pad(sec) : pad(m)+':'+pad(sec);
+  }
+  function clockAt(ms){
+    return new Date(ms).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  }
+  function stopTicker(){ if(ticker){ clearInterval(ticker); ticker=null; } }
+  function startTicker(){
+    stopTicker();
+    ticker=setInterval(function(){
+      if(deadline && Date.now()>=deadline){ expireWindow(); } else { renderAwake(); }
+    },1000);
+  }
+  // `caffeinate -t` elapsing: the child exits by itself and Keep Awake falls back to Off
+  function expireWindow(){
+    stopTicker(); deadline=null; windowSecs=0; enabled=false;
+    syncDurButtons(); renderAwake();
+    if(awCaption) awCaption.textContent='window elapsed — caffeinate exited, the Mac can sleep';
+  }
+  function syncDurButtons(){
+    for(var d=0;d<durs.length;d++){
+      durs[d].setAttribute('aria-pressed',
+        (+durs[d].getAttribute('data-secs')===windowSecs)?'true':'false');
+    }
+  }
+
   function renderAwake(){
     var cause=firstActive();
     var running=enabled && !cause;
@@ -792,14 +859,41 @@
       awState.textContent='off · caffeinate not running';
       if(awCaption) awCaption.textContent='toggle it — the track line is the “ground it runs on”';
     } else if(running){
-      awState.textContent='holding awake · caffeinate -di -w <pid>';
-      if(awCaption) awCaption.textContent='● holding the Mac awake';
+      awState.textContent='holding awake · caffeinate -di'+(windowSecs?' -t '+windowSecs:'')+' -w <pid>';
+      if(awCaption) awCaption.textContent=windowSecs
+        ? '● holding awake until the window ends'
+        : '● holding the Mac awake';
     } else {
       awState.textContent='paused · '+reasons[cause]+' · re-engages when clear';
       if(awCaption) awCaption.textContent='auto-disengaged — toggle still on, but suspended';
     }
+    // The countdown shows whenever a window is armed — including while a condition has it suspended,
+    // since the deadline is wall-clock and a resume respawns with only the time that's left.
+    if(awCountdown){
+      if(enabled && deadline){
+        awCountdown.hidden=false;
+        awCountdown.textContent=fmtLeft(deadline-Date.now())+' left (until '+clockAt(deadline)+')';
+      } else {
+        awCountdown.hidden=true; awCountdown.textContent='';
+      }
+    }
   }
-  awToggle.addEventListener('click',function(){ enabled=!enabled; renderAwake(); });
+  awToggle.addEventListener('click',function(){
+    enabled=!enabled;
+    if(!enabled){ stopTicker(); deadline=null; windowSecs=0; syncDurButtons(); }
+    renderAwake();
+  });
+  // Picking any duration engages Keep Awake — arming a window and turning it on are one gesture.
+  for(var d0=0;d0<durs.length;d0++){
+    durs[d0].addEventListener('click',function(){
+      windowSecs=+this.getAttribute('data-secs');
+      enabled=true;
+      syncDurButtons();
+      if(windowSecs>0){ deadline=Date.now()+windowSecs*1000; startTicker(); }
+      else { stopTicker(); deadline=null; }
+      renderAwake();
+    });
+  }
   for(var q=0;q<conds.length;q++){
     conds[q].addEventListener('click',function(){
       var c=this.getAttribute('data-cond');
@@ -817,6 +911,7 @@
       renderAwake();
     });
   }
+  syncDurButtons();
   renderAwake();
 
   // menu-bar label — mirrors the Menu Bar Label submenu (off / live value / custom text)

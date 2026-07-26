@@ -26,6 +26,14 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-07-26
+
+Two silent failures, both of the same kind: the app accepted an instruction, did nothing, and said
+nothing. Keep Awake armed on a low battery released itself immediately while still showing as on, and
+the launcher's single-instance guard refused a second user's first launch by naming a process in
+another account's session. No new features; the only addition is a QA hook that makes the first one
+testable.
+
 ### Fixed
 
 - **Keep Awake no longer pretends to work on a low battery.** Arming it while on battery at or below 20%

@@ -26,6 +26,8 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-07-26
+
 ### Added
 
 - **Keep Awake survives a relaunch.** An armed window is saved to

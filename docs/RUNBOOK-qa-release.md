@@ -45,6 +45,11 @@ These make a *blocking GUI menu-bar app* testable from a shell:
   available); unset = no override. Useful on a fanless/AC-only Mac to force the *reverse* too — you
   can't fake a fan spinning up, but you can prove the disabled state and the launch fallback.
 
+- **`MENUBAR_LOAD_RUNNER_STATE_FILE=<path>`** — redirects the persisted Keep Awake state
+  (`~/Library/Application Support/menubar-load-runner/state.json`, v1.13.0) somewhere throwaway.
+  **Set it for every run that touches Keep Awake.** Without it a QA run writes the real file, and an
+  armed window from a test is restored by the developer's next real launch.
+
 ### Gotchas that have bitten us
 
 - `--foreground` / `--no-detach` / `--extra` are **launcher-only** flags. Passing them to the raw
@@ -53,6 +58,12 @@ These make a *blocking GUI menu-bar app* testable from a shell:
 - The startup/runtime error paths are **modal** (`NSAlert.runModal`) for real users — always drive
   them under `EXIT_AFTER` (suppressed) or `timeout` during QA, or a dialog pops on your screen and
   blocks the process.
+- **Never grep for a leaked `caffeinate` by name.** The developer's own running instance legitimately
+  holds one, and so may unrelated software. Scope the check to children bound to a **dead** pid —
+  `-w <pid>` is the app's signature: `ps -o args= -ax | grep '^/usr/bin/caffeinate' | grep -- '-w '`,
+  then `kill -0` each target. (A name-only check reported a false leak the first time it was run.)
+- A run that arms Keep Awake spawns a real `caffeinate` child. `-w <pid>` reaps it when the app exits,
+  so `EXIT_AFTER` cleans up after itself — but only if the app actually exits.
 - The memory used-fraction is a **deliberate approximation** (available = free + purgeable +
   external), so it reads higher than Activity Monitor's "memory used" and higher than
   `memory_pressure`'s "free %". A high number on a loaded/​swapping machine is expected, not a bug.
@@ -81,6 +92,12 @@ $BIN --speed-multiplier 0 >/dev/null 2>&1;      chk "--speed-multiplier 0" 1 $?
 $BIN --speed-multiplier -2 >/dev/null 2>&1;     chk "--speed-multiplier neg" 1 $?
 $BIN --label >/dev/null 2>&1;                   chk "--label no value" 1 $?
 $BIN --load-source >/dev/null 2>&1;             chk "--load-source no value" 1 $?
+$BIN --keep-awake >/dev/null 2>&1;              chk "--keep-awake no value" 1 $?
+# A BAD --keep-awake VALUE must NOT be fatal (it can be baked into a LaunchAgent): warn + off + rc 0.
+MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_EXIT_AFTER=1 \
+  $BIN --keep-awake banana >/dev/null 2>&1;     chk "--keep-awake bad value non-fatal" 0 $?
+MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_EXIT_AFTER=1 \
+  $BIN --keep-awake 2 >/dev/null 2>&1;          chk "--keep-awake bare number non-fatal" 0 $?
 # --show-all-sources / --no-update-check are valueless flags: they don't launch the GUI when paired
 # with --help, and must be accepted (rc=0), not rejected.
 $BIN --show-all-sources --help >/dev/null 2>&1; chk "--show-all-sources accepted" 0 $?
@@ -98,7 +115,7 @@ VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner
   && echo "  PASS --help shows version $VER" || echo "  FAIL --help missing version $VER"
 grep -q "## \[$VER\]" CHANGELOG.md && echo "  PASS CHANGELOG has [$VER] section" || echo "  FAIL CHANGELOG missing [$VER]"
 # --help must document every current flag (so removed flags don't linger, new ones aren't hidden):
-for f in --speed-multiplier --label --load-source --show-all-sources --no-update-check; do
+for f in --speed-multiplier --label --load-source --keep-awake --show-all-sources --no-update-check; do
   ./tmp/mblr-check --help 2>&1 | grep -q -- "$f" && echo "  PASS --help lists $f" || echo "  FAIL --help missing $f"
 done
 ```
@@ -147,6 +164,78 @@ run "custom path + memory"    "" $BIN "$GIF" --load-source memory
 run "env LOAD_SOURCE"         "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $BIN
 run "env PATH=<gif>"          "" env MENUBAR_LOAD_RUNNER_PATH="$GIF" $BIN --load-source disk
 echo "lifecycle: passes=$pass fails=$fail"
+```
+
+## 3a. Keep Awake — launch arming + persistence (v1.13.0)
+
+Non-interactive: `--keep-awake` arms at launch, so the whole feature is reachable without clicking.
+Every run redirects the state file (§0) — **do not skip that**, or QA leaves an armed window behind
+for the developer's next real launch.
+
+```bash
+BIN=./tmp/mblr-check; ST=$PWD/tmp/qa-state.json; pass=0; fail=0
+ck(){ [ "$2" = "EMPTY" ] && { [ -z "$3" ] && r=0 || r=1; } || case "$3" in *"$2"*) r=0;; *) r=1;; esac
+     [ $r = 0 ] && { echo "  PASS $1"; pass=$((pass+1)); } || { echo "  FAIL $1: want [$2] got [${3:-<empty>}]"; fail=$((fail+1)); }; }
+# Launch, capture the caffeinate child bound to THIS app, wait for its timed exit.
+arm(){ MENUBAR_LOAD_RUNNER_STATE_FILE=$ST MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN --no-update-check "$@" \
+         >/dev/null 2>tmp/qa-ka-err.txt & app=$!; sleep 1.2
+       CHILD=$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true); wait $app; }
+
+rm -f $ST; arm --keep-awake 1m;      ck "1m arms -t 60"            "-t 60"    "$CHILD"
+rm -f $ST; arm --keep-awake 1h30m;   ck "1h30m arms -t 5400"       "-t 5400"  "$CHILD"
+rm -f $ST; arm --keep-awake 99h;     ck "clamped to keepAwakeMaxHours" "-t 86400" "$CHILD"
+rm -f $ST; arm --keep-awake on;      ck "on = no -t"               "-di -w"   "$CHILD"
+rm -f $ST; arm --keep-awake off;     ck "off = no child"           "EMPTY"    "$CHILD"
+rm -f $ST; arm;                      ck "absent = no child"        "EMPTY"    "$CHILD"
+rm -f $ST; arm --keep-awake banana;  ck "bad value = no child"     "EMPTY"    "$CHILD"
+                                     ck "bad value warns" "Unrecognized --keep-awake" "$(cat tmp/qa-ka-err.txt)"
+rm -f $ST; MENUBAR_LOAD_RUNNER_KEEP_AWAKE=45m arm; ck "env arms"   "-t 2700"  "$CHILD"
+rm -f $ST; MENUBAR_LOAD_RUNNER_KEEP_AWAKE=45m arm --keep-awake 10m; ck "flag beats env" "-t 600" "$CHILD"
+
+# Round trip: arm 30m, relaunch WITHOUT the flag -> the REMAINDER resumes, never a fresh 1800.
+rm -f $ST; arm --keep-awake 30m;     ck "arming writes state" '"enabled" : true' "$(cat $ST)"
+arm; secs=$(echo "$CHILD" | sed -n 's/.*-t \([0-9]*\).*/\1/p')
+[ -n "$secs" ] && [ "$secs" -gt 1700 ] && [ "$secs" -lt 1800 ] \
+  && { echo "  PASS resumes remainder (-t $secs, not 1800)"; pass=$((pass+1)); } \
+  || { echo "  FAIL remainder: got '${secs:-none}', want 1700<x<1800"; fail=$((fail+1)); }
+arm --keep-awake off;                ck "explicit off suppresses saved window" "EMPTY" "$CHILD"
+arm --keep-awake 5m;                 ck "flag beats saved window"  "-t 300"   "$CHILD"
+
+# Saved states that must NOT come back.
+echo '{"version":1,"keepAwake":{"enabled":true,"deadline":"2020-01-01T00:00:00Z","tint":2}}' > $ST
+arm; ck "elapsed window not restored"   "EMPTY" "$CHILD"
+echo '{"version":1,"keepAwake":{"enabled":true,"tint":1}}' > $ST
+arm; ck "saved indefinite not restored" "EMPTY" "$CHILD"     # by design: no stopping condition
+echo 'x' > $ST
+arm; ck "corrupt file: no child"        "EMPTY" "$CHILD"
+     ck "corrupt file: silent" "EMPTY" "$(grep -v MENUBAR_LOAD_RUNNER_EXIT_AFTER tmp/qa-ka-err.txt)"
+
+# Natural expiry must mark the window SPENT, or it would be resumed forever.
+rm -f $ST
+MENUBAR_LOAD_RUNNER_STATE_FILE=$ST MENUBAR_LOAD_RUNNER_EXIT_AFTER=7 $BIN --no-update-check \
+  --keep-awake 3s >/dev/null 2>&1 & app=$!; sleep 4
+ck "window released itself" "EMPTY" "$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true)"
+wait $app; ck "expiry persisted enabled:false" '"enabled" : false' "$(cat $ST)"
+arm; ck "spent window not resumed" "EMPTY" "$CHILD"
+
+# Unwritable state location must not break arming or the exit code.
+mkdir -p tmp/qa-ro && chmod 500 tmp/qa-ro
+MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-ro/s.json MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN \
+  --no-update-check --keep-awake 5m >/dev/null 2>&1 & app=$!; sleep 1.2
+ck "read-only state dir still arms" "-t 300" "$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true)"
+wait $app; ck "read-only state dir exits 0" "0" "$?"
+chmod 700 tmp/qa-ro; rm -rf tmp/qa-ro
+echo "keep-awake: passes=$pass fails=$fail"
+```
+
+Also confirm the **default** path works at least once per release (the block above always overrides
+it, so a broken Application Support path would go unnoticed):
+
+```bash
+rm -rf "$HOME/Library/Application Support/menubar-load-runner"      # only if you don't have real state
+MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./tmp/mblr-check --no-update-check --keep-awake 45s >/dev/null 2>&1
+cat "$HOME/Library/Application Support/menubar-load-runner/state.json"   # dir created, JSON written
+rm -rf "$HOME/Library/Application Support/menubar-load-runner"      # clean up the QA artifact
 ```
 
 ## 4. Error paths (must exit fast, NO modal box)
@@ -333,6 +422,13 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
 
 `EXIT_AFTER` can't click menus. Once per release, launch for real and eyeball the menu:
 
+> Menu items *are* scriptable when you need determinism rather than eyeballs — `System Events` can
+> click a status item and its submenu rows (this is how the Keep Awake timed release was verified).
+> Two caveats found the hard way: a menu opened that way is **not rendered**, so it can't be
+> screenshotted, and selection marks use a custom `onStateImage`, so `AXMenuItemMarkChar` reads empty
+> — the mark itself is eyes-only. Look items up by **index**, not title: a title carrying a live
+> countdown changes between the lookup and the click.
+
 ```bash
 ./menubar-load-runner --load-source memory --foreground   # Ctrl-C when done
 ```
@@ -374,7 +470,8 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
       ./menubar-load-runner --foreground` — those sources are absent from the **Other Sources** list, and
       requesting one at launch logs a fallback-to-cpu line (also covered automatically in §3).
 
-**Keep Awake** (v1.8.0/v1.9.0; menu merged + palette expanded in v1.11.0):
+**Keep Awake** (v1.8.0/v1.9.0; menu merged + palette expanded in v1.11.0; timed release v1.12.0;
+persistence + `--keep-awake` v1.13.0):
 
 - [ ] **Keep Awake ▸** is a single submenu holding one radio group: **Off** plus five colors
       (**Dusty Teal** (default) / **Sand** / **Graphite** / **Mauve** / **Sage**). There is no separate
@@ -385,10 +482,30 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
       screen naps). Picking **Off** removes both. The radio dot follows
       the selection (Off when disengaged, else the active color).
 - [ ] Switching between colors while engaged recolors the track line live. **Sage** should read clearly
-      green, distinct from **Dusty Teal**'s cyan lean. (Menu-only; resets to Off + Dusty Teal each launch.)
+      green, distinct from **Dusty Teal**'s cyan lean. Changing tint must **not** restart caffeinate
+      (same pid before and after) — only changing the *window* respawns it.
+- [ ] **Duration group** (v1.12.0): a second radio group — **Until turned off** / 30 min / 1 / 2 / 4 /
+      8 hours / **Custom…** (hr + min, clamped to 24h; `0 hr 0 min` cancels). Picking a duration also
+      turns Keep Awake **on**, so arming is one click. The child becomes `caffeinate -di -t <secs> -w <pid>`.
+- [ ] **Countdown, not duration**: with a window armed the parent row reads `Keep Awake: 29:24` and the
+      submenu's last row `29:24 left (until 8:18 PM)`. Hold the menu open — it must **tick every
+      second** (a value frozen for a minute means the 1s ticker or its `.common` run-loop mode
+      regressed). Monospaced digits, so the row doesn't twitch.
+- [ ] Let a short custom window elapse: caffeinate exits on its own, the mark returns to **Off**, the
+      countdown row hides, and the track line disappears — with no action from you.
+- [ ] **Survives a relaunch** (v1.13.0): arm a window, quit via **Exit**, relaunch. The window resumes
+      with the *remaining* time (a countdown that is **shorter** than what you armed — if it reads the
+      full original length, the deadline is being stored as a duration, which is the bug this design
+      exists to avoid), and the tint comes back too. Automated in §3a; check it by eye once because
+      §3a always redirects the state file.
+- [ ] A window left armed that **elapses while the app is closed** does not come back on the next
+      launch. Neither does a saved *indefinite* window — that one is deliberate (no stopping
+      condition); use `--keep-awake on` in the login item if you want arm-at-login.
 - [ ] Auto-disengage: on battery below ~20% (or serious/critical thermal) the line hides and caffeinate
       is suspended while the chosen color stays marked (intent preserved); it re-engages when the
       condition clears. Hard to force by hand — spot-check the color/track behavior and trust the code path.
+      If you do force it (a test build with a raised `Tuning.batteryLowThreshold`), the resume must
+      respawn with the **remaining** time, not the original window, and the **Off** mark must not move.
 - [ ] Selection marks (Presets, Keep Awake) render as a small solid **dot**, not the native checkmark
       (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.
 
@@ -408,7 +525,13 @@ pkill -f 'MenuBarLoadRunner' 2>/dev/null
 
 ```bash
 pkill -f 'mblr-check' 2>/dev/null; pkill -f 'MenuBarLoadRunner' 2>/dev/null
-rm -f tmp/mblr-check
+rm -f tmp/mblr-check tmp/qa-state.json
+# Any caffeinate child still bound to a now-dead pid is a leak (see §0 — do NOT match on name alone):
+ps -o args= -ax | grep '^/usr/bin/caffeinate' | grep -- '-w ' | while read -r l; do
+  kill -0 "${l##*-w }" 2>/dev/null || echo "  LEAK: $l"; done
+# The real state file must be untouched by QA. If this prints, a run was missing STATE_FILE:
+[ -f "$HOME/Library/Application Support/menubar-load-runner/state.json" ] \
+  && echo "  NOTE: real state file exists — expected only if you ran the app for real" 
 ./scripts/uninstall-login-item.sh 2>/dev/null || true   # if a login item was installed while testing
 git status --short   # confirm only intended files changed
 ```
@@ -426,7 +549,11 @@ reader ranges + adaptive-scaler behavior) · §7 checklist ticked · `git diff` 
 
 ## Adding coverage when the app grows
 
-- **New CLI flag / env var** → add a parse-path case to §2 and a lifecycle run to §3.
+- **New CLI flag / env var** → add a parse-path case to §2 and a lifecycle run to §3. If the flag can
+  be baked into the login item (§19 of the design doc), also assert that a *bad value* is non-fatal.
+- **New persisted state** → give it an env override like `MENUBAR_LOAD_RUNNER_STATE_FILE` before
+  writing any test for it, add a round-trip to §3a, and add a "real file untouched" line to §8. State
+  that only a real user path can write is state QA will silently corrupt.
 - **New load source** → add a §3 run, a §5 reader check, and the source's availability-disable +
   runtime-fallback to the §7 checklist. Percentage sources assert the value in [0,1] directly; rate
   (counter-delta) sources copy the swap-rate/NET/DISK block in §5 as the template — difference a

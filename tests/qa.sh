@@ -64,7 +64,15 @@ $BIN --label >/dev/null 2>&1;                       chk "--label no value" 1 $?
 $BIN --load-source >/dev/null 2>&1;                 chk "--load-source no value" 1 $?
 $BIN --show-all-sources --help >/dev/null 2>&1;     chk "--show-all-sources accepted" 0 $?
 $BIN --no-update-check --help >/dev/null 2>&1;      chk "--no-update-check accepted" 0 $?
-for f in --speed-multiplier --label --load-source --show-all-sources --no-update-check; do
+# --keep-awake parse forms. Only the shapes that can be asserted WITHOUT booting the GUI live here:
+# a missing value is fatal (rc=1), and a valid value followed by --help short-circuits to usage. A
+# *bad* value is deliberately non-fatal (it warns and launches with keep-awake off), so that case is
+# covered by the launch tiers, not here — see RUNBOOK §3a.
+$BIN --keep-awake >/dev/null 2>&1;                  chk "--keep-awake no value" 1 $?
+$BIN --keep-awake off --help >/dev/null 2>&1;       chk "--keep-awake off accepted" 0 $?
+$BIN --keep-awake 3s --help >/dev/null 2>&1;        chk "--keep-awake seconds form" 0 $?
+$BIN --keep-awake 1h30m --help >/dev/null 2>&1;     chk "--keep-awake compound form" 0 $?
+for f in --speed-multiplier --label --load-source --keep-awake --show-all-sources --no-update-check; do
   $BIN --help 2>&1 | grep -q -- "$f" && { echo "  PASS --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL --help missing $f"; fail=$((fail+1)); }
 done
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?

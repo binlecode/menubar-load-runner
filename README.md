@@ -293,6 +293,47 @@ still drives the animation; the history sparkline still tracks the active source
 > throughput is. Under Low Power Mode, thermal, or memory pressure the app caps its own animation
 > speed at half the preset's range.
 
+## Keep Awake at launch (`--keep-awake`)
+
+```bash
+./menubar-load-runner --keep-awake 4h        # arm a 4-hour window at startup
+./menubar-load-runner --keep-awake on        # until turned off
+MENUBAR_LOAD_RUNNER_KEEP_AWAKE=90m ./menubar-load-runner
+```
+
+`--keep-awake` (or `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`) arms sleep prevention as the app starts, so a
+long unattended run can be scripted instead of clicked. It takes `off` (the default), `on` /
+`indefinite`, or a duration — **a unit is required**: `30m`, `2h`, `1h30m`, `90s`, up to 24 hours.
+A bare number is rejected rather than guessed at, since minutes and hours are both plausible readings
+and picking wrong is a 60× error in how long your Mac stays awake. An unrecognized value warns on
+stderr and launches with Keep Awake off; it never fails the launch, because this value can be baked
+into a login item:
+
+```bash
+./scripts/install-login-item.sh --keep-awake 4h
+```
+
+**This is launch-time arming, not remote control.** The launcher allows one instance, so running the
+command again while the app is up won't re-arm it — the second invocation is refused. To change the
+window on a running app, use the menu (or `pkill -f MenuBarLoadRunner` and relaunch).
+
+**Persistence.** Keep Awake state is saved to
+`~/Library/Application Support/menubar-load-runner/state.json` and restored on the next launch, so a
+reboot in the middle of an overnight window doesn't silently drop it. What's restored:
+
+| Saved | On the next launch |
+|---|---|
+| A window still running | Resumed with the **time remaining**, not a fresh window |
+| A window that already elapsed | Not restored — the Mac is free to sleep |
+| Keep Awake on with **no** window (indefinite) | **Not** restored — see below |
+| The track-line color | Always restored (it's cosmetic) |
+
+A saved *indefinite* window is deliberately not resumed. It has no stopping condition, so a stale
+flag would keep the Mac awake after every reboot until someone noticed the menu bar; a bounded window
+is self-limiting and is the case that actually hurts. Passing `--keep-awake` — **including
+`--keep-awake off`** — overrides whatever was saved. If the state file is missing, unreadable, or
+corrupt, the app launches normally with Keep Awake off; it is never a startup error.
+
 ## Resource cost
 
 MenuBar Load Runner is built to stay out of the way of the load it visualizes. Measured on Apple
@@ -341,7 +382,7 @@ Click the menu bar item to open:
 - `▸ Other Sources` (disclosure row) — click to expand/collapse an inline list of every *other* available reader (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan` / `Battery`, minus the active one; sources with no readable hardware are omitted). Each row shows that reader's live readout; clicking it switches the driving source to it (takes effect immediately). Expanding samples every reader each tick; collapsed (the default) samples only the active source. The active source still drives the animation. Launch expanded with `--show-all-sources` / `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Menu Bar Label` -> `Off` / `Live Value` (the active source's compact live reading in its own slot) / `Custom Text…` (a fixed label, up to 24 chars). Off by default; the parent title shows the current state. Also settable at launch via `--label` / `MENUBAR_LOAD_RUNNER_LABEL`
-- `Keep Awake` (submenu) — keeps the Mac awake while the app runs by spawning `caffeinate -di -w <pid>` (prevents both display and idle system sleep — an idle-only assertion is unreliable on modern macOS, where the system follows the display into sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake. The submenu holds two radio groups. The first is **Off** plus five track-line colors (**Dusty Teal**, the default, **Sand**, **Graphite**, **Mauve**, **Sage**): picking a color turns Keep Awake on with that tint, **Off** turns it off. The second is **Duration** — the timed release: **Until turned off** (the default), **30 minutes**, **1 hour**, **2 hours**, **4 hours**, **8 hours**, or **Custom…** (hours + minutes, up to 24 hours). Picking any duration also turns Keep Awake on, so arming a window is one click. With a window armed it's a real countdown: the `Keep Awake` row reads `Keep Awake: 29:24` and the submenu shows `29:24 left (until 8:18 PM)` — time remaining at seconds resolution plus the wall-clock moment it ends, ticking every second while the menu is open. When it elapses `caffeinate` exits on its own, Keep Awake returns to **Off**, and the Mac is free to sleep — handy for a long unattended task you won't be awake to babysit. The window is a *time* promise, not a *task* promise: it releases whether or not your job finished. Resets to off (and indefinite) on launch.
+- `Keep Awake` (submenu) — keeps the Mac awake while the app runs by spawning `caffeinate -di -w <pid>` (prevents both display and idle system sleep — an idle-only assertion is unreliable on modern macOS, where the system follows the display into sleep). Bound to the app's PID, so it's reaped automatically on crash/quit. Auto-disengages on critically low battery (≤20% on battery) or serious/critical thermal state, and re-engages when the condition clears. A thin track line along the icon's bottom edge shows while it's actively keeping the Mac awake. The submenu holds two radio groups. The first is **Off** plus five track-line colors (**Dusty Teal**, the default, **Sand**, **Graphite**, **Mauve**, **Sage**): picking a color turns Keep Awake on with that tint, **Off** turns it off. The second is **Duration** — the timed release: **Until turned off** (the default), **30 minutes**, **1 hour**, **2 hours**, **4 hours**, **8 hours**, or **Custom…** (hours + minutes, up to 24 hours). Picking any duration also turns Keep Awake on, so arming a window is one click. With a window armed it's a real countdown: the `Keep Awake` row reads `Keep Awake: 29:24` and the submenu shows `29:24 left (until 8:18 PM)` — time remaining at seconds resolution plus the wall-clock moment it ends, ticking every second while the menu is open. When it elapses `caffeinate` exits on its own, Keep Awake returns to **Off**, and the Mac is free to sleep — handy for a long unattended task you won't be awake to babysit. The window is a *time* promise, not a *task* promise: it releases whether or not your job finished. An armed window **survives a relaunch or a reboot** — it is saved as the moment it ends, so what comes back is the remainder, not a fresh window, and a window that elapsed while the app was down does not come back at all. Also armable at launch with `--keep-awake` (see below).
 - `Presets` -> `Dog (White)` / `Dog (Black)` / `Horse (Black)` / `Horse (White)` / `Chihiro (Walking)` / `Chihiro (Walking, White)` / `Chihiro (Walking, Black)` / `Totoro` / `Totoro (Group, White)` / `Totoro (Group, Black)` / `Totoro (White)` / `Totoro (Black)`
 - `Update available: vX.Y.Z ->` (only shown when a newer release exists) and `Check for Updates...` — see [Updates](#updates)
 - `About`
@@ -421,7 +462,7 @@ dashboard):
 | **In-menu readout** | 60s sparkline, numerics, load averages | Minimal | Numeric dropdown | Full graphs, temps, per-process |
 | **Sensor temps / battery health / per-process** | No (out of scope by design) | No | No | Yes |
 | **Pauses when hidden; self-throttles under power/thermal pressure** | Yes | — | — | — |
-| **Built-in sleep inhibitor (Keep Awake)** | Yes (`caffeinate`, auto-disengage) | — | — | — |
+| **Built-in sleep inhibitor (Keep Awake)** | Yes (`caffeinate`, timed release, auto-disengage, survives relaunch) | — | — | — |
 | **CLI flags / headless install / login automation** | Yes (launcher, LaunchAgent scripts) | GUI app | GUI app | GUI app |
 | **Settings window** | No (menu + CLI flags) | — | Yes (SwiftUI) | Yes |
 | **Updates** | In-app git tag check + one-click `git pull` | Manual rebuild (archived repo) | GitHub releases | Built-in updater |

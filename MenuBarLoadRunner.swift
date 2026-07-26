@@ -446,8 +446,9 @@ private enum KeepAwakeColor: Int, CaseIterable {
 
 // A Keep Awake window: indefinite (the default — runs until turned off or the app quits) or a fixed
 // length, after which `caffeinate -t` exits by itself and the Mac is free to sleep again. A registry
-// like KeepAwakeColor, so the menu rows, the radio-selection check, and the arming path share one
-// source of truth. Menu-only, session-lived: no CLI/env, nothing persisted.
+// like KeepAwakeColor, so the menu rows, the radio-selection check, the arming path, and the
+// `--keep-awake` parser share one source of truth. Armable from the menu or at launch (CLI/env or a
+// window restored from disk — see StateStore).
 private enum KeepAwakeDuration: Equatable {
     case indefinite
     case seconds(TimeInterval)
@@ -502,6 +503,51 @@ private enum KeepAwakeDuration: Equatable {
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
+
+    // `--keep-awake <value>` / MENUBAR_LOAD_RUNNER_KEEP_AWAKE. Accepts "on"/"indefinite" (no window)
+    // or unit-suffixed durations, combinable: "30m", "2h", "1h30m", "90s". nil = unparseable, which the
+    // caller turns into a warning + off rather than a launch failure.
+    //
+    // A UNIT IS REQUIRED — a bare "2" is rejected rather than guessed at. Minutes and hours are both
+    // plausible readings of a bare number, and picking wrong is a 60× error in how long the Mac stays
+    // awake; a warning the user can see beats a window they didn't ask for. Clamped to
+    // Tuning.keepAwakeMaxHours, matching the custom-duration prompt (clamp, don't reject) — this value
+    // can be baked into a login item, where a hard failure would cost the user the whole app.
+    static func parse(_ raw: String) -> KeepAwakeDuration? {
+        let lowered = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        if ["on", "yes", "true", "indefinite"].contains(lowered) { return .indefinite }
+
+        var total: TimeInterval = 0
+        var digits = ""
+        var sawUnit = false
+        for character in lowered {
+            if character.isNumber {
+                digits.append(character)
+                continue
+            }
+            // A unit with no number in front of it ("h", "30mh") is malformed, not zero.
+            guard let value = Double(digits) else { return nil }
+            switch character {
+            case "h": total += value * 3600
+            case "m": total += value * 60
+            case "s": total += value
+            default: return nil
+            }
+            digits = ""
+            sawUnit = true
+        }
+        // Trailing digits mean a missing unit ("1h30"), which is the ambiguity above in disguise.
+        guard sawUnit, digits.isEmpty, total > 0 else { return nil }
+        return .seconds(min(total, TimeInterval(Tuning.keepAwakeMaxHours) * 3600))
+    }
+}
+
+// What `--keep-awake` asked for. Absent (nil) is distinct from `.off`: nil means the flag wasn't
+// given, so a window persisted from the last run may be restored; `.off` is the user explicitly
+// saying "launch with keep-awake disabled", which suppresses that restore.
+private enum KeepAwakeLaunchOption {
+    case off
+    case window(KeepAwakeDuration)
 }
 
 private struct Config {
@@ -532,6 +578,11 @@ private struct Config {
     // enabled by --show-all-sources or MENUBAR_LOAD_RUNNER_SHOW_ALL ∈ {1,true,yes}. Still runtime-
     // toggleable from the menu regardless.
     let showAllSources: Bool
+    // Keep Awake at launch, from --keep-awake / MENUBAR_LOAD_RUNNER_KEEP_AWAKE. nil = not requested
+    // (the persisted window, if any, is restored instead). This is LAUNCH-time arming only: the
+    // launcher's singleton refuses a second invocation, so it can't arm an instance that's already
+    // running — that would need IPC, which a bundle-less binary doesn't have.
+    let keepAwake: KeepAwakeLaunchOption?
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
@@ -539,6 +590,7 @@ private struct Config {
         var speedMultiplierOverride: Double?
         var labelArg: String?
         var loadSourceArg: String?
+        var keepAwakeArg: String?
         var updateCheckEnabled = true
         var showAllSources = false
 
@@ -569,6 +621,13 @@ private struct Config {
                     return nil
                 }
                 loadSourceArg = value
+            case "--keep-awake":
+                guard let value = iterator.next() else {
+                    fputs("Invalid value for --keep-awake. Expected off, on, or a duration with a unit (e.g. 30m, 2h, 1h30m).\n", stderr)
+                    printUsage()
+                    return nil
+                }
+                keepAwakeArg = value
             case "--no-update-check":
                 updateCheckEnabled = false
             case "--show-all-sources":
@@ -634,6 +693,25 @@ private struct Config {
             updateCheckEnabled = false
         }
 
+        if keepAwakeArg == nil {
+            keepAwakeArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_KEEP_AWAKE"]
+        }
+        // An unparseable value degrades to an explicit off with a warning, the way --load-source
+        // degrades to cpu: this can be baked into a LaunchAgent, and a bad value must never cost the
+        // user their menu-bar app. It still counts as "the flag was given", so it also suppresses the
+        // persisted-window restore — a user driving Keep Awake from the CLI stays in charge of it.
+        var keepAwake: KeepAwakeLaunchOption?
+        if let raw = keepAwakeArg?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
+            if ["off", "no", "false", "0"].contains(raw.lowercased()) {
+                keepAwake = .off
+            } else if let parsed = KeepAwakeDuration.parse(raw) {
+                keepAwake = .window(parsed)
+            } else {
+                fputs("Unrecognized --keep-awake \"\(raw)\"; launching with keep-awake off. Expected off, on, or a duration with a unit (e.g. 30m, 2h, 1h30m).\n", stderr)
+                keepAwake = .off
+            }
+        }
+
         // Env can only enable the launch default (the menu toggle covers turning it off at runtime).
         if !showAllSources,
            let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_SHOW_ALL"]?.lowercased(),
@@ -649,7 +727,8 @@ private struct Config {
                 loadSource: loadSource,
                 exitAfterSeconds: exitAfterSeconds,
                 updateCheckEnabled: updateCheckEnabled,
-                showAllSources: showAllSources
+                showAllSources: showAllSources,
+                keepAwake: keepAwake
             )
         )
     }
@@ -658,14 +737,86 @@ private struct Config {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("MenuBar Load Runner \(AppInfo.version)")
-        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--show-all-sources] [--no-update-check]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--show-all-sources] [--no-update-check]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--show-all-sources] [--no-update-check]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--show-all-sources] [--no-update-check]")
         print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
         print("Label: an optional second menu-bar slot. --label value shows the active source's live reading; --label <text> (up to \(Tuning.labelMaxChars) chars) shows a fixed label; --label off (default) shows nothing. Also via MENUBAR_LOAD_RUNNER_LABEL; switchable from the menu.")
         print("Show all sources: --show-all-sources (or MENUBAR_LOAD_RUNNER_SHOW_ALL=1) starts with the menu's \"Other Sources\" list expanded, sampling every available reader and showing each as a live row; click a row to switch the driving source. Collapsed by default (active source only). Toggle from the menu's disclosure header.")
+        print("Keep awake: --keep-awake <off|on|30m|2h|1h30m> arms sleep prevention at launch (a unit is required; up to \(Tuning.keepAwakeMaxHours)h). Also via MENUBAR_LOAD_RUNNER_KEEP_AWAKE. Off by default; switchable from the menu. An armed window is saved and resumed on the next launch — passing this flag (even as off) overrides what was saved.")
         print("Width: the menu-bar item sizes itself to the GIF's aspect ratio at menu-bar height — not configurable.")
         print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
         print("Updates: on launch, checks the git origin's release tags for a newer version (network access). Apply is a menu click; disable with --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0.")
+    }
+}
+
+// What survives a relaunch. Every field is Optional so a file written by an older or newer build
+// degrades to "not saved" instead of failing to decode — a state file must never be able to break
+// startup. `version` is informational for now (a hand-inspectable marker of the shape); the optionals
+// are what actually does the compatibility work.
+private struct PersistedState: Codable {
+    struct KeepAwake: Codable {
+        // KeepAwakeColor.rawValue. Purely cosmetic, so it is restored unconditionally.
+        var tint: Int?
+        // The instant the armed window ENDS — absolute, not a length. Storing "4 hours" and re-arming
+        // four fresh hours on the next launch would silently extend every window across a reboot;
+        // storing the end instant means what comes back is the window the user actually asked for,
+        // already shortened by the time the app was down (and already expired if it elapsed).
+        // nil when Keep Awake is indefinite.
+        var deadline: Date?
+        // The user's INTENT (SleepPreventer.isEnabled), never the transient running state: a
+        // battery/thermal condition-suspend kills caffeinate while intent stands, and persisting
+        // "not running" there would resurrect that distinction wrongly on the next launch.
+        var enabled: Bool?
+    }
+    var version: Int
+    var keepAwake: KeepAwake?
+}
+
+// A hand-rolled state file in Application Support. Deliberately NOT UserDefaults: this binary has no
+// bundle id, so it has no reliable defaults domain — but a plist/JSON we open by path needs no bundle
+// at all, which is why persistence was reachable here all along.
+//
+// Fail-silent in both directions, matching the update probe: an unreadable, corrupt, or unwritable
+// file means "no saved state, carry on with defaults" — never a startup error, never a modal, never a
+// reason the app doesn't launch. This is a convenience, unlike gifs/presets.json (app identity), whose
+// failure IS fatal.
+private enum StateStore {
+    static let currentVersion = 1
+    private static let directoryName = "menubar-load-runner"
+    private static let fileName = "state.json"
+
+    // Test scaffolding, like MENUBAR_LOAD_RUNNER_EXIT_AFTER: point the state file somewhere under
+    // tmp/ so a smoke test never touches the real Application Support directory.
+    static var fileURL: URL? {
+        if let override = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_STATE_FILE"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: NSString(string: override).expandingTildeInPath)
+        }
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        ) else { return nil }
+        return base.appendingPathComponent(directoryName, isDirectory: true)
+                   .appendingPathComponent(fileName)
+    }
+
+    static func load() -> PersistedState? {
+        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(PersistedState.self, from: data)
+    }
+
+    static func save(_ state: PersistedState) {
+        guard let url = fileURL else { return }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601      // human-readable, so a wedged value is fixable in an editor
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(state) else { return }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        // Atomic: a crash mid-write leaves the previous file, not a truncated one that fails to decode.
+        try? data.write(to: url, options: .atomic)
     }
 }
 
@@ -1884,8 +2035,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var thermalStateObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
 
-    // Keep Awake. Memory-only intent (resets to off on launch — KeepingYouAwake behaves the same);
-    // the actual caffeinate process is suspended/respawned by conditionsDidChange().
+    // Keep Awake. Intent is restored at launch from --keep-awake or the state file (see
+    // applyLaunchKeepAwakeState) and saved on every change to it; the actual caffeinate process is
+    // suspended/respawned by conditionsDidChange().
     private let sleepPreventer = SleepPreventer()
     // Parent of the "Keep Awake ▸" submenu, whose rows are one merged radio group: Off + one row per
     // KeepAwakeColor. Picking a color turns keep-awake on with that tint; picking Off turns it off — so
@@ -1910,8 +2062,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // 1s ticker that runs ONLY while the menu is open, so the countdown reads as a countdown (the 2s
     // load tick can't render seconds smoothly). See startKeepAwakeCountdownTicker.
     private var keepAwakeCountdownTicker: Timer?
-    // Keep-awake bar tint, user-selectable via the Keep Awake submenu. Menu-only (no CLI/env),
-    // so it starts at the default and lives only for the session, like the Keep Awake toggle itself.
+    // Keep-awake bar tint, user-selectable via the Keep Awake submenu. Menu-only (no CLI/env), but
+    // persisted: it is cosmetic and carries no sleep consequence, so it is restored unconditionally
+    // at launch even when the saved window isn't.
     private var activeKeepAwakeColor: KeepAwakeColor = .teal
     // Updated by the IOKit power-source notification. Stays false on a desktop Mac (no battery), so
     // battery is never a disengage trigger there.
@@ -2245,7 +2398,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             self.clearKeepAwakeWindow()
             self.refreshKeepAwakeSelectionState()
             self.updateKeepAwakeBar()
+            self.persistKeepAwakeState()   // the window is spent; don't resume it on the next launch
         }
+        applyLaunchKeepAwakeState()
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
 
@@ -2357,6 +2512,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Dispatch source: cancel() (not removeObserver) — its own lifecycle.
         memoryPressureSource?.cancel()
         memoryPressureSource = nil
+
+        // Save before the kill below: intent survives a quit, so a window still running when the app
+        // exits (or when the machine reboots under it) is resumed — minus the downtime — next launch.
+        persistKeepAwakeState()
 
         // `-w <pid>` already reaps caffeinate on a crash, but a clean exit should terminate it
         // explicitly and tear down the power-source run-loop source. isEnabled is left intact; the
@@ -3303,6 +3462,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
         }
         updateSleepPrevention()   // spawns/suspends caffeinate, re-tints the bar, refreshes the group
+        persistKeepAwakeState()
     }
 
     // Duration group handler. Reads only its own rows' tags (indices into presetRows) — the sibling
@@ -3323,11 +3483,67 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // A child already running carries the OLD window's `-t`, so it has to be replaced.
         sleepPreventer.restartForNewWindow(remaining: keepAwakeRemainingSeconds)
         updateSleepPrevention()
+        persistKeepAwakeState()
     }
 
     private func clearKeepAwakeWindow() {
         keepAwakeSelectedDuration = .indefinite
         keepAwakeDeadline = nil
+    }
+
+    // Save the Keep Awake intent (enabled + window + tint). Called from the three places intent can
+    // change — the tint/Off group, the arming path, and the window-expired callback — plus termination.
+    // Deliberately NOT called from updateSleepPrevention(), which also runs on every thermal/battery/
+    // power notification: those change the RUNNING state, not the intent, and would write to disk for
+    // nothing.
+    private func persistKeepAwakeState() {
+        StateStore.save(
+            PersistedState(
+                version: StateStore.currentVersion,
+                keepAwake: PersistedState.KeepAwake(
+                    tint: activeKeepAwakeColor.rawValue,
+                    deadline: keepAwakeDeadline,
+                    enabled: sleepPreventer.isEnabled
+                )
+            )
+        )
+    }
+
+    // Launch-time Keep Awake, in precedence order: an explicit --keep-awake wins, otherwise a window
+    // saved by the previous run is resumed. Runs before the first refreshKeepAwakeSelectionState() so
+    // the menu opens already showing the restored state; the bar picks it up from applySizing() below.
+    //
+    // Only a BOUNDED window is restored. Restoring a saved *indefinite* one is a materially different
+    // promise — it is activate-on-launch, and it has no stopping condition, so a stale flag would keep
+    // the Mac awake after every reboot until somebody noticed the menu bar. A bounded window is
+    // self-limiting, and it is the case that actually hurts today (a 2am reboot silently dropping it).
+    private func applyLaunchKeepAwakeState() {
+        let saved = StateStore.load()?.keepAwake
+
+        // Tint first: it applies in every branch, including an explicit CLI off.
+        if let tint = saved?.tint.flatMap(KeepAwakeColor.init(rawValue:)) {
+            activeKeepAwakeColor = tint
+        }
+
+        switch config.keepAwake {
+        case .off:
+            return                          // explicit CLI off — ignore any saved window
+        case .window(let duration):
+            armKeepAwake(with: duration)    // engages, persists, and spawns caffeinate
+            return
+        case nil:
+            break                           // no flag — fall through to the saved window
+        }
+
+        guard saved?.enabled == true,
+              let deadline = saved?.deadline,
+              deadline.timeIntervalSinceNow > 0 else { return }
+        // The mark lands on Custom… rather than the row originally picked, which is accurate: what is
+        // being resumed is the REMAINDER of that window, not a fresh 4 hours.
+        keepAwakeSelectedDuration = .seconds(deadline.timeIntervalSinceNow)
+        keepAwakeDeadline = deadline
+        sleepPreventer.setEnabled(true)
+        updateSleepPrevention()
     }
 
     // Seconds left in the armed window, or nil when indefinite (→ no `-t` at the spawn site). Floored

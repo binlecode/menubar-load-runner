@@ -28,8 +28,8 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--no-update-check] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--no-update-check] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--no-update-check] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--no-update-check] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -55,6 +55,11 @@ Options:
   --label <off|value|text>   Optional second menu-bar slot: 'value' shows the active source's live reading,
                              any other text is a fixed label (up to 24 chars), 'off' (default) shows nothing
                              (also via MENUBAR_LOAD_RUNNER_LABEL; switchable from the menu)
+  --keep-awake <off|on|dur>  Arm Keep Awake at launch: 'on' until turned off, or a duration with a unit
+                             (30m, 2h, 1h30m; up to 24h), 'off' (default) leaves it disabled
+                             (also via MENUBAR_LOAD_RUNNER_KEEP_AWAKE; switchable from the menu).
+                             An armed window is saved and resumed on the next launch; passing this
+                             flag -- even as 'off' -- overrides what was saved
   --no-update-check          Skip the launch check for a newer release (also via MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0)
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)
@@ -80,6 +85,7 @@ Examples:
   $APP_CMD_NAME --show-all-sources
   $APP_CMD_NAME --label value
   $APP_CMD_NAME dog-black --label BUILD
+  $APP_CMD_NAME --keep-awake 4h
   $APP_CMD_NAME horse-black --speed-multiplier 1.2
   $APP_CMD_NAME --foreground horse-black
   MENUBAR_LOAD_RUNNER_PATH=/tmp/cat.gif $APP_CMD_NAME

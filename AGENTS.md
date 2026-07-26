@@ -19,11 +19,18 @@ files. This `CLAUDE.md` stays focused on build/run commands and architecture gui
 Claude Code; longer-form design and task tracking documents belong in `docs/` instead of the
 repo root.
 
+`docs/ROADMAP.md` is the **standing** tracker: every open item, declined proposal, known limit, and
+verification gap, each with a stable `R<n>` ID. Check it before proposing work — an idea may already be
+there as declined-with-a-reason or as a candidate whose design question is unsettled. Keep it at
+tracking altitude (what, priority, blocker, status); it is deliberately not a design-rationale
+document, and a `TODO-*.md` is for actively working one item, not for holding the backlog.
+
 TODO files are named `TODO-<YYYYMMDD-HHMM>-<slug>.md` (e.g.
 `docs/TODO-20260706-2010-swift-impl-review-findings.md`) — the timestamp is when the file was
 created, so filenames sort chronologically and make ordering/timing explicit without needing
-a separate changelog. Other `docs/` files (runbooks, etc.) don't need the timestamp
-prefix, e.g. `docs/RUNBOOK-qa-release.md`.
+a separate changelog. When a TODO closes, its durable outcome moves into the design/roadmap record and
+the file is deleted (see the git history for the pattern). Other `docs/` files (roadmap, runbooks)
+don't need the timestamp prefix, e.g. `docs/RUNBOOK-qa-release.md`.
 
 ## Commands
 

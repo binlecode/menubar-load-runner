@@ -76,9 +76,17 @@ for f in --speed-multiplier --label --load-source --keep-awake --show-all-source
   $BIN --help 2>&1 | grep -q -- "$f" && { echo "  PASS --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL --help missing $f"; fail=$((fail+1)); }
 done
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?
+# Version consistency. AppInfo.version is the source of truth; every *in-repo* surface that names the
+# version must agree with it, or a release ships a stale one silently — which is exactly how README sat
+# at 1.11.2 through two releases while the CHANGELOG (checked here since v1.x) stayed correct. The git
+# tag is the fifth surface and is deliberately NOT checked: qa.sh runs *before* the tag exists, so
+# asserting it would fail every pre-release run. See docs/ROADMAP.md § Release hygiene.
 VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner.swift | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')
+vchk(){ grep -q "$2" "$3" && { echo "  PASS $1 shows $VER"; pass=$((pass+1)); } || { echo "  FAIL $1 missing $VER ($3)"; fail=$((fail+1)); }; }
 $BIN --help 2>&1 | grep -q "MenuBar Load Runner $VER" && { echo "  PASS --help shows $VER"; pass=$((pass+1)); } || { echo "  FAIL --help missing $VER"; fail=$((fail+1)); }
-grep -q "## \[$VER\]" CHANGELOG.md && { echo "  PASS CHANGELOG has [$VER]"; pass=$((pass+1)); } || { echo "  FAIL CHANGELOG missing [$VER]"; fail=$((fail+1)); }
+vchk "CHANGELOG"   "## \[$VER\]"                     CHANGELOG.md
+vchk "README"      "Current version: \*\*$VER\*\*"   README.md
+vchk "cover badge" ">v$VER<"                         docs/cover.html
 echo "  parse: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 else
 skip "§2 CLI parse paths [core]" "core tier not selected (--gui)"

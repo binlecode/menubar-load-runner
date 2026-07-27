@@ -489,23 +489,38 @@ nothing); the end-to-end case needs a second account + fast user switching and i
 
 `EXIT_AFTER` can't click menus. Once per release, launch for real and eyeball the menu:
 
-> Menu items *are* scriptable when you need determinism rather than eyeballs — `System Events` can
-> click a status item and its submenu rows (this is how the Keep Awake timed release was verified).
-> Three caveats found the hard way: a menu opened that way is **not rendered**, so it can't be
-> screenshotted, and selection marks use a custom `onStateImage`, so `AXMenuItemMarkChar` reads empty
-> — the mark itself is eyes-only. Look items up by **index**, not title: a title carrying a live
-> countdown changes between the lookup and the click.
->
-> The third is a trap that can make a scripted check *lie*: a `./tmp/mblr-check` run started from a
-> shell may never appear in `System Events`' process list at all, while the developer's own instance —
-> running the **previous** build — appears under the same name `MenuBarLoadRunner`. Matching by name
-> then dumps the old menu and reads as "no regression". Resolve the target by **unix id**, and if the
-> test pid isn't listed, treat the scripted check as unavailable rather than trusting what came back.
-> The menu walk below is the fallback, and it needs the app launched for real.
-
 ```bash
 ./menubar-load-runner --load-source memory --foreground   # Ctrl-C when done
 ```
+
+**Dump the structure first — it makes most of the walk below a diff instead of a squint:**
+
+```bash
+pid=$(pgrep -U "$(id -u)" -f '/MenuBarLoadRunner( |$)')
+osascript tests/menu-dump.applescript "$pid"     # every root row + one level of submenu
+```
+
+Needs Accessibility permission for your terminal, which is why it is a §7 aid and not part of
+`tests/qa.sh` (the core tier stays headless and unprivileged). It proves **structure** — rows, order,
+nesting, titles — so a moved or vanished row is obvious. What it can't prove is below.
+
+> Three traps, all found the hard way, two of which the script already handles for you:
+>
+> - **Resolve the target by unix id, never by name** (the script requires the pid for this reason).
+>   Every instance is named `MenuBarLoadRunner`, and a long-running one holds the *previous* build's
+>   menu — matching by name silently dumps the wrong app and reads as "no regression". Related: a
+>   `./tmp/mblr-check` run started from a shell may not appear in `System Events`' process list at all,
+>   so if the test pid isn't found, treat the scripted check as unavailable rather than trusting
+>   whatever came back.
+> - **The status item is `menu bar 1`, not `menu bar 2`** — an `.accessory` app has no main menu bar.
+> - **Selection marks stay eyes-only.** They use a custom `onStateImage`, so `AXMenuItemMarkChar` reads
+>   empty, and an AX-opened menu is **not rendered** so it can't be screenshotted either. (A synthesized
+>   `CGEvent` click *does* render it — that's how the v1.14.0 `Presets` dot was captured — but it needs
+>   the item's screen coordinates, and AX reports those unreliably on a multi-display setup. Not worth
+>   a tracked tool; rebuild it ad hoc if you ever need a real screenshot.)
+>
+> Also look items up by **index, not title** when clicking: a title carrying a live countdown changes
+> between the lookup and the click.
 
 - [ ] Icon animates in the menu bar; speed responds to load over ~10s.
 - [ ] Top of the menu shows a **live trace chart** (bar sparkline) of the active source; newest sample

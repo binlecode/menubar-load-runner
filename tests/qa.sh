@@ -163,6 +163,42 @@ ka "critical floor -> releases"     4:battery  paused
 rm -f ./tmp/qa-ka-state.json
 echo "  keep-awake conditions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
+# --- §3b Settings persistence [gui] ----------------------------------------
+# The label mode is the first value in state.json's `settings` block, so these cover the whole contract:
+# a mode survives a relaunch, an explicit flag still wins, and a bad block degrades to defaults instead
+# of breaking startup. Each case asserts the mode the app REWRITES on termination — a failed restore
+# shows up as "off" being written back, which is observable, whereas the absence of the menu-bar slot is
+# not (menus aren't scriptable here — RUNBOOK §7).
+section "§3b settings persistence [gui — needs WindowServer]"
+pass=0; fail=0
+SF="$PWD/tmp/qa-settings-state.json"
+sp(){ desc="$1"; expect="$2"; shift 2
+  MENUBAR_LOAD_RUNNER_STATE_FILE="$SF" MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" >/dev/null 2>&1; rc=$?
+  got=$(sed -n 's/.*"labelMode" *: *"\([a-z]*\)".*/\1/p' "$SF" 2>/dev/null)
+  if [ "$rc" = 0 ] && [ "$got" = "$expect" ]; then echo "  PASS [$desc]"; pass=$((pass+1))
+  else echo "  FAIL [$desc] rc=$rc expect=$expect got=${got:-<none>}"; fail=$((fail+1)); fi; }
+rm -f "$SF"
+sp "explicit --label value persists"  value  $BIN --label value
+sp "restored on relaunch, no flag"    value  $BIN
+sp "explicit off suppresses saved"    off    $BIN --label off
+sp "custom text persists"             custom $BIN --label "build box"
+sp "custom text restored"             custom $BIN
+grep -q '"labelCustomText" : "build box"' "$SF" \
+  && { echo "  PASS [custom payload round-trips verbatim]"; pass=$((pass+1)); } \
+  || { echo "  FAIL [custom payload round-trips verbatim]"; fail=$((fail+1)); }
+# Empty env is ABSENT, not an explicit off — it must not clobber a saved mode.
+sp "empty env != explicit off"        custom env MENUBAR_LOAD_RUNNER_LABEL= $BIN
+# A hand-edited mode nobody recognizes restores nothing (→ launch default), and the keep-awake block
+# must survive the settings write that follows: one writer composes both blocks from live state, and a
+# regression there would silently drop whichever block its caller didn't own.
+printf '{"version":1,"settings":{"labelMode":"vaule"},"keepAwake":{"tint":3,"enabled":false}}' > "$SF"
+sp "unknown mode -> launch default"   off    $BIN
+grep -q '"tint" : 3' "$SF" \
+  && { echo "  PASS [keepAwake block survives a settings write]"; pass=$((pass+1)); } \
+  || { echo "  FAIL [keepAwake block survives a settings write]"; fail=$((fail+1)); }
+rm -f "$SF"
+echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
 # --- §4 Error paths [gui] --------------------------------------------------
 section "§4 error paths (fast, no modal) [gui — needs WindowServer]"
 err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
@@ -217,7 +253,7 @@ else
 fi
 
 # --- Cleanup + verdict -----------------------------------------------------
-rm -f "$BIN" ./tmp/qa-lifecycle-state.json ./tmp/qa-ka-state.json
+rm -f "$BIN" ./tmp/qa-lifecycle-state.json ./tmp/qa-ka-state.json ./tmp/qa-settings-state.json
 printf '\n'
 if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (§7 interactive spot-check still manual)"; exit 0
 else echo "QA: $total_fail FAILING section(s)"; exit 1; fi

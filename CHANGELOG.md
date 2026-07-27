@@ -26,6 +26,42 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-07-26
+
+A prerequisite shipped as a release: settings now have a home. The dropdown had become the only place
+any preference could live, and it was full — ~33 rows on a 12-preset install, two of whose sections grow
+on their own — so the next toggle had nowhere to go. This adds a `Settings` submenu and a `settings` block
+in the state file, moves the preset list into its own submenu, and pays off the first debt that home
+makes payable: the menu-bar label no longer forgets what you picked.
+
+Nothing about the animation, the load sources, or Keep Awake changes. The menu *layout* does — see
+Changed.
+
+### Added
+
+- **Your menu-bar label choice is remembered.** Picking `Live Value` or a custom text from the menu used
+  to last only until you quit — the setting existed solely as a launch flag. It now survives a relaunch,
+  saved in `state.json` alongside Keep Awake. `--label` / `MENUBAR_LOAD_RUNNER_LABEL` still wins for that
+  run, and an explicit `--label off` starts with no label even if one was saved (an empty env value counts
+  as *not given*, so it can't clobber a saved mode).
+- **A `Settings` submenu**, so preferences have somewhere to live that isn't the top level. It holds
+  `Menu Bar Label` today; the battery threshold and duration presets are the next candidates.
+
+### Changed
+
+- **The 12 preset rows moved into a `Presets ▸` submenu**, and the label selector moved under `Settings ▸`.
+  The root menu drops from ~33 rows to 13 as launched (19 with `Other Sources` expanded on a 7-source
+  Mac). The trade is honest: picking a preset now costs one extra hover, and the label selector is one
+  level deeper. `Keep Awake` stays at the root — its Off row and tints are a single radio group, so it's
+  an action, not a preference.
+- **The About dialog no longer points at a menu that doesn't exist.** It read "change it in the Load
+  Source menu"; that submenu was replaced by the inline **Other Sources** list and the string was never
+  updated. It now names the real one.
+- **`state.json` now has one writer, `persistState()`, and must keep having exactly one.** The file is
+  saved whole, so a block-specific writer would drop the block it doesn't own — arming Keep Awake would
+  have erased a saved label, and changing the label would have erased an armed window. Both blocks are
+  composed from live state on every save. `tests/qa.sh` §3b asserts the cross-block case directly.
+
 ## [1.13.1] - 2026-07-26
 
 Two silent failures, both of the same kind: the app accepted an instruction, did nothing, and said

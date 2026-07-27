@@ -257,7 +257,7 @@ cat "$HOME/Library/Application Support/menubar-load-runner/state.json"   # dir c
 rm -rf "$HOME/Library/Application Support/menubar-load-runner"      # clean up the QA artifact
 ```
 
-## 3b. Keep Awake — battery conditions, the 5% floor, and the override (v1.14.0)
+## 3b. Keep Awake — battery conditions, the 5% floor, and the override (v1.13.1)
 
 `MENUBAR_LOAD_RUNNER_FORCE_BATTERY=<pct>[:battery|:ac]` pins the power-source read, so none of this
 needs a real low battery — or any battery. The scripted matrix is `tests/qa.sh` §3a; run it directly:
@@ -491,10 +491,17 @@ nothing); the end-to-end case needs a second account + fast user switching and i
 
 > Menu items *are* scriptable when you need determinism rather than eyeballs — `System Events` can
 > click a status item and its submenu rows (this is how the Keep Awake timed release was verified).
-> Two caveats found the hard way: a menu opened that way is **not rendered**, so it can't be
+> Three caveats found the hard way: a menu opened that way is **not rendered**, so it can't be
 > screenshotted, and selection marks use a custom `onStateImage`, so `AXMenuItemMarkChar` reads empty
 > — the mark itself is eyes-only. Look items up by **index**, not title: a title carrying a live
 > countdown changes between the lookup and the click.
+>
+> The third is a trap that can make a scripted check *lie*: a `./tmp/mblr-check` run started from a
+> shell may never appear in `System Events`' process list at all, while the developer's own instance —
+> running the **previous** build — appears under the same name `MenuBarLoadRunner`. Matching by name
+> then dumps the old menu and reads as "no regression". Resolve the target by **unix id**, and if the
+> test pid isn't listed, treat the scripted check as unavailable rather than trusting what came back.
+> The menu walk below is the fallback, and it needs the app launched for real.
 
 ```bash
 ./menubar-load-runner --load-source memory --foreground   # Ctrl-C when done
@@ -581,12 +588,25 @@ persistence + `--keep-awake` v1.13.0):
 - [ ] **Update check**: on launch (network permitting) a **Check for Updates…** item is present; when a
       newer release tag exists it becomes **Update available: vX.Y.Z**. Relaunching with
       `--no-update-check` (or `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0`) removes the check (no network hit).
-- [ ] **Menu Bar Label** submenu (Off / Live Value / Custom Text…): switching to Live Value shows a
+- [ ] **`Settings ▸ Menu Bar Label`** (Off / Live Value / Custom Text…) — note it is one level deeper
+      than it was before the Settings restructure. Switching to Live Value shows a
       second menu-bar slot with the active source's compact reading (`CPU 47%`, `MEM 63%`, `GPU 30%`,
       `NET ↓… ↑…`, `DSK R… W…`, `FAN 45%`, `BAT 88%`), refreshed on the 2s tick and tracking a source
       switch; Custom Text… shows a fixed string; Off frees the slot. Also settable via `--label`.
-- [ ] `Width` line is read-only and shows the GIF-derived width + aspect; Preset submenu still switches
-      the animation; **About** shows the current version; Exit works.
+      The parent row still reads `Menu Bar Label: value` from inside `Settings ▸` — that readout is the
+      reason it stays a nested submenu rather than three flat rows.
+- [ ] **Label mode persists**: pick Live Value, Exit, relaunch with no flags — the slot comes back.
+      Relaunch with `--label off` — no slot, and the saved mode does not resurrect on the next plain
+      launch. (`tests/qa.sh` §3b asserts this against the state file; this step is the visual half.)
+- [ ] **`Presets ▸`** is now a submenu (was 12 inline root rows under a header) and still
+      switches the animation. The root menu should read: trace · 5 metric lines · `▸ Other Sources` ·
+      `Settings` · `Keep Awake` · `Presets` · `Check for Updates…` · `About` · `Exit` — **13 rows as
+      launched** (19 with Other Sources expanded on a 7-source Mac). Two more appear only under their
+      condition: the `Slowing animation — <cause>` line and `Update available: vX.Y.Z`, so the ceiling is
+      15 / 21. Keep Awake is deliberately NOT under Settings (its Off row and tints are one radio
+      group — an action, not a preference).
+- [ ] `Width` line is read-only and shows the GIF-derived width + aspect;
+      **About** shows the current version; Exit works.
 
 ## 8. Cleanup + sign-off
 

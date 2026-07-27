@@ -164,8 +164,21 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   bundle — which is why the old "can't persist without a bundle id" comment was wrong. Every field is
   Optional so an older/newer file degrades instead of failing to decode, and both load and save are
   **fail-silent** (missing/corrupt/unwritable → defaults, never a startup error or a modal). Contrast
-  `gifs/presets.json`, whose failure IS fatal — that's app identity, this is a convenience. Today it
-  carries Keep Awake only; the struct is shaped to grow.
+  `gifs/presets.json`, whose failure IS fatal — that's app identity, this is a convenience. Two blocks:
+  `keepAwake` (intent — tint, deadline, enabled) and `settings` (menu-driven preferences that outlive a
+  relaunch; today the menu-bar label mode, with R5's battery threshold the next candidate).
+  **`persistState()` is the only writer, and must stay the only one:** `StateStore.save()` replaces the
+  whole file, so a block-specific writer would silently drop the block it doesn't own. It composes both
+  blocks from live in-memory state, which also removes any read-modify-write window. Call it from the
+  places *intent* changes (the tint/Off group, `armKeepAwake`, the window-expired callback,
+  `setLabelMode`, termination) and never from `updateSleepPrevention()`, which fires on every
+  thermal/battery/power event and would write disk for a change in *running* state.
+  Launch precedence for a persisted setting mirrors Keep Awake's: `Config.label` is
+  `MenuBarLabel?` where **nil (no flag/env) is distinct from `.off`** — absent restores the saved mode,
+  an explicit `off` suppresses it — resolved in `applyLaunchLabelState()` before the first
+  `applyLabelMode()`. An empty env value counts as absent, so `MENUBAR_LOAD_RUNNER_LABEL=` can't clobber
+  a saved mode. Unlike a keep-awake window, *every* label mode is restorable: a label holds no assertion,
+  so there's no runaway state to guard against.
 - **`CPULoadMonitor`** — reads `host_processor_info`/`PROCESSOR_CPU_LOAD_INFO` via Mach APIs and exposes an
   EMA-smoothed CPU usage fraction (`Tuning.cpuSmoothingAlpha`). Requires two samples to produce a delta, so
   usage is nil until the second `sampleSystemLoad` tick.
@@ -381,7 +394,24 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     active source's compact reading via `compactLabelText(for:)` in `.value` mode, or the fixed string in
     `.custom`. The item shares `infoMenu` (same dropdown) and uses `NSFont.menuBarFont` so its color tracks
     the menu-bar appearance. Menu switcher: the **Menu Bar Label** submenu (`labelOffItem`/`labelValueItem`/
-    `labelCustomItem`, radio group via `refreshLabelSelectionState`, mutated through `setLabelMode`).
+    `labelCustomItem`, radio group via `refreshLabelSelectionState`, mutated through `setLabelMode`, which
+    also persists — it is the mutating gesture).
+  - **Root-menu layout, and why two things are submenus.** The root menu is the scarce surface: it also
+    carries the 7-row metrics block, the Other Sources section (up to 6 rows expanded), and Update/About/
+    Exit, so a new setting landing there by default is what made it ~33 rows. Two containers absorb that:
+    - **`Settings ▸`** — the home for menu-driven preferences. `Menu Bar Label` is reparented **whole**,
+      not flattened into it: that parent row's title *is* the readout (`refreshLabelSelectionState` writes
+      `Menu Bar Label: value` into it), and flattened, the string would have nowhere to live but the
+      `Settings` row itself, which can't say `Label: value` once a second setting exists.
+    - **`Presets ▸`** — the 12 preset rows, previously inline under a disabled header row. The submenu's
+      own title replaces that header.
+    Keep Awake stays a **root** submenu on purpose: its Off row and five tints are one merged radio group
+    (clicking a color *is* the on gesture), so it is an action, not a setting, and splitting it would
+    recreate the separate Keep Awake Color submenu that was deliberately removed.
+    Two invariants when moving items: `infoMenu.items.forEach { $0.target = self }` wires **root items
+    only**, so anything nested must set its own `target` at construction (the preset rows do); and the
+    selection-state refreshers address **stored arrays** (`presetMenuItems`, `keepAwakeOptionItems`, …),
+    never menu positions, so reparenting is invisible to them.
 
 ## Adding a new built-in preset
 

@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.13.1"
+    static let version = "1.14.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -301,6 +301,9 @@ private enum MenuTitle {
     static let checkForUpdates = "Check for Updates…"
     static let checkingForUpdates = "Checking for Updates…"
 
+    // Parent row for menu-driven preferences (currently Menu Bar Label; R5's battery threshold next).
+    static let settings = "Settings"
+
     // Menu-bar label (the adjacent value/text slot).
     static let labelPrefix = "Menu Bar Label"
     static func label(_ suffix: String) -> String { "\(labelPrefix): \(suffix)" }
@@ -431,6 +434,38 @@ private enum MenuBarLabel: Equatable {
         case "off": return .off
         case "value": return .value
         default: return .custom(String(raw.prefix(Tuning.labelMaxChars)))
+        }
+    }
+
+    // Persisted form: a mode keyword plus the `.custom` payload as a SEPARATE field, mirroring how
+    // PersistedState.KeepAwake splits `enabled` from `deadline`. Splitting them keeps the mode a small
+    // closed set, so a hand-edited file with a typo'd mode degrades to "nothing saved" instead of
+    // silently becoming a literal custom label reading "vaule".
+    var persistedMode: String {
+        switch self {
+        case .off: return "off"
+        case .value: return "value"
+        case .custom: return "custom"
+        }
+    }
+
+    var persistedCustomText: String? {
+        if case .custom(let text) = self { return text }
+        return nil
+    }
+
+    // nil means "nothing usable saved" — an absent block, an unrecognized mode, or `custom` with no
+    // text. Deliberately not `.off` for those: a corrupt entry should fall through to the launch
+    // default, not pin the label off in a way the user never chose.
+    static func fromPersisted(mode: String?, customText: String?) -> MenuBarLabel? {
+        switch mode {
+        case "off": return .off
+        case "value": return .value
+        case "custom":
+            guard let text = customText?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return nil }
+            return .custom(String(text.prefix(Tuning.labelMaxChars)))
+        default: return nil
         }
     }
 }
@@ -617,7 +652,10 @@ private struct Config {
     let presetOrPath: String
     let speedMultiplierOverride: Double?
     // Content of the optional adjacent menu-bar label slot. Resolved from --label / env here.
-    let label: MenuBarLabel
+    // nil = neither flag nor env given, which is distinct from `.off`: absent lets the mode saved by
+    // the previous run be restored, while an explicit `off` suppresses it. Same distinction, and the
+    // same reason, as KeepAwakeLaunchOption's nil-vs-.off.
+    let label: MenuBarLabel?
     // Which reader drives the animation. Resolved from --load-source / env here (unknown →
     // .cpu, never a launch failure), so the app receives a concrete source, not a raw string.
     let loadSource: LoadSource
@@ -711,7 +749,10 @@ private struct Config {
         if labelArg == nil {
             labelArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LABEL"]
         }
-        let label = MenuBarLabel.parse(labelArg)
+        // An empty env value counts as absent (matching how the positional and --load-source treat
+        // empty), so `MENUBAR_LOAD_RUNNER_LABEL=` doesn't read as an explicit off and clobber a saved
+        // mode. Only a non-empty flag/env produces a non-nil launch request.
+        let label = (labelArg?.isEmpty == false) ? MenuBarLabel.parse(labelArg) : nil
         // Unknown/absent → .cpu (today's behavior). Never a launch failure, per spec.
         var loadSource = LoadSource.from(key: loadSourceArg) ?? .cpu
         if let requested = loadSourceArg, LoadSource.from(key: requested) == nil, !requested.isEmpty {
@@ -822,8 +863,18 @@ private struct PersistedState: Codable {
         // "not running" there would resurrect that distinction wrongly on the next launch.
         var enabled: Bool?
     }
+    // Menu-driven preferences that should outlive a relaunch — the ones that are neither Keep Awake
+    // intent nor transient runtime state. Kept as its own block (rather than more fields on the root)
+    // so the file reads as two independent concerns, and so a future reader can tell a settings write
+    // from a keep-awake write at a glance.
+    struct Settings: Codable {
+        // MenuBarLabel.persistedMode, with the `.custom` payload in the sibling field.
+        var labelMode: String?
+        var labelCustomText: String?
+    }
     var version: Int
     var keepAwake: KeepAwake?
+    var settings: Settings?
 }
 
 // A hand-rolled state file in Application Support. Deliberately NOT UserDefaults: this binary has no
@@ -2138,7 +2189,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     init(config: Config) {
         self.config = config
-        self.labelMode = config.label
+        // nil (no flag/env) starts off and is reconciled against the saved mode in
+        // applyLaunchLabelState(), which runs before the first applyLabelMode().
+        self.labelMode = config.label ?? .off
         self.activeLoadSource = config.loadSource
         self.showAllSources = config.showAllSources
 
@@ -2341,6 +2394,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         infoMenu.addItem(NSMenuItem.separator())
 
+        // "Settings ▸" — the home for menu-driven preferences. Its job is to have somewhere to put the
+        // next setting: the root menu is the scarce surface (it also carries the metrics block, the
+        // sources section, and Presets), and every new toggle used to land there by default.
+        //
+        // Menu Bar Label is reparented WHOLE, not flattened into this submenu. Its parent row's title
+        // IS the readout — refreshLabelSelectionState writes "Menu Bar Label: value" into it — and
+        // flattened, that string would have nowhere to live but this submenu's own title, which cannot
+        // say "Label: value" once a second setting exists. One extra level is the cheaper trade.
+        let settingsMenuItem = NSMenuItem(title: MenuTitle.settings, action: nil, keyEquivalent: "")
+        let settingsSubmenu = NSMenu(title: MenuTitle.settings)
+
         // "Menu Bar Label" radio group. The parent title carries the current state (off / value /
         // the custom text), so no separate read-only line is needed — mirrors the old overlay item.
         labelMenuItem = NSMenuItem(title: MenuTitle.labelPrefix, action: nil, keyEquivalent: "")
@@ -2362,7 +2426,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelSubmenu.addItem(labelCustomItem)
 
         labelMenuItem.submenu = labelSubmenu
-        infoMenu.addItem(labelMenuItem)
+        settingsSubmenu.addItem(labelMenuItem)
+        settingsMenuItem.submenu = settingsSubmenu
+        infoMenu.addItem(settingsMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
         // "Keep Awake ▸" submenu: one radio group merging the on/off state and the track-line tint.
@@ -2419,17 +2485,23 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(keepAwakeMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
-        let presetsHeaderItem = NSMenuItem(title: MenuTitle.presets, action: nil, keyEquivalent: "")
-        infoMenu.addItem(presetsHeaderItem)
+        // "Presets ▸". These were inline root rows under a disabled header, which is where most of the
+        // root menu's length came from — one row per built-in preset, and the manifest keeps growing.
+        // The submenu's own title replaces that header row. `presetMenuItems` is unaffected by the move:
+        // refreshPresetSelectionState addresses stored items, never menu positions.
+        let presetsMenuItem = NSMenuItem(title: MenuTitle.presets, action: nil, keyEquivalent: "")
+        let presetsSubmenu = NSMenu(title: MenuTitle.presets)
 
         for (index, preset) in allPresets.enumerated() {
             let item = NSMenuItem(title: preset.menuTitle, action: #selector(selectPreset(_:)), keyEquivalent: "")
-            item.target = self
+            item.target = self   // nested now, so the root-only target wiring below no longer reaches it
             item.tag = index
             useSelectionMark(item)
-            infoMenu.addItem(item)
+            presetsSubmenu.addItem(item)
             presetMenuItems.append(item)
         }
+        presetsMenuItem.submenu = presetsSubmenu
+        infoMenu.addItem(presetsMenuItem)
 
         infoMenu.addItem(NSMenuItem.separator())
         // Update-check items. `updateItem` is a passive "Update available" line, hidden until a probe
@@ -2445,12 +2517,13 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(NSMenuItem.separator())
         infoMenu.addItem(NSMenuItem(title: MenuTitle.about, action: #selector(showAbout), keyEquivalent: ""))
         infoMenu.addItem(NSMenuItem(title: MenuTitle.exit, action: #selector(exitApp), keyEquivalent: "q"))
+        // Root items only — anything nested in a submenu sets its own target at construction.
         infoMenu.items.forEach { $0.target = self }
-        presetsHeaderItem.isEnabled = false
         statusItem.menu = infoMenu
         valueStatusItem.menu = infoMenu   // value slot shares the same dropdown as the animation
         refreshPresetSelectionState()
         refreshWidthInfo()
+        applyLaunchLabelState()   // resolve --label vs. the saved mode BEFORE the slot is created
         refreshLabelSelectionState()
         applyLabelMode()   // create the value slot now if launched with --label value / custom text
         refreshShowAllSourcesState()
@@ -2464,7 +2537,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             self.keepAwakeBatteryOverride = false
             self.refreshKeepAwakeSelectionState()
             self.updateKeepAwakeBar()
-            self.persistKeepAwakeState()   // the window is spent; don't resume it on the next launch
+            self.persistState()   // the window is spent; don't resume it on the next launch
         }
         // MUST precede applyLaunchKeepAwakeState(): arming reads `batteryState` to decide whether a
         // condition suspends the window, and this is what populates it. Registered later in this
@@ -2586,7 +2659,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         // Save before the kill below: intent survives a quit, so a window still running when the app
         // exits (or when the machine reboots under it) is resumed — minus the downtime — next launch.
-        persistKeepAwakeState()
+        persistState()
 
         // `-w <pid>` already reaps caffeinate on a crash, but a clean exit should terminate it
         // explicitly and tear down the power-source run-loop source. isEnabled is left intact; the
@@ -2608,7 +2681,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             alert.icon = icon
         }
         let speedMode = isAutoSpeed
-            ? "Speed adapts to \(activeLoadSource.menuTitle) load (change it in the Load Source menu)."
+            // Names the Other Sources section, NOT a "Load Source menu" — that submenu was replaced by
+            // the inline disclosure list and this string kept pointing at it.
+            ? "Speed adapts to \(activeLoadSource.menuTitle) load (change it under \(MenuTitle.otherSources))."
             : "Fixed speed: \(String(format: "%.2f", speedMultiplier))×."
         alert.informativeText = [
             AppInfo.tagline,
@@ -3564,7 +3639,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             if !sleepPreventer.isEnabled { sleepPreventer.setEnabled(true) }
         }
         updateSleepPrevention()   // spawns/suspends caffeinate, re-tints the bar, refreshes the group
-        persistKeepAwakeState()
+        persistState()
     }
 
     // Duration group handler. Reads only its own rows' tags (indices into presetRows) — the sibling
@@ -3589,7 +3664,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // A child already running carries the OLD window's `-t`, so it has to be replaced.
         sleepPreventer.restartForNewWindow(remaining: keepAwakeRemainingSeconds)
         updateSleepPrevention()
-        persistKeepAwakeState()
+        persistState()
     }
 
     // Grant the battery override iff an overridable condition is actually in force right now. The
@@ -3611,12 +3686,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         keepAwakeDeadline = nil
     }
 
-    // Save the Keep Awake intent (enabled + window + tint). Called from the three places intent can
-    // change — the tint/Off group, the arming path, and the window-expired callback — plus termination.
-    // Deliberately NOT called from updateSleepPrevention(), which also runs on every thermal/battery/
-    // power notification: those change the RUNNING state, not the intent, and would write to disk for
-    // nothing.
-    private func persistKeepAwakeState() {
+    // The ONLY writer for state.json, and the reason there is only one: StateStore.save() replaces the
+    // whole file, so a keep-awake-only write would silently drop the settings block (and vice versa).
+    // Both blocks are therefore composed from live in-memory state on every save — which also means
+    // there is no read-modify-write window between the two kinds of caller.
+    //
+    // Called from the places INTENT can change: the tint/Off group, the arming path, the window-expired
+    // callback, setLabelMode, and termination. Deliberately NOT from updateSleepPrevention(), which also
+    // runs on every thermal/battery/power notification: those change the RUNNING state, not the intent,
+    // and would write to disk for nothing.
+    private func persistState() {
         StateStore.save(
             PersistedState(
                 version: StateStore.currentVersion,
@@ -3624,9 +3703,27 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     tint: activeKeepAwakeColor.rawValue,
                     deadline: keepAwakeDeadline,
                     enabled: sleepPreventer.isEnabled
+                ),
+                settings: PersistedState.Settings(
+                    labelMode: labelMode.persistedMode,
+                    labelCustomText: labelMode.persistedCustomText
                 )
             )
         )
+    }
+
+    // Launch-time label mode, the same precedence shape as applyLaunchKeepAwakeState: an explicit
+    // --label / MENUBAR_LOAD_RUNNER_LABEL wins — including an explicit `off`, which suppresses the saved
+    // mode — otherwise the mode saved by the previous run is restored. Unlike a keep-awake window there
+    // is nothing self-limiting to weigh here: a label holds no assertion and costs nothing but a slot,
+    // so every mode is restorable, not just bounded ones.
+    private func applyLaunchLabelState() {
+        guard config.label == nil else { return }
+        guard let saved = StateStore.load()?.settings,
+              let restored = MenuBarLabel.fromPersisted(mode: saved.labelMode,
+                                                        customText: saved.labelCustomText)
+        else { return }
+        labelMode = restored
     }
 
     // Launch-time Keep Awake, in precedence order: an explicit --keep-awake wins, otherwise a window
@@ -3784,12 +3881,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         setLabelMode(input.isEmpty ? .off : .custom(String(input.prefix(Tuning.labelMaxChars))))
     }
 
-    // Single point that changes the label mode: updates state, reconciles the slot, refreshes the menu.
+    // Single point that changes the label mode: updates state, reconciles the slot, refreshes the menu,
+    // and persists. The persist belongs here and only here — this is the mutating gesture, the same rule
+    // the Keep Awake intent writers follow.
     private func setLabelMode(_ mode: MenuBarLabel) {
         guard mode != labelMode else { return }
         labelMode = mode
         applyLabelMode()
         refreshLabelSelectionState()
+        persistState()
     }
 
     private func switchToGif(to path: String, descriptor: PresetDescriptor?) {

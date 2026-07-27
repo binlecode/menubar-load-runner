@@ -20,6 +20,12 @@ Run everything from the repo root.
 >   real `~/.local` / LaunchAgents).
 > - `tests/readers.swift`, `tests/scaler.swift` — the §5 probes as standalone files.
 >
+> **Not part of any tier:** `tests/clamshell-sleep-check.sh` is a *diagnostic*, not a gate — it
+> measures host power-management behavior (does this Mac idle-sleep while docked; can Keep Awake hold
+> it), which varies per machine and macOS version, so there is nothing to assert. It needs a quiet
+> machine and physical lid open/close, so it is never scripted into a release run. `--help` carries
+> the protocol.
+>
 > The inline blocks below remain the reference (and cover §7's manual spot-check, which can't be
 > automated). Keep the scripts and these blocks in sync.
 

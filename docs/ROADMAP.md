@@ -48,6 +48,7 @@ Re-propose only with a concrete report of the behavior being missed.
 | Installer tag-pinning, `--ref`, `VERSION` | Cut as non-MVP; it tracks the default branch and power users check out a tag. |
 | **Restart Now** on the update prompt | Needs install-type detection, which has no clean signal (a detached run also reparents to pid 1). |
 | Persisted update-check throttle · in-app recompile+relaunch · persisted auto-check toggle · About version line | Cut for v1; the menu item is the real surface. |
+| A doc-drift checker beyond version strings (grep prose for symbol names) | Version strings are the only mechanically checkable claim; the *semantic* drift found on 2026-07-26 (wrong reader count, max-vs-average, mA-vs-amps) is invisible to a grep. A symbol-name checker false-positives on every intentional rewording, which is how checks get disabled. Known cost is one nine-release miss on one comment. Version consistency **is** enforced — `tests/qa.sh` §2. |
 
 ## Known limits — not gaps
 
@@ -72,6 +73,13 @@ Re-propose only with a concrete report of the behavior being missed.
 A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
 `CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
 git tag the in-app update check reads. A changed badge also means the cover wants a redeploy
-(`publish-cover`). The README line was missing from this list until 2026-07-26 and silently fell two
-releases behind (v1.13.0 and v1.13.1 both shipped it stale) — nothing checks these agree, so grep
-`1\.[0-9]*\.[0-9]*` across the repo when bumping.
+(`publish-cover`).
+
+**Four of the five are enforced** — `tests/qa.sh` §2 derives `VER` from `AppInfo.version` and asserts
+it against `--help`, the CHANGELOG heading, the README line, and the cover badge, so a stale one fails
+the core tier. The **git tag is deliberately not checked**: `qa.sh` runs *before* the tag exists, so
+asserting it would fail every pre-release run. Tagging stays the one manual step to get right.
+
+Why it's enforced at all: the README line was missing from this checklist until 2026-07-26 and fell two
+releases behind (v1.13.0 and v1.13.1 both shipped it stale) while the CHANGELOG — the one surface §2
+already checked — never drifted. The unenforced surface is the one that rots.

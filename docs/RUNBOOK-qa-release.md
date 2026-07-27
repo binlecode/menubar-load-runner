@@ -115,14 +115,20 @@ $BIN foo bar >/dev/null 2>&1;                   chk "extra positional" 1 $?
 echo "parse: passes=$pass fails=$fail"
 ```
 
-Version surface — `--help` must print the semver line (matches `AppInfo.version`, About dialog, and
-the current `CHANGELOG.md` release):
+Version surface — `AppInfo.version` is the source of truth, and every *in-repo* surface naming the
+version must agree with it (`--help` / About dialog, the `CHANGELOG.md` heading, the `README.md`
+"Current version" line, the `docs/cover.html` badge). The **git tag is the fifth surface and is not
+checked here** — this runs before the tag exists; see `docs/ROADMAP.md` § Release hygiene:
 
 ```bash
 VER=$(grep -Eo 'static let version = "[0-9]+\.[0-9]+\.[0-9]+"' MenuBarLoadRunner.swift | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')
 ./tmp/mblr-check --help 2>&1 | grep -q "MenuBar Load Runner $VER" \
   && echo "  PASS --help shows version $VER" || echo "  FAIL --help missing version $VER"
 grep -q "## \[$VER\]" CHANGELOG.md && echo "  PASS CHANGELOG has [$VER] section" || echo "  FAIL CHANGELOG missing [$VER]"
+grep -q "Current version: \*\*$VER\*\*" README.md \
+  && echo "  PASS README shows $VER" || echo "  FAIL README missing $VER"
+grep -q ">v$VER<" docs/cover.html \
+  && echo "  PASS cover badge shows $VER" || echo "  FAIL cover badge missing $VER"
 # --help must document every current flag (so removed flags don't linger, new ones aren't hidden):
 for f in --speed-multiplier --label --load-source --keep-awake --show-all-sources --no-update-check; do
   ./tmp/mblr-check --help 2>&1 | grep -q -- "$f" && echo "  PASS --help lists $f" || echo "  FAIL --help missing $f"

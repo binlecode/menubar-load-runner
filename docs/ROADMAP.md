@@ -69,6 +69,9 @@ Re-propose only with a concrete report of the behavior being missed.
 
 ## Release hygiene
 
-A version bump moves four things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
-`CHANGELOG.md` heading, the `docs/cover.html` badge, and the git tag the in-app update check reads.
-A changed badge also means the cover wants a redeploy (`publish-cover`).
+A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
+`CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
+git tag the in-app update check reads. A changed badge also means the cover wants a redeploy
+(`publish-cover`). The README line was missing from this list until 2026-07-26 and silently fell two
+releases behind (v1.13.0 and v1.13.1 both shipped it stale) — nothing checks these agree, so grep
+`1\.[0-9]*\.[0-9]*` across the repo when bumping.

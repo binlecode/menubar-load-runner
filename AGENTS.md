@@ -144,7 +144,7 @@ sequence, or `.app` bundle. Use the scripts:
 
 ## Architecture
 
-Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bottom as:
+Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bottom as:
 
 - **`Tuning`** — every magic number (icon-aspect clamp, label char cap, alpha trim threshold,
   hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
@@ -180,18 +180,34 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
   tier as `CPULoadMonitor`. `nil` (never `0`) on failure. Used-fraction + composite formulas are
   documented in the class comment / `Tuning` (a deliberate approximation, not Activity Monitor's exact
   algorithm).
-- **`GPULoadMonitor` / `NetworkLoadMonitor` / `DiskLoadMonitor`** — the other three load-source
-  readers, same unprivileged tier (IORegistry + `getifaddrs`, `import IOKit`). GPU is an instantaneous
+- **`GPULoadMonitor` / `NetworkLoadMonitor` / `DiskLoadMonitor` / `FanLoadMonitor` /
+  `BatteryLoadMonitor`** — the other five load-source readers, same unprivileged tier (IORegistry +
+  `getifaddrs` + SMC + IOKit Power Sources; `import IOKit`, `import IOKit.ps`). GPU is an instantaneous
   0…1 point read (`IOAccelerator → PerformanceStatistics → "Device Utilization %"`); network
   (`getifaddrs → if_data`, AF_LINK, skip `lo0`) and disk (`IOBlockStorageDriver → Statistics → Bytes
   (Read)/(Write)`) are counter-deltas over `elapsed:`. Each has an `isAvailable` probe (`nil` reader →
   disabled menu item + launch fallback to `.cpu`).
+  - **`FanLoadMonitor`** — fan RPM as a cooling/thermal signal, via the *undocumented* 80-byte
+    `SMCKeyData` layout (`AppleSMCKeysEndpoint`, read-only; never the root-only `F{n}Tg`/`F{n}Md`
+    control keys), discovering `F{n}Ac`/`F{n}Mx` from `FNum`. Bounded per-machine, so it maps through
+    as a percentage — NOT via `ThroughputScaler`. Two deliberate choices: `actual/max` rather than the
+    min-anchored `(actual-min)/(max-min)` (idle RPM sits well above 0, so motion stays visible), and
+    the driver is the **average** across fans, not the max — one fan spinning up shouldn't dominate
+    while the rest of the system is quiet (`perFan` keeps the per-fan readings for the menu lines).
+    Fanless Macs report `FNum == 0` → unavailable. The struct's computed stride is guarded at 80, and
+    the source disables itself if a future toolchain lays it out differently.
+  - **`BatteryLoadMonitor`** — a *mixed domain* like `MemoryLoadMonitor`: the driver is the
+    instantaneous **discharge current in mA** (IOKit Power Sources `"Current"`), which despite being a
+    point read (no warm-up tick) is an *unbounded* magnitude and so normalizes through the shared
+    `ThroughputScaler`; charge level is a readout only. On AC the draw is 0 → idle animation. Reuses
+    the same `IOPSCopyPowerSourcesInfo` plumbing as `evaluateBatteryState`; desktop Macs → unavailable.
 - **`ThroughputScaler`** — shared value type (ported from btop `Net::collect`) that normalizes any
-  *unbounded rate* signal (network/disk/swap bytes-per-sec) to 0…1 against an adaptive ceiling:
+  *unbounded rate* signal (network/disk/swap bytes-per-sec, battery discharge mA) to 0…1 against an adaptive ceiling:
   `max(avg(last Tuning.scalerWindow) × headroom, floor)`, rescaled only after
   `Tuning.scalerRescaleCount` consecutive out-of-band samples (hysteresis), asymmetric headroom
   (`scalerHeadroomUp`/`scalerHeadroomDown`), per-source floor. **Bounded** percentage signals (CPU %,
-  memory-used %, GPU %) are NOT scaled — they map through directly.
+  memory-used %, GPU %, fan %) are NOT scaled — they map through directly. Note the split is
+  bounded-vs-unbounded, not delta-vs-point-read: battery mA is an instantaneous read that still scales.
 - **`MenuBarLoadRunnerApp`** (`NSApplicationDelegate`/`NSMenuDelegate`) — the entire app. Key internal
   concepts to know before changing behavior:
   - **Preset identity is externalized to `gifs/presets.json`.** That manifest (`defaultPreset` + a
@@ -226,7 +242,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     linear for every preset), and only applies the new value if the change exceeds
     `Tuning.speedUpdateHysteresis`, to avoid visible jitter. Disabled entirely when
     `--speed-multiplier` is passed.
-  - **Load source selector**: `activeLoadSource: LoadSource` (`.cpu` default, `.memory` available;
+  - **Load source selector**: `activeLoadSource: LoadSource` (`.cpu` default; `.memory`, `.gpu`,
+    `.network`, `.disk`, `.fan`, `.battery` also available, the last two hardware-dependent;
     `--load-source`/`MENUBAR_LOAD_RUNNER_LOAD_SOURCE`, unknown → `.cpu`) picks *which* reader drives the
     animation, independent of the preset's speed range. `LoadSource` is a single registry (key + menu title)
     like `PresetDescriptor`. The speed path reads the active source, never `loadMonitor` directly, through
@@ -241,11 +258,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~1200 lines), organized top to bo
     driven by `refreshShowAllSourcesState`). Each row shows that reader's live readout (`allSourcesRowText`)
     and, clicked, switches the driving source (`selectLoadSource`) — the active source is never listed (it's
     on top with the sparkline). Expanded = sample every reader each tick; collapsed = active-only sampling
-    (the self-throttle ethos). Adding gpu/network/disk = add a `LoadSource` case + its reader +
-    branches in the three helpers. Counter-delta sources divide by the real elapsed wall time captured
+    (the self-throttle ethos). Adding a source = add a `LoadSource` case + its reader + branches in the
+    three helpers (plus `refreshMenuMetrics`/`allSourcesRowText`/`compactLabelText` for its readout).
+    Counter-delta sources divide by the real elapsed wall time captured
     each tick in `sampleSystemLoad` (`ProcessInfo.systemUptime` → `lastSampleUptime`, threaded as the
     `elapsed:` arg); the memory source's swap rate already uses it, and network/disk reuse it (a source
-    switch resets `lastSampleUptime` so rates re-warm cleanly).
+    switch resets `lastSampleUptime` so rates re-warm cleanly). Fan and battery are point reads and
+    take no `elapsed:`.
   - **Self-throttling under pressure** (the app throttles *its own* animation, never the system —
     it only ever *reads* system state): the indicator reduces its own CPU use so it doesn't add to
     the load it visualizes. `speedMultiplier(forUsage:)` caps *this app's* auto animation speed at the

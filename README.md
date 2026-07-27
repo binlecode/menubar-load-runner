@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
 
-Current version: **1.11.2** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.13.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -265,8 +265,8 @@ unprivileged (no `sudo`); the app only ever *reads* load.
 - **gpu**: GPU utilization.
 - **network**: total interface throughput (rx+tx, loopback excluded).
 - **disk**: total block-device throughput (read+write across all drives).
-- **fan**: fan speed as a thermal/cooling signal (RPM as a fraction of the fan's max; max across fans). A lagging signal that trails actual work and only ramps under sustained thermal load, but idle fans still spin — so it keeps some visible motion (a genuinely stopped fan still crawls at the preset's minimum speed). Unavailable on fanless Macs (e.g. MacBook Air, which have zero fans), which fall back to `cpu`.
-- **battery**: discharge current (instantaneous draw, in amps) while on battery — a fast drain animates faster; on AC power the draw is zero, so the animation idles. The menu also shows the charge level. Unavailable on desktop Macs with no battery, which fall back to `cpu`.
+- **fan**: fan speed as a thermal/cooling signal (RPM as a fraction of the fan's max, averaged across fans — one fan spinning up doesn't dominate while the rest of the system is quiet). A lagging signal that trails actual work and only ramps under sustained thermal load, but idle fans still spin — so it keeps some visible motion (a genuinely stopped fan still crawls at the preset's minimum speed). Unavailable on fanless Macs (e.g. MacBook Air, which have zero fans), which fall back to `cpu`.
+- **battery**: discharge current (instantaneous draw, in mA) while on battery — a fast drain animates faster; on AC power the draw is zero, so the animation idles. Since every machine's draw ceiling differs, the current is normalized against the same adaptive ceiling the byte-rate sources use. The menu also shows the charge level. Unavailable on desktop Macs with no battery, which fall back to `cpu`.
 
 Without `--speed-multiplier`, animation speed adapts to the selected load source. Per-preset speed
 ranges are defined in `gifs/presets.json`; edit that file to change a range or add a preset (the app
@@ -285,10 +285,10 @@ menu into a compact multi-metric monitor; collapsing restores active-only sampli
 list already expanded via `--show-all-sources` (or `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`). The active source
 still drives the animation; the history sparkline still tracks the active source only.
 
-> How each source is measured, in brief: the percentage-style sources (CPU, GPU, fan, battery) are
+> How each source is measured, in brief: the percentage-style sources (CPU, GPU, fan) are
 > direct unprivileged reads (CPU smoothed by a short moving average); memory combines the used
-> fraction with live swap throughput; the byte-rate sources (network, disk, swap) are counter
-> deltas normalized against an adaptive ceiling that tracks your machine's recent peaks (the same
+> fraction with live swap throughput; the byte-rate sources (network, disk, swap) plus battery
+> discharge current are normalized against an adaptive ceiling that tracks your machine's recent peaks (the same
 > approach `btop` uses), so the animation stays meaningful whatever your hardware's actual maximum
 > throughput is. Under Low Power Mode, thermal, or memory pressure the app caps its own animation
 > speed at half the preset's range.

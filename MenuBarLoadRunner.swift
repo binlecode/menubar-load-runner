@@ -1201,7 +1201,7 @@ private final class GPULoadMonitor {
 // which need root), discovers per-fan actual/max RPM keys (F{n}Ac / F{n}Mx, SMC type "flt ", 4-byte
 // little-endian float) via the FNum fan count. Fanless Macs (MacBook Air, most M-series laptops)
 // report FNum == 0 → isAvailable false → the source disables and launch falls back to CPU. Bounded
-// per-machine, so it maps through as a percentage (max across fans of actual/max) — NOT via
+// per-machine, so it maps through as a percentage (average across fans of actual/max) — NOT via
 // ThroughputScaler (that's only for unbounded byte/sec rates). actual/max (rather than the
 // min-anchored (actual-min)/(max-min)) is deliberate: idle RPM ≈ min sits well above 0, so the
 // animation keeps some visible motion even when the fans are barely spinning. `nil`, never a

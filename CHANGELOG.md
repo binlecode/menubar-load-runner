@@ -40,8 +40,15 @@ of the public API and may change in any release.
   **Below 5% on battery the Mac still sleeps regardless** — that floor is checked first and is not
   configurable, which is also why the minimum is 6%. The setting **survives a relaunch** — including
   `off`, the one value where forgetting it would quietly reinstate a policy you turned off — while an
-  explicit flag or env value still wins over what was saved. Menu control is still to come; today it is
-  a launch-time setting.
+  explicit flag or env value still wins over what was saved.
+
+  It is also a menu setting: **`Settings ▸ Battery Threshold`** offers 10 / 15 / 20 / 30%, `Never`, and
+  a `Custom…` percent prompt, with the current value in the parent row's title. Picking one applies
+  **immediately** — a Keep Awake window that is already running moves to the new release point instead
+  of waiting for the next battery event. The menu says `Never` where the flag says `off`, because the
+  Keep Awake submenu two rows away already has an `Off` that means something else entirely. Changing
+  the threshold also retires an active arm-anyway override: that gesture answered a question about the
+  old release point, so raising the threshold can't inherit a "yes" you gave about a different number.
 
 ## [1.14.0] - 2026-07-26
 

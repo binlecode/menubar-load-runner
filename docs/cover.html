@@ -632,8 +632,10 @@
           off while long work runs (an idle-only lock lets modern Macs sleep once the screen naps). The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
           the app, so it's <b>reaped the instant the app quits or crashes</b>; no orphaned sleep lock.</p>
         <ul class="awake-list">
-          <li><b>Auto-disengages</b> on critically low battery (≤20%, on battery) or serious/critical
-            thermal — then <b>re-engages</b> the moment the condition clears.</li>
+          <li><b>Auto-disengages</b> on low battery (≤20% on battery, or wherever you put it with
+            <span class="mono">--battery-threshold</span> — including <span class="mono">off</span>) or
+            serious/critical thermal — then <b>re-engages</b> the moment the condition clears. Below 5%
+            it releases whatever you set: that floor isn't yours to move.</li>
           <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
             instant a condition suspends it, even with the toggle still on.</li>
           <li><b>Or give it a deadline.</b> Pick a window — 30&nbsp;min, 1, 2, 4, 8&nbsp;hours, or a custom

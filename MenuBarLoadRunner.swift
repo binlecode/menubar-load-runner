@@ -710,6 +710,41 @@ private struct Config {
     // launcher's singleton refuses a second invocation, so it can't arm an instance that's already
     // running — that would need IPC, which a bundle-less binary doesn't have.
     let keepAwake: KeepAwakeLaunchOption?
+    // Keep Awake's battery release point, from --battery-threshold /
+    // MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD, as a charge FRACTION (0.20), already clamped. nil = neither
+    // flag nor env given, which is distinct from `0`: absent lets the saved setting stand, while `0` is
+    // an explicit "never release on charge alone". Three states, not two — the asymmetry with `label`
+    // is that here "off" is a value rather than a mode.
+    let batteryThreshold: Double?
+
+    // `--battery-threshold <pct|off>` / MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD → a charge fraction, or
+    // nil if the text is not a form we accept (the caller warns and falls back).
+    //
+    // WHOLE PERCENTS ONLY: `20` and `20%` mean 20%, while `0.20` is refused rather than guessed at.
+    // A bare `0.2` reads as 0.2% under one convention and 20% under the other, and picking wrong moves
+    // the release point by two orders of magnitude — the same ambiguity KeepAwakeDuration.parse refuses
+    // for a bare number. A trailing `%` is accepted because it *removes* that ambiguity rather than
+    // adding to it. `0` is the numeric spelling of off, which is unambiguous for the same reason.
+    static func parseBatteryThreshold(_ raw: String) -> Double? {
+        var text = raw.lowercased().trimmingCharacters(in: .whitespaces)
+        if ["off", "never", "none", "no"].contains(text) { return Tuning.batteryThresholdOff }
+        if text.hasSuffix("%") { text.removeLast() }
+        text = text.trimmingCharacters(in: .whitespaces)
+        // ASCII digits only: this rejects "0.20" (the decimal form) via the ".", and "-5"/"1e2"/"½"
+        // for free. Anything that survives is a whole percent.
+        guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }), let percent = Double(text)
+        else { return nil }
+        // Returned UNCLAMPED: the caller clamps (never rejects — this can be baked into a login item)
+        // and needs the requested value to say what the clamp did.
+        return percent / Tuning.percentScale
+    }
+
+    // How a threshold reads back to a human, in whichever direction: "off" or "20%". Shared by the
+    // stderr warnings here so the value we report is spelled the way the flag accepts it.
+    static func batteryThresholdDescription(_ fraction: Double) -> String {
+        fraction <= Tuning.batteryThresholdOff
+            ? "off" : "\(Int((fraction * Tuning.percentScale).rounded()))%"
+    }
 
     static func parse() -> ParseResult? {
         let args = CommandLine.arguments.dropFirst()
@@ -718,6 +753,7 @@ private struct Config {
         var labelArg: String?
         var loadSourceArg: String?
         var keepAwakeArg: String?
+        var batteryThresholdArg: String?
         var updateCheckEnabled = true
         var showAllSources = false
 
@@ -755,6 +791,13 @@ private struct Config {
                     return nil
                 }
                 keepAwakeArg = value
+            case "--battery-threshold":
+                guard let value = iterator.next() else {
+                    fputs("Invalid value for --battery-threshold. Expected a whole percent (e.g. 20) or off.\n", stderr)
+                    printUsage()
+                    return nil
+                }
+                batteryThresholdArg = value
             case "--no-update-check":
                 updateCheckEnabled = false
             case "--show-all-sources":
@@ -842,6 +885,29 @@ private struct Config {
             }
         }
 
+        if batteryThresholdArg == nil {
+            batteryThresholdArg = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD"]
+        }
+        // An empty env value counts as absent, exactly as with --label: `…BATTERY_THRESHOLD=` must not
+        // read as an explicit value and clobber the saved setting.
+        var batteryThreshold: Double?
+        if let raw = batteryThresholdArg?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
+            if let requested = parseBatteryThreshold(raw) {
+                let clamped = Tuning.clampedBatteryThreshold(requested)
+                if abs(clamped - requested) > .ulpOfOne {
+                    fputs("--battery-threshold \(raw) is out of range; using \(Self.batteryThresholdDescription(clamped)). Valid: off, or \(Int(Tuning.batteryThresholdMin * Tuning.percentScale))–\(Int(Tuning.batteryThresholdMax * Tuning.percentScale)) percent (the \(Int(Tuning.batteryCriticalThreshold * Tuning.percentScale))% floor is not configurable).\n", stderr)
+                }
+                batteryThreshold = clamped
+            } else {
+                // Unparseable degrades to the DEFAULT, not to absent and not to off: a garbage value
+                // baked into a LaunchAgent must never silently disable the release policy, and it still
+                // counts as "the flag was given" (like --keep-awake), so it also wins over the saved
+                // setting rather than half-applying.
+                fputs("Unrecognized --battery-threshold \"\(raw)\"; using the default \(Self.batteryThresholdDescription(Tuning.batteryLowThresholdDefault)). Expected a whole percent (e.g. 20 or 20%) or off — a decimal fraction like 0.20 is ambiguous and not accepted.\n", stderr)
+                batteryThreshold = Tuning.batteryLowThresholdDefault
+            }
+        }
+
         // Env can only enable the launch default (the menu toggle covers turning it off at runtime).
         if !showAllSources,
            let raw = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_SHOW_ALL"]?.lowercased(),
@@ -858,7 +924,8 @@ private struct Config {
                 exitAfterSeconds: exitAfterSeconds,
                 updateCheckEnabled: updateCheckEnabled,
                 showAllSources: showAllSources,
-                keepAwake: keepAwake
+                keepAwake: keepAwake,
+                batteryThreshold: batteryThreshold
             )
         )
     }
@@ -867,12 +934,13 @@ private struct Config {
         let envBin = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_BIN_NAME"]
         let bin = (envBin?.isEmpty == false) ? envBin! : URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent
         print("MenuBar Load Runner \(AppInfo.version)")
-        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--show-all-sources] [--no-update-check]")
-        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--show-all-sources] [--no-update-check]")
+        print("Usage: \(bin) <preset-name|path-to-gif> [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--show-all-sources] [--no-update-check]")
+        print("   or: MENUBAR_LOAD_RUNNER_PATH=<path-to-gif> \(bin) [--speed-multiplier <x>] [--label <off|value|text>] [--load-source <\(LoadSource.allCases.map(\.key).joined(separator: "|"))>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--show-all-sources] [--no-update-check]")
         print("Load source: which reader drives animation speed (default cpu). Also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown values fall back to cpu.")
         print("Label: an optional second menu-bar slot. --label value shows the active source's live reading; --label <text> (up to \(Tuning.labelMaxChars) chars) shows a fixed label; --label off (default) shows nothing. Also via MENUBAR_LOAD_RUNNER_LABEL; switchable from the menu.")
         print("Show all sources: --show-all-sources (or MENUBAR_LOAD_RUNNER_SHOW_ALL=1) starts with the menu's \"Other Sources\" list expanded, sampling every available reader and showing each as a live row; click a row to switch the driving source. Collapsed by default (active source only). Toggle from the menu's disclosure header.")
         print("Keep awake: --keep-awake <off|on|30m|2h|1h30m> arms sleep prevention at launch (a unit is required; up to \(Tuning.keepAwakeMaxHours)h). Also via MENUBAR_LOAD_RUNNER_KEEP_AWAKE. Off by default; switchable from the menu. An armed window is saved and resumed on the next launch — passing this flag (even as off) overrides what was saved.")
+        print("Battery threshold: --battery-threshold <pct|off> sets the charge at or below which Keep Awake releases on battery (default \(Int(Tuning.batteryLowThresholdDefault * Tuning.percentScale))%; off never releases on charge alone). Whole percents only — 20 or 20%, not 0.20. Also via MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD. Out-of-range values are clamped to \(Int(Tuning.batteryThresholdMin * Tuning.percentScale))–\(Int(Tuning.batteryThresholdMax * Tuning.percentScale))%, and below \(Int(Tuning.batteryCriticalThreshold * Tuning.percentScale))% on battery the Mac sleeps regardless — that floor is not configurable.")
         print("Width: the menu-bar item sizes itself to the GIF's aspect ratio at menu-bar height — not configurable.")
         print("Default speed: auto (preset-dependent; per-preset ranges defined in gifs/presets.json).")
         print("Updates: on launch, checks the git origin's release tags for a newer version (network access). Apply is a menu click; disable with --no-update-check or MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0.")
@@ -2580,6 +2648,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             self.updateKeepAwakeBar()
             self.persistState()   // the window is spent; don't resume it on the next launch
         }
+        // Before startBatteryMonitoring(), so the very first suspension is computed against the
+        // requested threshold rather than the default. See applyLaunchBatteryThresholdState().
+        applyLaunchBatteryThresholdState()
         // MUST precede applyLaunchKeepAwakeState(): arming reads `batteryState` to decide whether a
         // condition suspends the window, and this is what populates it. Registered later in this
         // function historically, which meant a launch-time arm saw a nil battery state and spawned
@@ -3765,6 +3836,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                                                         customText: saved.labelCustomText)
         else { return }
         labelMode = restored
+    }
+
+    // Launch-time battery release threshold. Same precedence shape as the label: an explicit
+    // --battery-threshold / MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD wins, otherwise the property keeps
+    // its default (Step 3 restores the saved setting here instead).
+    //
+    // Ordering is load-bearing — this MUST run before startBatteryMonitoring(), which is itself before
+    // applyLaunchKeepAwakeState(): the first suspension is computed as soon as the battery read lands,
+    // so a threshold applied after it would evaluate the launch against the default and then jump.
+    private func applyLaunchBatteryThresholdState() {
+        guard let requested = config.batteryThreshold else { return }
+        keepAwakeBatteryThreshold = Tuning.clampedBatteryThreshold(requested)
     }
 
     // Launch-time Keep Awake, in precedence order: an explicit --keep-awake wins, otherwise a window

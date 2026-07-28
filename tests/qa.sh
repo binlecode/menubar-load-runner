@@ -232,6 +232,38 @@ sp "unknown mode -> launch default"   off    $BIN
 grep -q '"tint" : 3' "$SF" \
   && { echo "  PASS [keepAwake block survives a settings write]"; pass=$((pass+1)); } \
   || { echo "  FAIL [keepAwake block survives a settings write]"; fail=$((fail+1)); }
+# The battery release threshold is the second settings value, and the first whose unit differs between
+# surfaces: the CLI takes whole percents, the file stores the charge fraction. Same three-part contract
+# as the label — survives a relaunch, an explicit flag still wins, a bad value degrades — asserted on
+# the fraction the app REWRITES at termination, so a broken restore surfaces as the 0.2 default coming
+# back. §3a already proves the value drives the actual sleep policy; this proves it round-trips.
+bt(){ desc="$1"; expect="$2"; shift 2
+  MENUBAR_LOAD_RUNNER_STATE_FILE="$SF" MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" >/dev/null 2>&1; rc=$?
+  got=$(sed -n 's/.*"batteryThreshold" *: *\([0-9.]*\).*/\1/p' "$SF" 2>/dev/null)
+  if [ "$rc" = 0 ] && [ "$got" = "$expect" ]; then echo "  PASS [$desc]"; pass=$((pass+1))
+  else echo "  FAIL [$desc] rc=$rc expect=$expect got=${got:-<none>}"; fail=$((fail+1)); fi; }
+rm -f "$SF"
+bt "threshold 10 persists as 0.1"     0.1 $BIN --battery-threshold 10
+bt "restored on relaunch, no flag"    0.1 $BIN
+bt "explicit flag still wins"         0.3 $BIN --battery-threshold 30
+# `off` is a VALUE (0), not a mode, so it has to survive the relaunch that would otherwise reinstate
+# the 20% default — the one case where a dropped restore is a policy change, not a cosmetic one.
+bt "off persists as 0"                0   $BIN --battery-threshold off
+bt "off restored, not re-defaulted"   0   $BIN
+bt "empty env != a value"             0   env MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD= $BIN
+# The state file is one more untrusted entry point, not a back door past the bounds: an out-of-range
+# value is clamped on the way in exactly as the CLI's is (999 -> 100%).
+printf '{"version":1,"settings":{"batteryThreshold":999}}' > "$SF"
+bt "out-of-range file value clamped"  1   $BIN
+# A value of the wrong TYPE fails the decode of the whole file (the Optional fields absorb missing keys,
+# not garbage), which must degrade to launch defaults rather than to a startup error — and the single
+# writer must still emit BOTH blocks afterwards. Asserted on the block's presence, not on tint 3
+# round-tripping: nothing was readable, so what survives is the writer's contract, not the old values.
+printf '{"version":1,"settings":{"batteryThreshold":"twenty"},"keepAwake":{"tint":3,"enabled":false}}' > "$SF"
+bt "garbage type -> launch default"   0.2 $BIN
+grep -q '"keepAwake"' "$SF" \
+  && { echo "  PASS [both blocks written after an unreadable file]"; pass=$((pass+1)); } \
+  || { echo "  FAIL [both blocks written after an unreadable file]"; fail=$((fail+1)); }
 rm -f "$SF"
 echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 

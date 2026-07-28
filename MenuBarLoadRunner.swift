@@ -974,6 +974,12 @@ private struct PersistedState: Codable {
         // MenuBarLabel.persistedMode, with the `.custom` payload in the sibling field.
         var labelMode: String?
         var labelCustomText: String?
+        // The Keep Awake battery release point, as a charge FRACTION (0.20 = 20%) — the same unit the
+        // live property holds, not the whole percent the CLI takes, so the value round-trips exactly
+        // and every reader stays in one unit. `0` is a real value (never release on charge alone) and
+        // is distinct from absent; anything out of band is pulled in by Tuning.clampedBatteryThreshold
+        // on the way back in, since a state file is one more untrusted entry point.
+        var batteryThreshold: Double?
     }
     var version: Int
     var keepAwake: KeepAwake?
@@ -2287,9 +2293,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // relaunch is a fresh decision, so this never reaches state.json.
     private var keepAwakeBatteryOverride = false
     // The charge fraction at or below which keep-awake releases on battery — the live sleep policy,
-    // read by keepAwakeSuspension. Starts at Tuning.batteryLowThresholdDefault; later steps let the
-    // CLI/env, the state file, and the menu relocate it, always through
-    // Tuning.clampedBatteryThreshold. Tuning.batteryThresholdOff (0) means "never release on charge
+    // read by keepAwakeSuspension. Starts at Tuning.batteryLowThresholdDefault; the CLI/env and the
+    // state file relocate it at launch (applyLaunchBatteryThresholdState), and a later step adds the
+    // menu — always through Tuning.clampedBatteryThreshold, since none of those entry points is
+    // trusted. Tuning.batteryThresholdOff (0) means "never release on charge
     // alone"; the 5% critical floor is checked first either way and is not configurable.
     private var keepAwakeBatteryThreshold: Double = Tuning.batteryLowThresholdDefault
     // Sibling overlay layer on animationView.layer, on top of the frame contents. The keep-awake
@@ -3818,7 +3825,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 ),
                 settings: PersistedState.Settings(
                     labelMode: labelMode.persistedMode,
-                    labelCustomText: labelMode.persistedCustomText
+                    labelCustomText: labelMode.persistedCustomText,
+                    batteryThreshold: keepAwakeBatteryThreshold
                 )
             )
         )
@@ -3838,16 +3846,26 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelMode = restored
     }
 
-    // Launch-time battery release threshold. Same precedence shape as the label: an explicit
-    // --battery-threshold / MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD wins, otherwise the property keeps
-    // its default (Step 3 restores the saved setting here instead).
+    // Launch-time battery release threshold, in precedence order: an explicit --battery-threshold /
+    // MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD wins, otherwise the value saved by the previous run is
+    // restored, otherwise the property keeps Tuning.batteryLowThresholdDefault. Same shape as the
+    // label, with one asymmetry worth naming: `off` here is a *value* (0), not a mode, so a flag can
+    // only override a saved setting — it can never mean "absent" the way an empty env value does.
+    //
+    // Unlike a saved keep-awake window there is nothing to withhold: a threshold arms nothing and holds
+    // no assertion, it only relocates when an already-armed window releases, so every value restores —
+    // including off, whose whole point is to survive the relaunch that would otherwise reinstate 20%.
     //
     // Ordering is load-bearing — this MUST run before startBatteryMonitoring(), which is itself before
     // applyLaunchKeepAwakeState(): the first suspension is computed as soon as the battery read lands,
     // so a threshold applied after it would evaluate the launch against the default and then jump.
     private func applyLaunchBatteryThresholdState() {
-        guard let requested = config.batteryThreshold else { return }
-        keepAwakeBatteryThreshold = Tuning.clampedBatteryThreshold(requested)
+        if let requested = config.batteryThreshold {
+            keepAwakeBatteryThreshold = Tuning.clampedBatteryThreshold(requested)
+            return
+        }
+        guard let saved = StateStore.load()?.settings?.batteryThreshold else { return }
+        keepAwakeBatteryThreshold = Tuning.clampedBatteryThreshold(saved)
     }
 
     // Launch-time Keep Awake, in precedence order: an explicit --keep-awake wins, otherwise a window

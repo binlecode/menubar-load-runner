@@ -328,6 +328,11 @@ guessed at, for the reason a bare duration is: it reads as 0.2% under one conven
 other. Out-of-range values are clamped and unrecognized ones fall back to the 20% default, both with a
 warning on stderr and never a failed launch, since this too can be baked into a login item.
 
+The threshold **persists across launches**: whatever it was last set to comes back, so a plain
+`./menubar-load-runner` keeps your release point instead of reverting to 20%. That matters most for
+`off` — a forgotten `off` would silently reinstate a policy you turned off. Passing the flag or the env
+var still wins over the saved value, so a login item can pin one threshold without disturbing it.
+
 **Below 5% on battery the Mac sleeps regardless.** That floor is not configurable and is checked
 first, so it holds whatever the threshold is set to — including `off`. It's also why the minimum is
 6% rather than 1%: a threshold beneath the floor would be a setting that does nothing.

@@ -78,7 +78,7 @@ Precedence mirrors the label (`applyLaunchLabelState`, `:3715-3727`): `Config.ba
 absent — see the `:745-750` fallback pattern and qa.sh §3b's "empty env != explicit off" case. Note the
 asymmetry with `--label`: here `off` is a *value* (0), not a mode, so nil vs 0 vs 20 are three states.
 
-## Step 3 — Persistence
+## Step 3 — Persistence — **DONE 2026-07-28**
 
 Add to `PersistedState.Settings` (`:870`):
 
@@ -147,9 +147,10 @@ running on the old threshold until the next power event happens to fire — the 
 - [ ] `--battery-threshold 30` + `25:battery` → **paused**, with the battery-low reason on the status row.
 - [ ] `--battery-threshold 2` → clamped to the min, warns on stderr, exits 0 (not rejected).
 - [ ] `--battery-threshold off` + `15:battery` → holds; `4:battery` still releases (the floor).
-- [ ] Set from the menu, relaunch with no flag → restored; an explicit flag still wins; an empty env
-      value is absent, not a value.
-- [ ] A hand-edited garbage `batteryThreshold` → launch default, rc 0, no modal, and the `keepAwake`
+- [x] Set from the menu, relaunch with no flag → restored; an explicit flag still wins; an empty env
+      value is absent, not a value. *(Step 3: asserted from the CLI, which is the only mutator until
+      Step 4; the menu path inherits it because `setBatteryThreshold` will call the same `persistState`.)*
+- [x] A hand-edited garbage `batteryThreshold` → launch default, rc 0, no modal, and the `keepAwake`
       block survives the settings write (§3b's single-writer invariant).
 - [ ] Battery-source sparkline red band unchanged at 20% while the threshold is 10%.
 - [ ] `tests/qa.sh` §3a: extend the `ka()` helper with an args passthrough and add the first four cases
@@ -166,7 +167,7 @@ and confirm the 5% known-limit row still reads true), `CHANGELOG.md`.
 
 ## Status as of 2026-07-28
 
-**Steps 0, 1 and 2 done. Steps 3–5 not started.**
+**Steps 0–3 done. Steps 4–5 not started.**
 
 **Step 0** split `Tuning.batteryLowThreshold` into two constants that share the number 0.20 and
 nothing else:
@@ -228,7 +229,31 @@ empty env, and flag-beats-env are each one case. §2 keeps only the fatal contra
 (`--battery-threshold` with no value → rc 1); the rc-0 "flag accepted" checks were dropped as
 non-functional — §3a asserts what each form resolves to, which is the property that matters.
 
-**Next: Step 3** — persistence (`PersistedState.Settings.batteryThreshold`, composed in
-`persistState()`, restored in `applyLaunchBatteryThresholdState()` under the CLI). Catch 6 (the
-chart's red band must still turn at 20% with a non-default threshold) is testable as of Step 2 but is
-a *visual* check — it belongs in the interactive spot-check when the menu surface lands in Step 4.
+**Step 3** added `PersistedState.Settings.batteryThreshold`, composed in `persistState()` (still the
+only writer) and restored in `applyLaunchBatteryThresholdState()` beneath the flag/env. No new call
+site and no ordering change — the restore lands inside the function Step 2 already called before
+`startBatteryMonitoring()`.
+
+- Stored as the **charge fraction** (`0.1`), not the whole percent the CLI takes: it is the unit the
+  live property holds, so it round-trips exactly and there is one unit inside the app. The two
+  spellings only meet at the parser.
+- Restored through `Tuning.clampedBatteryThreshold` like every other entry point — a state file is
+  untrusted input, not a back door past the 6–100% bounds.
+- **Every value restores, `off` included**, which is the one that matters: unlike a saved indefinite
+  keep-awake window (withheld because it arms something with no stopping condition), a threshold arms
+  nothing. Dropping a saved `off` would silently reinstate the 20% policy the user turned off.
+- Known asymmetry, left as-is: `Tuning.clampedBatteryThreshold` maps any `≤ 0` to *off*, so a
+  hand-edited **negative** in the state file reads as off, where `--battery-threshold -5` falls back to
+  the default (the parser refuses the `-` before the clamp ever sees it). Only reachable by hand-editing
+  — the app never writes a negative — and changing it would cost the `0`-spelling of off.
+
+Verified: `swiftc -O -strict-concurrency=complete` warning-clean; `tests/qa.sh` ALL PASS. §3b grew from
+12 to 18 cases (see the RUNBOOK §3b paragraph for what the six cover). One is worth its own note: a
+wrong-*type* value fails the decode of the **whole file**, not just its field — the Optional fields
+absorb missing keys, not garbage — so that case asserts the launch default plus the *presence* of both
+blocks afterwards, not that the old `tint` survived. Nothing was readable, so what is under test there
+is the single writer's contract, not the old values.
+
+**Next: Step 4** — the menu surface. Catch 6 (the chart's red band must still turn at 20% with a
+non-default threshold) is testable as of Step 2 but is a *visual* check — it belongs in the interactive
+spot-check when the menu surface lands.

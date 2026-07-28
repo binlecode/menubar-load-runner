@@ -38,8 +38,10 @@ of the public API and may change in any release.
   one convention and 20% under the other. Out-of-range and unrecognized values warn on stderr and
   launch anyway (clamped, or at the 20% default), because this can be baked into a login item.
   **Below 5% on battery the Mac still sleeps regardless** — that floor is checked first and is not
-  configurable, which is also why the minimum is 6%. Menu control and persistence are still to come;
-  today it is a launch-time setting.
+  configurable, which is also why the minimum is 6%. The setting **survives a relaunch** — including
+  `off`, the one value where forgetting it would quietly reinstate a policy you turned off — while an
+  explicit flag or env value still wins over what was saved. Menu control is still to come; today it is
+  a launch-time setting.
 
 ## [1.14.0] - 2026-07-26
 

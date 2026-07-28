@@ -281,6 +281,13 @@ being ignored on AC at any value, a low value clamping up to 6%, and the two fal
 to off). If you change the parser, re-derive the charges: the discrimination is in the numbers, not
 in the assertions.
 
+Persistence of the threshold is `tests/qa.sh` **§3b** (with the label's cases), asserted on the charge
+*fraction* the app rewrites at termination — `0.1` for `--battery-threshold 10`. Six cases: it survives
+a plain relaunch, an explicit flag still wins, `off` round-trips as `0` rather than re-defaulting to
+20%, an empty env value is absent rather than a value, an out-of-range number in the file is clamped on
+the way in (the state file is not a back door past the bounds), and a wrong-*type* value fails the whole
+decode and must degrade to the launch default with both blocks still written.
+
 Or by hand, one state at a time. `--keep-awake` is used deliberately because it is **not** an override
 gesture, so these assert the raw conditions:
 

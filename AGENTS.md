@@ -176,7 +176,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   **fail-silent** (missing/corrupt/unwritable → defaults, never a startup error or a modal). Contrast
   `gifs/presets.json`, whose failure IS fatal — that's app identity, this is a convenience. Two blocks:
   `keepAwake` (intent — tint, deadline, enabled) and `settings` (menu-driven preferences that outlive a
-  relaunch; today the menu-bar label mode, with R5's battery threshold the next candidate).
+  relaunch; today the menu-bar label mode and the Keep Awake battery release threshold, the latter
+  stored as a charge *fraction* — the unit the live property holds, not the whole percent the CLI takes).
   **`persistState()` is the only writer, and must stay the only one:** `StateStore.save()` replaces the
   whole file, so a block-specific writer would silently drop the block it doesn't own. It composes both
   blocks from live in-memory state, which also removes any read-modify-write window. Call it from the
@@ -188,7 +189,12 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   an explicit `off` suppresses it — resolved in `applyLaunchLabelState()` before the first
   `applyLabelMode()`. An empty env value counts as absent, so `MENUBAR_LOAD_RUNNER_LABEL=` can't clobber
   a saved mode. Unlike a keep-awake window, *every* label mode is restorable: a label holds no assertion,
-  so there's no runaway state to guard against.
+  so there's no runaway state to guard against. The battery threshold restores the same way
+  (`applyLaunchBatteryThresholdState()`: flag/env → saved value → `batteryLowThresholdDefault`), with one
+  asymmetry — `off` is a *value* (`0`), not a mode, so a flag can only override the saved setting, never
+  read as absent. Every value restores, `off` most of all: dropping it would reinstate a release policy
+  the user turned off. The state file is an untrusted entry point like any other, so the restored value
+  goes through `Tuning.clampedBatteryThreshold` too.
 - **`CPULoadMonitor`** — reads `host_processor_info`/`PROCESSOR_CPU_LOAD_INFO` via Mach APIs and exposes an
   EMA-smoothed CPU usage fraction (`Tuning.cpuSmoothingAlpha`). Requires two samples to produce a delta, so
   usage is nil until the second `sampleSystemLoad` tick.
@@ -315,7 +321,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤
     `keepAwakeBatteryThreshold` (the live release point, default
     `Tuning.batteryLowThresholdDefault` = 20%, `0` = never release on charge; set at launch by
-    `--battery-threshold` / `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD` via
+    `--battery-threshold` / `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, or restored from the `settings`
+    block, both via
     `applyLaunchBatteryThresholdState()`, which **must** run before `startBatteryMonitoring()` or the
     first suspension is computed against the default and then jumps. Every entry point clamps
     through `Tuning.clampedBatteryThreshold`, and its min sits above the 5% floor so that floor stays

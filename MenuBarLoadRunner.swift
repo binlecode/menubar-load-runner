@@ -238,6 +238,29 @@ private enum Tuning {
     // sets the release threshold to.
     static let batteryCriticalThreshold: Double = 0.05
 
+    // Bounds on the user-configurable release threshold (keepAwakeBatteryThreshold). The minimum sits
+    // strictly ABOVE batteryCriticalThreshold — that gap is what keeps the 5% floor unreachable from
+    // any user surface, so the guarantee above holds no matter what is configured.
+    //
+    // ZERO IS A THIRD, VALID VALUE meaning "off": never release on charge alone. It is deliberately
+    // outside [min, max] rather than being min-1%: a user who wants a 6% release point wants the
+    // policy relocated, while a user who wants it gone wants it gone, and collapsing the two would
+    // make "off" un-expressible. The 5% floor still applies to it — off disables the *low* band only.
+    static let batteryThresholdOff: Double = 0.0
+    static let batteryThresholdMin: Double = 0.06
+    static let batteryThresholdMax: Double = 1.0
+
+    // Clamp, never reject — every entry point (CLI, env, state file) funnels through this. A baked
+    // login-item arg or a hand-edited state file must not cost the user the whole app over one bad
+    // number, the same rule KeepAwakeDuration.parse documents. Anything at or below zero collapses to
+    // off (the caller decides whether that shape was even spellable; this is the last line, not the
+    // parser), anything above is pulled into the valid band.
+    static func clampedBatteryThreshold(_ value: Double) -> Double {
+        guard value.isFinite else { return batteryLowThresholdDefault }
+        if value <= 0 { return batteryThresholdOff }
+        return min(max(value, batteryThresholdMin), batteryThresholdMax)
+    }
+
     // Battery trace-chart color bands (charge fraction). The chart is a fuel gauge for the battery
     // source — low = alert — so ≤20% → red plus this mid band (≤40% → yellow, else green), mirroring
     // the macOS low-battery convention.
@@ -2195,6 +2218,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // keeps an *indefinite* saved window from being restored. Memory-only for the same reason: a
     // relaunch is a fresh decision, so this never reaches state.json.
     private var keepAwakeBatteryOverride = false
+    // The charge fraction at or below which keep-awake releases on battery — the live sleep policy,
+    // read by keepAwakeSuspension. Starts at Tuning.batteryLowThresholdDefault; later steps let the
+    // CLI/env, the state file, and the menu relocate it, always through
+    // Tuning.clampedBatteryThreshold. Tuning.batteryThresholdOff (0) means "never release on charge
+    // alone"; the 5% critical floor is checked first either way and is not configurable.
+    private var keepAwakeBatteryThreshold: Double = Tuning.batteryLowThresholdDefault
     // Sibling overlay layer on animationView.layer, on top of the frame contents. The keep-awake
     // track line; hidden unless caffeinate is actually running. NEVER composited into renderedFrames.
     private var keepAwakeBar: CALayer?
@@ -4058,9 +4087,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if fraction <= Tuning.batteryCriticalThreshold {
             return .batteryCritical(percent: batteryState.percent)
         }
-        // Step 1 replaces this with the live keepAwakeBatteryThreshold; reading the default keeps
-        // Step 0 a pure rename with identical behavior.
-        if fraction <= Tuning.batteryLowThresholdDefault {
+        // The live setting, not the default: this band is the part the user can relocate. At
+        // Tuning.batteryThresholdOff (0) the band is gone entirely — a real charge never sits at or
+        // below zero, and 0% itself is already claimed by the critical floor above.
+        if fraction <= keepAwakeBatteryThreshold {
             return .batteryLow(percent: batteryState.percent)
         }
         return nil

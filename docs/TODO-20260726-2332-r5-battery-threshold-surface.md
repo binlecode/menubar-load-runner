@@ -93,7 +93,7 @@ before `applyLaunchKeepAwakeState()`. Ordering is load-bearing: the threshold ha
 before the first suspension is computed, or launch evaluates against the default 20% and then jumps
 when the saved value lands.
 
-## Step 4 — Menu surface
+## Step 4 — Menu surface — **DONE 2026-07-28**
 
 `Settings ▸` (`:2405`) gains `Battery Threshold ▸`, built exactly like the label group
 (`:2410-2429`) — the parent row's title carries the readout via `MenuTitle.line` (`:324`), e.g.
@@ -109,7 +109,7 @@ construction** — `infoMenu.items.forEach { $0.target = self }` wires root item
 The mutator `setBatteryThreshold(_:)` mirrors `setLabelMode` (`:3887`): it is the mutating gesture, so
 it persists.
 
-## Step 5 — Apply immediately
+## Step 5 — Apply immediately — **DONE 2026-07-28** (folded into Step 4)
 
 `setBatteryThreshold` must call `updateSleepPrevention()` (`:4064`). Without it a live window keeps
 running on the old threshold until the next power event happens to fire — the same latency problem
@@ -141,19 +141,21 @@ running on the old threshold until the next power event happens to fire — the 
 
 ## Acceptance criteria
 
-- [ ] `swiftc -O -strict-concurrency=complete` is warning-clean.
-- [ ] `--battery-threshold 10` + `MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery` → caffeinate **holds**
+- [x] `swiftc -O -strict-concurrency=complete` is warning-clean.
+- [x] `--battery-threshold 10` + `MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery` → caffeinate **holds**
       (today: paused).
-- [ ] `--battery-threshold 30` + `25:battery` → **paused**, with the battery-low reason on the status row.
-- [ ] `--battery-threshold 2` → clamped to the min, warns on stderr, exits 0 (not rejected).
-- [ ] `--battery-threshold off` + `15:battery` → holds; `4:battery` still releases (the floor).
+- [x] `--battery-threshold 30` + `25:battery` → **paused**, with the battery-low reason on the status row.
+- [x] `--battery-threshold 2` → clamped to the min, warns on stderr, exits 0 (not rejected).
+- [x] `--battery-threshold off` + `15:battery` → holds; `4:battery` still releases (the floor).
 - [x] Set from the menu, relaunch with no flag → restored; an explicit flag still wins; an empty env
       value is absent, not a value. *(Step 3: asserted from the CLI, which is the only mutator until
       Step 4; the menu path inherits it because `setBatteryThreshold` will call the same `persistState`.)*
 - [x] A hand-edited garbage `batteryThreshold` → launch default, rc 0, no modal, and the `keepAwake`
       block survives the settings write (§3b's single-writer invariant).
-- [ ] Battery-source sparkline red band unchanged at 20% while the threshold is 10%.
-- [ ] `tests/qa.sh` §3a: extend the `ka()` helper with an args passthrough and add the first four cases
+- [ ] **Interactive only — RUNBOOK §7, not yet run.** Battery-source sparkline red band unchanged at 20%
+      while the threshold is 10% (Catch 6); the menu group's rows/readout/Custom… prompt; a threshold
+      change applying to a live window at once; a threshold change retiring the override.
+- [x] `tests/qa.sh` §3a: extend the `ka()` helper with an args passthrough and add the first four cases
       above. §3b: add a persistence case.
 
 ## Docs to touch
@@ -167,7 +169,7 @@ and confirm the 5% known-limit row still reads true), `CHANGELOG.md`.
 
 ## Status as of 2026-07-28
 
-**Steps 0–3 done. Steps 4–5 not started.**
+**All six steps done (0–5). Interactive verification is the only thing outstanding.**
 
 **Step 0** split `Tuning.batteryLowThreshold` into two constants that share the number 0.20 and
 nothing else:
@@ -254,6 +256,30 @@ absorb missing keys, not garbage — so that case asserts the launch default plu
 blocks afterwards, not that the old `tint` survived. Nothing was readable, so what is under test there
 is the single writer's contract, not the old values.
 
-**Next: Step 4** — the menu surface. Catch 6 (the chart's red band must still turn at 20% with a
-non-default threshold) is testable as of Step 2 but is a *visual* check — it belongs in the interactive
-spot-check when the menu surface lands.
+**Steps 4 and 5 landed together**, deliberately: Step 5's whole content is two lines *inside* the
+mutator Step 4 creates, and shipping Step 4 alone would have meant committing a menu that looks like it
+works and silently doesn't take effect until the next power event. `Settings ▸ Battery Threshold ▸` now
+holds `Tuning.batteryThresholdRows` (10/15/20/30%) + `Never` + `Custom…`, with the readout in the parent
+row's title and `setBatteryThreshold` as the sole mutator.
+
+- **`Never`, not `Off`, in the menu** (the flag still says `off`, and the parser already accepts
+  `never`). `Keep Awake ▸` has an `Off` row two rows away that means *disarm keep-awake*; a second `Off`
+  meaning *disarm the threshold* is the kind of collision a user misreads once and then distrusts.
+- **The prompt refuses what it can't read instead of defaulting.** This is a deliberate divergence from
+  "clamp, never reject": that rule exists because a bad value baked into a login item fires with nobody
+  present, where losing the app or the policy is the worse outcome. In a modal someone is right there,
+  so applying 20% to a typo would be the surprise — a blank/garbage entry changes nothing, `0` is Never,
+  and out-of-*range* numbers still clamp. Negatives are refused rather than collapsing to Never, which
+  also resolves the Step 3 asymmetry the right way at the surface where a human types.
+- **Catch 1 and Catch 2 both honored**: `setBatteryThreshold` clears `keepAwakeBatteryOverride` (that
+  gesture answered a question about the old release point) and never grants it —
+  `grantKeepAwakeBatteryOverrideIfOffered` stays gesture-scoped, and a threshold edit is not an arm.
+- Selection state uses a 0.05% tolerance rather than `==`. Every surface feeds whole-percent/100, so
+  equality would hold today; the tolerance means a future half-percent source falls through to
+  `Custom…` instead of marking a row that is merely close. Rows are ≥5% apart, so two can't match.
+
+Verified: `swiftc -O -strict-concurrency=complete` warning-clean; `tests/qa.sh` ALL PASS (unchanged
+counts — §3a 18, §3b 18: the menu path adds no scriptable surface). **Not verified: anything requiring a
+click.** The menu group, the immediate-apply behavior, the override retirement, and Catch 6 are all
+interactive; RUNBOOK §7 gained five checkboxes for exactly those and they have not been run. R5 should
+close only after that pass.

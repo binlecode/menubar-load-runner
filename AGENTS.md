@@ -324,7 +324,11 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     `--battery-threshold` / `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, or restored from the `settings`
     block, both via
     `applyLaunchBatteryThresholdState()`, which **must** run before `startBatteryMonitoring()` or the
-    first suspension is computed against the default and then jumps. Every entry point clamps
+    first suspension is computed against the default and then jumps; changed at runtime by
+    `setBatteryThreshold`, the sole mutator, which persists, **clears `keepAwakeBatteryOverride`** (that
+    gesture answered a question about the *old* threshold — raising it to 30% at 25% charge must not
+    inherit a "yes" given about 20%), and calls `updateSleepPrevention()` so a live window picks the new
+    point up at once instead of waiting for the next power event. Every entry point clamps
     through `Tuning.clampedBatteryThreshold`, and its min sits above the 5% floor so that floor stays
     unreachable from any surface) — deliberately NOT
     memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
@@ -398,7 +402,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     `isEnabled`/`isRunning` split has to survive a relaunch too.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
-    `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshShowAllSourcesState`) rather
+    `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshBatteryThresholdSelectionState`,
+    `refreshShowAllSourcesState`) rather
     than pushed reactively. When adding
     a new piece of runtime state, wire it into these refresh functions and into the initial
     `applicationDidFinishLaunching` setup.
@@ -425,7 +430,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     - **`Settings ▸`** — the home for menu-driven preferences. `Menu Bar Label` is reparented **whole**,
       not flattened into it: that parent row's title *is* the readout (`refreshLabelSelectionState` writes
       `Menu Bar Label: value` into it), and flattened, the string would have nowhere to live but the
-      `Settings` row itself, which can't say `Label: value` once a second setting exists.
+      `Settings` row itself, which can't say `Label: value` once a second setting exists. That second
+      setting is now here: **`Battery Threshold ▸`** (`batteryThresholdItems` over
+      `Tuning.batteryThresholdRows` + `Never` + `Custom…`, readout in the parent title via
+      `refreshBatteryThresholdSelectionState`, mutated through `setBatteryThreshold`). It governs Keep
+      Awake but lives here, not in that submenu, because it is a standing preference that outlives any
+      single arm — everything in `Keep Awake ▸` is an action. Its rows spell the zero value **`Never`**
+      where the CLI says `off`: `Keep Awake ▸` already has an `Off` row meaning *disarm keep-awake*, and
+      a second `Off` nearby meaning *disarm the threshold* is a collision worth one word to avoid (the
+      parser accepts `never`, so the surfaces agree).
     - **`Presets ▸`** — the 12 preset rows, previously inline under a disabled header row. The submenu's
       own title replaces that header.
     Keep Awake stays a **root** submenu on purpose: its Off row and five tints are one merged radio group

@@ -636,6 +636,27 @@ persistence + `--keep-awake` v1.13.0):
       switch; Custom Text… shows a fixed string; Off frees the slot. Also settable via `--label`.
       The parent row still reads `Menu Bar Label: value` from inside `Settings ▸` — that readout is the
       reason it stays a nested submenu rather than three flat rows.
+- [ ] **`Settings ▸ Battery Threshold`** (10 / 15 / 20 / 30% · Never · Custom…) — the parent row reads
+      `Battery Threshold: 20%` and the mark sits on the matching row; a value from `--battery-threshold`
+      that no row covers (say `18`) reads `: 18%` and marks **Custom…** instead. `Custom…` pre-fills the
+      current percent; a blank or non-numeric entry must change **nothing** (unlike the flag, which
+      falls back to the default — in a modal there is someone present to retry), while `0` means Never
+      and an out-of-range number clamps.
+- [ ] **Threshold applies immediately.** Launch with `MENUBAR_LOAD_RUNNER_FORCE_BATTERY=25:battery`, arm
+      Keep Awake from the menu (it holds — 25% is above the default 20%), then set the threshold to
+      **30%**. The child must die *at once* and the rows must say `paused — battery low (25%)` without
+      waiting for a battery event. Set it back to 10% and it re-engages. This is the whole point of the
+      `updateSleepPrevention()` call in `setBatteryThreshold`; without it nothing changes until the next
+      power notification, which on a forced state never comes.
+- [ ] **A threshold change retires the override.** At `15:battery`, arm from the menu (the override is
+      granted — it holds despite being under 20%), then change the threshold at all. The override must
+      be gone: the arm-anyway answered a question about the old release point. Re-arming grants it again.
+- [ ] **The sparkline's red band is NOT the release point** (R5 Catch 6, the reason the constant was
+      split). With `--battery-threshold 10`, switch to the battery source and open the menu: the trace's
+      red band must still turn at **20%** (`batteryChartLowThreshold`), unmoved. If it followed the
+      threshold, the split regressed.
+- [ ] **Threshold persists**: set 15% from the menu, Exit, relaunch with no flags — `Settings ▸` still
+      reads `Battery Threshold: 15%`. (`tests/qa.sh` §3b asserts the file; this is the visual half.)
 - [ ] **Label mode persists**: pick Live Value, Exit, relaunch with no flags — the slot comes back.
       Relaunch with `--label off` — no slot, and the saved mode does not resurrect on the next plain
       launch. (`tests/qa.sh` §3b asserts this against the state file; this step is the visual half.)

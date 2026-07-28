@@ -255,6 +255,12 @@ private enum Tuning {
     // number, the same rule KeepAwakeDuration.parse documents. Anything at or below zero collapses to
     // off (the caller decides whether that shape was even spellable; this is the last line, not the
     // parser), anything above is pulled into the valid band.
+    // The menu's ladder of release points, as charge fractions. A short span either side of the 20%
+    // default — the menu exists for the common relocation, and anything else is one row further into
+    // Custom…, which is cheaper than a row per percent. Kept ≥5% apart so no two rows can both match a
+    // configured value (see refreshBatteryThresholdSelectionState's tolerance).
+    static let batteryThresholdRows: [Double] = [0.10, 0.15, 0.20, 0.30]
+
     static func clampedBatteryThreshold(_ value: Double) -> Double {
         guard value.isFinite else { return batteryLowThresholdDefault }
         if value <= 0 { return batteryThresholdOff }
@@ -336,8 +342,24 @@ private enum MenuTitle {
     static let checkForUpdates = "Check for Updates…"
     static let checkingForUpdates = "Checking for Updates…"
 
-    // Parent row for menu-driven preferences (currently Menu Bar Label; R5's battery threshold next).
+    // Parent row for menu-driven preferences (the menu-bar label and the battery release threshold).
     static let settings = "Settings"
+
+    // Keep Awake's battery release threshold (under Settings ▸). The "never release on charge" value is
+    // spelled **Never** here and `off` on the CLI, deliberately: the Keep Awake submenu already has an
+    // Off row that means something else entirely (disarm keep-awake), and a second Off two rows away
+    // meaning "disarm the *threshold*" is the kind of collision a user reads wrong once and distrusts
+    // after. The parser accepts `never` too, so neither surface is lying about the other.
+    static let batteryThresholdPrefix = "Battery Threshold"
+    static func batteryThreshold(_ suffix: String) -> String { "\(batteryThresholdPrefix): \(suffix)" }
+    static let batteryThresholdNever = "Never"
+    static let batteryThresholdCustom = "Custom…"
+    // Shared by the rows and the parent row's readout, so a row and the title it selects always agree.
+    static func batteryThresholdValue(_ fraction: Double) -> String {
+        fraction <= Tuning.batteryThresholdOff
+            ? batteryThresholdNever
+            : "\(Int((fraction * Tuning.percentScale).rounded()))%"
+    }
 
     // Menu-bar label (the adjacent value/text slot).
     static let labelPrefix = "Menu Bar Label"
@@ -2184,6 +2206,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var labelOffItem: NSMenuItem!
     private var labelValueItem: NSMenuItem!
     private var labelCustomItem: NSMenuItem!
+    // "Battery Threshold" submenu, the second Settings row: a radio group over
+    // Tuning.batteryThresholdRows plus Never and Custom…, with the parent title carrying the readout
+    // exactly as the label group's does. The rows' tags are indices into that array and are read ONLY
+    // by selectBatteryThreshold, so this tag space is disjoint from the two Keep Awake groups' despite
+    // the numeric overlap — the same arrangement their comments describe.
+    private var batteryThresholdMenuItem: NSMenuItem!
+    private var batteryThresholdItems: [NSMenuItem] = []
+    private var batteryThresholdCustomItem: NSMenuItem!
+    private static let batteryThresholdNeverTag = -1
     private var presetMenuItems: [NSMenuItem] = []
     // In-app update check. `latestKnownVersion` is the newest release tag found on origin (nil until a
     // probe completes, or on any failure — fail-silent). `updateItem` is the passive "Update
@@ -2543,6 +2574,44 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         labelMenuItem.submenu = labelSubmenu
         settingsSubmenu.addItem(labelMenuItem)
+
+        // "Battery Threshold" radio group — the charge at which Keep Awake releases on battery. Same
+        // shape as the label group, and here for the same reason: the parent title is the readout
+        // ("Battery Threshold: 20%"), which flattening into Settings would leave nowhere to live.
+        //
+        // It belongs under Settings rather than in the Keep Awake submenu even though it governs Keep
+        // Awake: that submenu is one merged on/off+tint radio group plus the duration group, i.e. all
+        // actions, and this is a standing preference that outlives any single arm.
+        batteryThresholdMenuItem = NSMenuItem(title: MenuTitle.batteryThresholdPrefix, action: nil, keyEquivalent: "")
+        let batteryThresholdSubmenu = NSMenu(title: MenuTitle.batteryThresholdPrefix)
+
+        for (index, fraction) in Tuning.batteryThresholdRows.enumerated() {
+            let item = NSMenuItem(title: MenuTitle.batteryThresholdValue(fraction),
+                                  action: #selector(selectBatteryThreshold(_:)), keyEquivalent: "")
+            item.target = self          // nested — infoMenu's blanket target pass never reaches here
+            item.tag = index
+            useSelectionMark(item)
+            batteryThresholdSubmenu.addItem(item)
+            batteryThresholdItems.append(item)
+        }
+
+        let neverItem = NSMenuItem(title: MenuTitle.batteryThresholdNever,
+                                   action: #selector(selectBatteryThreshold(_:)), keyEquivalent: "")
+        neverItem.target = self
+        neverItem.tag = Self.batteryThresholdNeverTag
+        useSelectionMark(neverItem)
+        batteryThresholdSubmenu.addItem(neverItem)
+        batteryThresholdItems.append(neverItem)
+
+        batteryThresholdCustomItem = NSMenuItem(title: MenuTitle.batteryThresholdCustom,
+                                                action: #selector(promptCustomBatteryThreshold), keyEquivalent: "")
+        batteryThresholdCustomItem.target = self
+        useSelectionMark(batteryThresholdCustomItem)
+        batteryThresholdSubmenu.addItem(batteryThresholdCustomItem)
+
+        batteryThresholdMenuItem.submenu = batteryThresholdSubmenu
+        settingsSubmenu.addItem(batteryThresholdMenuItem)
+
         settingsMenuItem.submenu = settingsSubmenu
         infoMenu.addItem(settingsMenuItem)
 
@@ -2658,6 +2727,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Before startBatteryMonitoring(), so the very first suspension is computed against the
         // requested threshold rather than the default. See applyLaunchBatteryThresholdState().
         applyLaunchBatteryThresholdState()
+        refreshBatteryThresholdSelectionState()   // after the resolve above, or the menu shows the default
         // MUST precede applyLaunchKeepAwakeState(): arming reads `batteryState` to decide whether a
         // condition suspends the window, and this is what populates it. Registered later in this
         // function historically, which meant a launch-time arm saw a nil battery state and spawned
@@ -3186,6 +3256,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshPresetSelectionState()
         refreshWidthInfo()
         refreshLabelSelectionState()
+        refreshBatteryThresholdSelectionState()
         refreshShowAllSourcesState()
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
@@ -3577,6 +3648,32 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelOffItem.state = (labelMode == .off) ? .on : .off
         labelValueItem.state = (labelMode == .value) ? .on : .off
         if case .custom = labelMode { labelCustomItem.state = .on } else { labelCustomItem.state = .off }
+    }
+
+    // Parent title carries the readout ("Battery Threshold: 20%" / ": Never") and the rows mark the
+    // active choice; a value matching no row marks Custom… instead, the same fallback the duration
+    // group uses. Addresses the stored array, never menu positions.
+    private func refreshBatteryThresholdSelectionState() {
+        batteryThresholdMenuItem.title =
+            MenuTitle.batteryThreshold(MenuTitle.batteryThresholdValue(keepAwakeBatteryThreshold))
+
+        let isNever = keepAwakeBatteryThreshold <= Tuning.batteryThresholdOff
+        var matchedARow = false
+        for item in batteryThresholdItems {
+            let selected: Bool
+            if item.tag == Self.batteryThresholdNeverTag {
+                selected = isNever
+            } else {
+                // Every surface feeds this value as wholePercent/100, so exact equality would in fact
+                // hold; the tolerance is here so a future half-percent source degrades to "Custom…"
+                // rather than to a row that is merely close. Rows are ≥5% apart, so it can't match two.
+                selected = !isNever
+                    && abs(Tuning.batteryThresholdRows[item.tag] - keepAwakeBatteryThreshold) < 0.0005
+            }
+            item.state = selected ? .on : .off
+            if selected { matchedARow = true }
+        }
+        batteryThresholdCustomItem.state = matchedARow ? .off : .on
     }
 
     // Reconcile the value slot's existence and content with labelMode. .off tears the second status
@@ -4021,6 +4118,100 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         let input = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         setLabelMode(input.isEmpty ? .off : .custom(String(input.prefix(Tuning.labelMaxChars))))
+    }
+
+    // A row in the Battery Threshold group. Tags are indices into Tuning.batteryThresholdRows, with
+    // batteryThresholdNeverTag for the Never row.
+    @objc
+    private func selectBatteryThreshold(_ sender: NSMenuItem) {
+        if sender.tag == Self.batteryThresholdNeverTag {
+            setBatteryThreshold(Tuning.batteryThresholdOff)
+        } else if Tuning.batteryThresholdRows.indices.contains(sender.tag) {
+            setBatteryThreshold(Tuning.batteryThresholdRows[sender.tag])
+        }
+    }
+
+    // Prompt for a release point the rows don't cover. One field, whole percents — the same unit and
+    // the same refusal of a decimal as --battery-threshold, since a value that reads as 0.2% under one
+    // convention and 20% under the other is not something to guess at in either place.
+    //
+    // Where this DOES diverge from the flag: unparseable input changes nothing instead of falling back
+    // to the default. "Clamp, never reject" exists because a bad value baked into a login item fires
+    // with nobody present, and dropping the app or silently disabling the policy would be the worse
+    // outcome. In a modal the user is right here — quietly applying 20% to a typo would be the
+    // surprise. Out-of-*range* numbers still clamp, exactly as the flag's do.
+    @objc
+    private func promptCustomBatteryThreshold() {
+        let alert = NSAlert()
+        alert.messageText = "Release Keep Awake At…"
+        alert.informativeText = """
+            Keep Awake stops holding the Mac awake at or below this charge, on battery. \
+            \(Int(Tuning.batteryThresholdMin * Tuning.percentScale))–\
+            \(Int(Tuning.batteryThresholdMax * Tuning.percentScale))%, or 0 to never release on charge \
+            alone. Below \(Int(Tuning.batteryCriticalThreshold * Tuning.percentScale))% the Mac sleeps \
+            regardless.
+            """
+        alert.alertStyle = .informational
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+
+        let current = Int((keepAwakeBatteryThreshold * Tuning.percentScale).rounded())
+        let field = NSTextField(string: String(current))
+        field.frame = NSRect(x: 0, y: 6, width: 56, height: 24)
+        let fieldLabel = NSTextField(labelWithString: "Percent")
+        fieldLabel.frame = NSRect(x: 0, y: 32, width: 60, height: 16)
+
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 52))
+        accessory.addSubview(fieldLabel)
+        accessory.addSubview(field)
+        alert.accessoryView = accessory
+
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+
+        // Same focus mechanism as the other two prompts: initialFirstResponder is the deterministic
+        // part, the async hop places the caret in the pre-filled field.
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = field
+        DispatchQueue.main.async { [weak field, weak alertWindow] in
+            guard let field, let alertWindow else { return }
+            alertWindow.makeFirstResponder(field)
+            field.selectText(nil)
+        }
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var text = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if text.hasSuffix("%") { text.removeLast() }             // accepted, as on the CLI
+        text = text.trimmingCharacters(in: .whitespaces)
+        // A blank field, a decimal, or anything else unreadable = no change (see above). `0` is the
+        // exception that must parse: it is the numeric spelling of Never. A negative is refused rather
+        // than collapsed to Never by the clamp — a stray minus sign is a typo, not a policy decision.
+        guard let percent = Int(text), percent >= 0 else { return }
+        setBatteryThreshold(Double(percent) / Tuning.percentScale)
+    }
+
+    // Single point that changes the release threshold — the mutating gesture, so it persists, the same
+    // rule setLabelMode and the Keep Awake intent writers follow. Three things have to happen together:
+    //
+    //  - Clamp here too, not just at the call sites: this is the last line before the live sleep policy.
+    //  - Drop the override. It answered one question — "the battery is low, keep it awake anyway?" —
+    //    asked about the OLD threshold. Raising the release point to 30% at 25% charge must not inherit
+    //    a "yes" the user gave about 20%. (Setting a threshold is not itself an arm, so this never
+    //    *grants* the override either — grantKeepAwakeBatteryOverrideIfOffered stays gesture-scoped.)
+    //  - Apply it now. updateSleepPrevention() is what makes a live window pick the new point up
+    //    immediately; without it the change waits for whenever the next thermal/battery/power event
+    //    happens to fire, which is the latency conditionsDidChange() exists to avoid. It also does the
+    //    menu/bar refresh, so only the threshold group's own state is left to update here.
+    private func setBatteryThreshold(_ fraction: Double) {
+        let clamped = Tuning.clampedBatteryThreshold(fraction)
+        guard clamped != keepAwakeBatteryThreshold else { return }
+        keepAwakeBatteryThreshold = clamped
+        keepAwakeBatteryOverride = false
+        updateSleepPrevention()
+        refreshBatteryThresholdSelectionState()
+        persistState()
     }
 
     // Single point that changes the label mode: updates state, reconciles the slot, refreshes the menu,

@@ -37,7 +37,7 @@ Point `:3111` at `batteryChartLowThreshold`, `:4049` at the runtime value from S
 three comment blocks at `:222-238`, which currently describe the coupling as deliberate and shared.
 This step is independently verifiable: behavior identical, `swiftc` clean.
 
-## Step 1 — The runtime value and its bounds
+## Step 1 — The runtime value and its bounds — **DONE 2026-07-28**
 
 Stored property on the app class, next to the other keep-awake state (`:2162`):
 
@@ -56,7 +56,9 @@ static let batteryThresholdMax: Double = 1.0
 `KeepAwakeDuration.parse` documents at `:576-577`, for the same reason: this value can be baked into a
 login item, where a hard failure costs the user the whole app. Warn on stderr, then carry on.
 
-**Decide explicitly: allow "off".** Recommend yes, as a distinct value meaning *never release on
+**Decided (Step 1): "off" is allowed**, spelled as the value `0` (`Tuning.batteryThresholdOff`),
+deliberately outside `[min, max]` rather than min-minus-1% so it stays expressible. Original reasoning
+kept below. — Recommend yes, as a distinct value meaning *never release on
 battery charge*. Setting 6% is nearly the floor anyway, and a user who wants that wants the policy
 gone, not relocated. The 5% critical floor still applies and is **not** configurable — the roadmap's
 "Below 5% on battery the Mac sleeps regardless" known limit must stay literally true.
@@ -164,27 +166,44 @@ and confirm the 5% known-limit row still reads true), `CHANGELOG.md`.
 
 ## Status as of 2026-07-28
 
-**Step 0 done, uncommitted. Steps 1–5 not started.**
+**Steps 0 and 1 done. Steps 2–5 not started.**
 
-`Tuning.batteryLowThreshold` is gone, split into two constants that share the number 0.20 and
+**Step 0** split `Tuning.batteryLowThreshold` into two constants that share the number 0.20 and
 nothing else:
 
 | New constant | Consumer | Job |
 |---|---|---|
-| `batteryLowThresholdDefault` | `keepAwakeSuspension` | sleep policy — the default Step 1 makes configurable |
+| `batteryLowThresholdDefault` | `keepAwakeSuspension` (now only as the property's initial value) | sleep policy — the default Step 1 made configurable |
 | `batteryChartLowThreshold` | `refreshMenuMetrics` → `loadHistoryView.lowThreshold` | chart red band, fixed forever |
 
 The three comment blocks that described the coupling as deliberate now say the opposite, and
 `batteryCriticalThreshold`'s comment records why it is *not* configurable (the README's "below 5% the
 Mac sleeps regardless" guarantee must stay literally true whatever the release threshold is set to).
-`keepAwakeSuspension` carries a one-line marker pointing at Step 1.
 
-Verified: `swiftc -O -strict-concurrency=complete` warning-clean; `tests/qa.sh` ALL PASS, with §3a
-covering the preserved semantics directly — healthy holds, AC-at-15% holds, low releases, the 20%
-boundary releases, critical floor releases. Behavior is identical by construction (a rename plus a
-second constant of equal value).
+**Step 1** added, with no user-facing surface yet (that is Step 2 onward — the value is still always
+the default at runtime):
 
-**Next: Step 1** — the stored `keepAwakeBatteryThreshold` property and its bounds, then have
-`keepAwakeSuspension` read it instead of the default. Catch 6 (re-verify the chart's red band still
-turns at 20% with a non-default threshold) only becomes testable once Step 1 exists; at Step 0 both
-constants are 0.20, so it is trivially true and proves nothing.
+- `keepAwakeBatteryThreshold: Double` on the app class, next to `keepAwakeBatteryOverride`, initialized
+  to `Tuning.batteryLowThresholdDefault`.
+- `Tuning.batteryThresholdOff` (0) / `batteryThresholdMin` (0.06) / `batteryThresholdMax` (1.0), with
+  the min above the 5% floor so the floor is unreachable from any surface (Catch 3).
+- `Tuning.clampedBatteryThreshold(_:)` — the single clamp every future entry point funnels through.
+  `≤ 0` → off, non-finite → the default, otherwise pulled into `[min, max]`. Clamp, never reject.
+- `keepAwakeSuspension`'s low band now reads the property; the Step 1 marker comment is gone.
+
+Verified: `swiftc -O -strict-concurrency=complete` warning-clean; `tests/qa.sh` ALL PASS (§3a's five
+cases confirm the default-valued behavior is unchanged). Because no entry point exists yet, the *live*
+read was proved with two throwaway builds whose property default was patched to 0.30 and to off —
+30%: 25% releases (the default would hold) and 35% holds; off: 15% holds (the default would release)
+and 4% still releases, so the floor survives "off". Those four cases become real qa.sh cases in Step 2,
+once `--battery-threshold` can express them.
+
+One trap that first made the throwaway probe lie: a source copy built from `tmp/` bakes `#filePath`
+into `tmp/`, so `gifs/presets.json` doesn't resolve and the app dies at launch — which a
+caffeinate-presence check reads as a correct pause. `ln -sfn ../gifs tmp/gifs` fixes it; `AGENTS.md`'s
+compile-check bullet now records this.
+
+**Next: Step 2** — `--battery-threshold <pct|off>` and `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, whole
+percents only, `nil` distinct from `0`. Catch 6 (the chart's red band must still turn at 20% with a
+non-default threshold) becomes testable then — Step 1 can't set a non-default threshold from outside,
+and at Step 0 both constants were 0.20, so it proved nothing either.

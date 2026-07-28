@@ -67,6 +67,11 @@ Run from the repository root:
   ```bash
   swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o tmp/mblr-check
   ```
+  Compile the **root** source — the output binary may live anywhere, but a copy of the source built
+  from `tmp/` bakes `#filePath` into `tmp/`, so `gifs/presets.json` resolves to `tmp/gifs/` and the app
+  dies at launch on a manifest error. That failure mode is silent to a test harness that only checks
+  for a side effect (no caffeinate child reads as "correctly paused"), so build variant experiments
+  with `ln -sfn ../gifs tmp/gifs` in place.
 - To smoke-test at runtime, set `MENUBAR_LOAD_RUNNER_EXIT_AFTER=<seconds>` so the app self-terminates
   (exit 0) instead of blocking the AppKit run loop forever — no background/kill dance needed:
   ```bash
@@ -303,7 +308,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     what actually holds it awake (matches KeepingYouAwake's default). Auto-disengage conditions are a
     **reason, not a Bool** (`keepAwakeSuspension` → `KeepAwakeSuspension?`, `nil` = run): serious/critical
     thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤
-    `Tuning.batteryLowThresholdDefault` (20%) — deliberately NOT
+    `keepAwakeBatteryThreshold` (the live release point, default
+    `Tuning.batteryLowThresholdDefault` = 20%, `0` = never release on charge; every entry point clamps
+    through `Tuning.clampedBatteryThreshold`, and its min sits above the 5% floor so that floor stays
+    unreachable from any surface) — deliberately NOT
     memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
     not a sleep policy; the battery-low threshold already guards drain).
     Only `.batteryLow` is **overridable**: arming from the menu on a low battery sets

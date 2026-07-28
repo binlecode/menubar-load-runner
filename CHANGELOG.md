@@ -10,10 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATCH bumps apply to is:
 
 - **Launcher CLI** — the positional preset keyword or GIF path, and the flags
-  `--speed-multiplier`, `--label`, `--load-source`, `--keep-awake`, `--no-update-check`,
+  `--speed-multiplier`, `--label`, `--load-source`, `--keep-awake`, `--battery-threshold`,
+  `--no-update-check`,
   `--foreground` / `--no-detach`, `--detach`, `--extra`, `-h` / `--help`.
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
-  `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
+  `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`,
+  `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
   `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
   `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`,
   `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, and `MENUBAR_LOAD_RUNNER_STATE_FILE`.
@@ -25,6 +27,19 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+### Added
+
+- **The battery level that releases Keep Awake is now yours to set.** It has always been a hardwired
+  20%, which is wrong in both directions — too eager if you're finishing a render at 18%, too late if
+  you want the Mac to give up earlier. `--battery-threshold <pct|off>` (or
+  `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`) moves it: a whole percent from 6 to 100, or `off` to never
+  release on charge alone. Whole percents only — `20` or `20%`, not `0.20`, which reads as 0.2% under
+  one convention and 20% under the other. Out-of-range and unrecognized values warn on stderr and
+  launch anyway (clamped, or at the 20% default), because this can be baked into a login item.
+  **Below 5% on battery the Mac still sleeps regardless** — that floor is checked first and is not
+  configurable, which is also why the minimum is 6%. Menu control and persistence are still to come;
+  today it is a launch-time setting.
 
 ## [1.14.0] - 2026-07-26
 

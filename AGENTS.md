@@ -156,8 +156,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   literals. **Exception:** per-preset speed ranges live in `gifs/presets.json` (see the
   preset-registry note below), not `Tuning`. Width is not tuned per-preset — it derives from each GIF's
   aspect ratio at runtime (`currentGifAspect`/`slotLength`).
-- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--label`, `--keep-awake`, positional
-  preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). The positional arg is captured verbatim as
+- **`Config`** — CLI arg / env var parsing (`--speed-multiplier`, `--label`, `--keep-awake`,
+  `--battery-threshold`, positional
+  preset keyword or GIF path, `MENUBAR_LOAD_RUNNER_PATH` fallback). Values that can be baked into a
+  login item are **clamped, never rejected** — a bad number must not cost the user the app — but a
+  *shape* the parser can't read unambiguously is refused rather than guessed at: `--keep-awake`
+  requires a unit, and `--battery-threshold` takes whole percents (`20`, `20%`) and refuses `0.20`,
+  both because the wrong guess is an order-of-magnitude error the user can't see. The positional arg is captured verbatim as
   `presetOrPath`; when absent it is left empty and the app resolves the manifest's `defaultPreset`
   (`horse-white`). Keyword→path resolution
   happens in `MenuBarLoadRunnerApp.init` (matching `allPresets` by `key`, then by `path`), *not* in the shell
@@ -309,7 +314,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     **reason, not a Bool** (`keepAwakeSuspension` → `KeepAwakeSuspension?`, `nil` = run): serious/critical
     thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤
     `keepAwakeBatteryThreshold` (the live release point, default
-    `Tuning.batteryLowThresholdDefault` = 20%, `0` = never release on charge; every entry point clamps
+    `Tuning.batteryLowThresholdDefault` = 20%, `0` = never release on charge; set at launch by
+    `--battery-threshold` / `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD` via
+    `applyLaunchBatteryThresholdState()`, which **must** run before `startBatteryMonitoring()` or the
+    first suspension is computed against the default and then jumps. Every entry point clamps
     through `Tuning.clampedBatteryThreshold`, and its min sits above the 5% floor so that floor stays
     unreachable from any surface) — deliberately NOT
     memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,

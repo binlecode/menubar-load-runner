@@ -72,7 +72,12 @@ $BIN --keep-awake >/dev/null 2>&1;                  chk "--keep-awake no value" 
 $BIN --keep-awake off --help >/dev/null 2>&1;       chk "--keep-awake off accepted" 0 $?
 $BIN --keep-awake 3s --help >/dev/null 2>&1;        chk "--keep-awake seconds form" 0 $?
 $BIN --keep-awake 1h30m --help >/dev/null 2>&1;     chk "--keep-awake compound form" 0 $?
-for f in --speed-multiplier --label --load-source --keep-awake --show-all-sources --no-update-check; do
+# --battery-threshold: only the fatal contract is assertable without booting. Every *value* — garbage
+# and out-of-range included — is deliberately non-fatal (it clamps or falls back and launches, since
+# this can be baked into a login item), so which value each form resolves to is asserted by behavior
+# in §3a. A bare "rc=0, flag accepted" check here would restate that without observing anything.
+$BIN --battery-threshold >/dev/null 2>&1;           chk "--battery-threshold no value" 1 $?
+for f in --speed-multiplier --label --load-source --keep-awake --battery-threshold --show-all-sources --no-update-check; do
   $BIN --help 2>&1 | grep -q -- "$f" && { echo "  PASS --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL --help missing $f"; fail=$((fail+1)); }
 done
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?
@@ -138,12 +143,12 @@ echo "  lifecycle: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 # is used precisely BECAUSE it is not an override gesture, so these assert the raw conditions.
 section "§3a Keep Awake battery conditions [gui — needs WindowServer]"
 pass=0; fail=0
-ka(){ desc="$1"; force="$2"; expect="$3"          # expect: run | paused
+ka(){ desc="$1"; force="$2"; expect="$3"; shift 3  # expect: run | paused; rest = extra app args
   rm -f ./tmp/qa-ka-state.json
   MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-ka-state.json" \
   MENUBAR_LOAD_RUNNER_FORCE_BATTERY="$force" \
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 \
-    $BIN --keep-awake 30m >/dev/null 2>&1 &
+    $BIN --keep-awake 30m "$@" >/dev/null 2>&1 &
   kapid=$!
   sleep 3
   got=paused
@@ -160,6 +165,37 @@ ka "on AC at 15% -> holds"          15:ac      run
 ka "low battery -> releases"        15:battery paused
 ka "at 20% boundary -> releases"    20:battery paused
 ka "critical floor -> releases"     4:battery  paused
+# --battery-threshold relocates the release point (R5). Each case is chosen so the DEFAULT 20% would
+# give the opposite answer — otherwise it would pass whether or not the flag is wired up at all.
+ka "threshold 10 -> 15% holds"      15:battery run    --battery-threshold 10
+ka "threshold 30 -> 25% releases"   25:battery paused --battery-threshold 30
+ka "threshold 30% (sign form)"      25:battery paused --battery-threshold 30%
+ka "threshold off -> 15% holds"     15:battery run    --battery-threshold off
+ka "threshold off -> 4% releases"   4:battery  paused --battery-threshold off
+# The threshold is a BATTERY policy: on AC even a 100% threshold must not release, because the
+# onBattery guard is checked before the band. Getting this wrong would pause keep-awake on a plugged-in
+# Mac at any charge.
+ka "threshold 100 on AC -> holds"   50:ac      run    --battery-threshold 100
+ka "threshold 100 on battery"       95:battery paused --battery-threshold 100
+# A decimal is refused as ambiguous, not read as a fraction. 0.50 is chosen so a wrong reading is
+# visible: taken as 50% it would release at 30% charge; correctly refused it falls back to 20% and
+# holds. (0.20 can't test this — a misread would coincide with the default.)
+ka "decimal refused -> default"     30:battery run    --battery-threshold 0.50
+# 6% is the only charge that separates a clamped 2 (-> 6%, releases) from an unclamped one (2%, would
+# hold), and it sits above the 5% floor so the floor isn't what's being observed.
+ka "threshold 2 clamps up to 6%"    6:battery  paused --battery-threshold 2
+ka "garbage -> default, releases"   15:battery paused --battery-threshold banana
+# Env var, and the empty-value-is-absent rule (an empty env must not read as a value). Assigned
+# explicitly rather than as a `VAR=x ka …` prefix: an assignment prefixed onto a shell *function*
+# leaks into the shell afterwards, which would silently apply to every case below it.
+export MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD=10
+ka "env threshold 10 -> 15% holds"  15:battery run
+export MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD=
+ka "empty env -> default, releases" 15:battery paused
+# Flag beats env. Set to opposite sides of the charge so only one answer can be right.
+export MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD=10
+ka "flag beats env"                 25:battery paused --battery-threshold 30
+unset MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD
 rm -f ./tmp/qa-ka-state.json
 echo "  keep-awake conditions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 

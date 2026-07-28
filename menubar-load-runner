@@ -28,8 +28,8 @@ resolve_script_dir() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--no-update-check] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--no-update-check] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -60,6 +60,12 @@ Options:
                              (also via MENUBAR_LOAD_RUNNER_KEEP_AWAKE; switchable from the menu).
                              An armed window is saved and resumed on the next launch; passing this
                              flag -- even as 'off' -- overrides what was saved
+  --battery-threshold <pct|off>
+                             Charge at or below which Keep Awake releases on battery (default 20;
+                             'off' never releases on charge alone). Whole percents only -- 20 or 20%,
+                             not 0.20; out-of-range values are clamped to 6-100
+                             (also via MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD). Below 5% on battery
+                             the Mac sleeps regardless -- that floor is not configurable
   --no-update-check          Skip the launch check for a newer release (also via MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0)
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)

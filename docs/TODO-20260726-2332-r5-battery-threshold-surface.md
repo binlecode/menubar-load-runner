@@ -63,7 +63,7 @@ battery charge*. Setting 6% is nearly the floor anyway, and a user who wants tha
 gone, not relocated. The 5% critical floor still applies and is **not** configurable — the roadmap's
 "Below 5% on battery the Mac sleeps regardless" known limit must stay literally true.
 
-## Step 2 — CLI and env
+## Step 2 — CLI and env — **DONE 2026-07-28**
 
 `--battery-threshold <pct|off>`, env `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`. Parse in the `Config`
 arg switch (`:690`) on the shape of `--speed-multiplier` (`:695-701`): `guard let value =
@@ -166,7 +166,7 @@ and confirm the 5% known-limit row still reads true), `CHANGELOG.md`.
 
 ## Status as of 2026-07-28
 
-**Steps 0 and 1 done. Steps 2–5 not started.**
+**Steps 0, 1 and 2 done. Steps 3–5 not started.**
 
 **Step 0** split `Tuning.batteryLowThreshold` into two constants that share the number 0.20 and
 nothing else:
@@ -203,7 +203,32 @@ into `tmp/`, so `gifs/presets.json` doesn't resolve and the app dies at launch �
 caffeinate-presence check reads as a correct pause. `ln -sfn ../gifs tmp/gifs` fixes it; `AGENTS.md`'s
 compile-check bullet now records this.
 
-**Next: Step 2** — `--battery-threshold <pct|off>` and `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, whole
-percents only, `nil` distinct from `0`. Catch 6 (the chart's red band must still turn at 20% with a
-non-default threshold) becomes testable then — Step 1 can't set a non-default threshold from outside,
-and at Step 0 both constants were 0.20, so it proved nothing either.
+**Step 2** shipped the launch surface: `--battery-threshold <pct|off>` +
+`MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, parsed by `Config.parseBatteryThreshold` and applied by
+`applyLaunchBatteryThresholdState()` (before `startBatteryMonitoring()`, per the ordering rule above).
+
+- **Deviation from this file's spec, deliberate:** a trailing `%` is *accepted* (`20%` ≡ `20`). The
+  spec lumped it in with `0.20`, but the stated reason — an unguessable order-of-magnitude ambiguity —
+  only applies to the decimal. `20%` removes ambiguity rather than adding it, so refusing a form the
+  user naturally types bought nothing. `0.20` is still refused, and `0` is accepted as the numeric
+  spelling of off.
+- Out of range → clamped with a stderr warning naming the valid band and the non-configurable 5%
+  floor. Unparseable → the **default**, not off and not absent: a garbage value baked into a
+  LaunchAgent must not silently disable the release policy, and like `--keep-awake` it still counts as
+  "the flag was given" so it overrides (Step 3's) saved setting rather than half-applying.
+- Empty env value = absent, matching `--label` and qa.sh §3b's rule.
+
+Verified: `swiftc` warning-clean, `tests/qa.sh` ALL PASS. §3a grew from 5 cases to 18, all behavioral
+(caffeinate present or not under a pinned power state) — every threshold case is chosen so the 20%
+default gives the *opposite* answer, and two of them were run against a build with the apply call
+removed to confirm they actually fail when the flag is unwired. The `%` form, `off` + the 5% floor,
+AC-ignores-the-threshold at 100%, the 6% clamp (observed at exactly 6% charge, the only charge that
+separates clamped from unclamped), decimal-refused-not-misread (`0.50` at 30%), garbage→default, env,
+empty env, and flag-beats-env are each one case. §2 keeps only the fatal contract
+(`--battery-threshold` with no value → rc 1); the rc-0 "flag accepted" checks were dropped as
+non-functional — §3a asserts what each form resolves to, which is the property that matters.
+
+**Next: Step 3** — persistence (`PersistedState.Settings.batteryThreshold`, composed in
+`persistState()`, restored in `applyLaunchBatteryThresholdState()` under the CLI). Catch 6 (the
+chart's red band must still turn at 20% with a non-default threshold) is testable as of Step 2 but is
+a *visual* check — it belongs in the interactive spot-check when the menu surface lands in Step 4.

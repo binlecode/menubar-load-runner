@@ -136,7 +136,7 @@ grep -q "Current version: \*\*$VER\*\*" README.md \
 grep -q ">v$VER<" docs/cover.html \
   && echo "  PASS cover badge shows $VER" || echo "  FAIL cover badge missing $VER"
 # --help must document every current flag (so removed flags don't linger, new ones aren't hidden):
-for f in --speed-multiplier --label --load-source --keep-awake --show-all-sources --no-update-check; do
+for f in --speed-multiplier --label --load-source --keep-awake --battery-threshold --show-all-sources --no-update-check; do
   ./tmp/mblr-check --help 2>&1 | grep -q -- "$f" && echo "  PASS --help lists $f" || echo "  FAIL --help missing $f"
 done
 ```
@@ -269,8 +269,17 @@ rm -rf "$HOME/Library/Application Support/menubar-load-runner"      # clean up t
 needs a real low battery — or any battery. The scripted matrix is `tests/qa.sh` §3a; run it directly:
 
 ```bash
-tests/qa.sh --gui        # includes §3a: 5 cases, asserts caffeinate presence per power state
+tests/qa.sh --gui        # includes §3a: 18 cases, asserts caffeinate presence per power state
 ```
+
+Thirteen of those cases cover `--battery-threshold` (R5). Each one is chosen so the **default** 20%
+would give the opposite answer — a case both settings agree on would pass whether or not the flag is
+wired up at all. The set: the flag and the env var relocating the release point in both directions,
+the `20%` sign form, flag-beats-env, `off` (and the 5% floor still releasing under it), the threshold
+being ignored on AC at any value, a low value clamping up to 6%, and the two fallbacks (a decimal
+`0.50` refused as ambiguous rather than read as 50%, garbage falling back to the default rather than
+to off). If you change the parser, re-derive the charges: the discrimination is in the numbers, not
+in the assertions.
 
 Or by hand, one state at a time. `--keep-awake` is used deliberately because it is **not** an override
 gesture, so these assert the raw conditions:
@@ -287,6 +296,10 @@ probe 20:battery   # released  — boundary, inclusive
 probe 15:battery   # released  — low, and the flag is not a gesture
 probe 4:battery    # released  — below the 5% floor
 ```
+
+The same `probe` with a threshold appended tests the configured point by hand — e.g.
+`probe(){ … ./tmp/mblr-check --keep-awake 30m --battery-threshold 10 …; }` then `probe 15:battery`
+holds where the default releases.
 
 **The override is interactive** — only a live menu click sets it, by design. Once per release:
 

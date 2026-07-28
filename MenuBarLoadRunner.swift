@@ -219,22 +219,34 @@ private enum Tuning {
     // readouts are always short and unaffected.
     static let labelMaxChars = 24
 
-    // Keep Awake auto-disengage: on battery power at or below this charge fraction
-    // we kill `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
-    static let batteryLowThreshold: Double = 0.20
+    // Keep Awake auto-disengage: on battery power at or below this charge fraction we kill
+    // `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
+    //
+    // SLEEP POLICY ONLY, and deliberately a *default* rather than the value read at runtime: this is
+    // the release point the user can relocate, so the sleep path must read the live setting and never
+    // this constant. It shares the number 0.20 with batteryChartLowThreshold and nothing else —
+    // the two were one constant until R5, which is why the split has its own step: moving the release
+    // point must not recolor the fuel gauge.
+    static let batteryLowThresholdDefault: Double = 0.20
 
-    // The floor under the override. Arming Keep Awake *while already* below batteryLowThreshold is an
-    // explicit "I know, do it anyway" and is honored (keepAwakeBatteryOverride) — otherwise arming was
-    // a silent no-op, the bug this exists to fix. But an override is not a licence to drain to a hard
-    // power-off, so it stops being honored here and keep-awake releases regardless of intent.
-    // Sleep policy ONLY: the battery trace chart's red band deliberately still keys off
-    // batteryLowThreshold (see batteryChargeMediumThreshold) — these two must not be conflated, or
-    // changing the sleep floor would silently recolor the sparkline.
+    // The floor under the override. Arming Keep Awake *while already* below the release threshold is
+    // an explicit "I know, do it anyway" and is honored (keepAwakeBatteryOverride) — otherwise arming
+    // was a silent no-op, the bug this exists to fix. But an override is not a licence to drain to a
+    // hard power-off, so it stops being honored here and keep-awake releases regardless of intent.
+    // NOT user-configurable, and tested before the low band (see keepAwakeSuspension): the README's
+    // "below 5% the Mac sleeps regardless" guarantee has to stay literally true whatever the user
+    // sets the release threshold to.
     static let batteryCriticalThreshold: Double = 0.05
 
     // Battery trace-chart color bands (charge fraction). The chart is a fuel gauge for the battery
-    // source — low = alert — so it reuses batteryLowThreshold (≤20% → red) plus this mid band
-    // (≤40% → yellow, else green), mirroring the macOS low-battery convention.
+    // source — low = alert — so ≤20% → red plus this mid band (≤40% → yellow, else green), mirroring
+    // the macOS low-battery convention.
+    //
+    // CHART ONLY, and fixed. It is not the sleep threshold: the red band means "macOS considers this
+    // low", which is a constant of the platform, while the release point is a user preference. Wiring
+    // the chart to the sleep setting would make picking a 10% release repaint the gauge and quietly
+    // redefine what red means.
+    static let batteryChartLowThreshold: Double = 0.20
     static let batteryChargeMediumThreshold: Double = 0.40
 
     // Keep-awake track line tints — a warm/cool pairing (design POC). Each option carries two tones
@@ -3108,7 +3120,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // fraction (high = alert) at the CPU State thresholds. See chartSample(forDriver:).
         if activeLoadSource == .battery {
             loadHistoryView.colorPolarity = .lowIsHot
-            loadHistoryView.lowThreshold = Tuning.batteryLowThreshold
+            loadHistoryView.lowThreshold = Tuning.batteryChartLowThreshold
             loadHistoryView.mediumThreshold = Tuning.batteryChargeMediumThreshold
         } else {
             loadHistoryView.colorPolarity = .highIsHot
@@ -4046,7 +4058,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if fraction <= Tuning.batteryCriticalThreshold {
             return .batteryCritical(percent: batteryState.percent)
         }
-        if fraction <= Tuning.batteryLowThreshold {
+        // Step 1 replaces this with the live keepAwakeBatteryThreshold; reading the default keeps
+        // Step 0 a pure rename with identical behavior.
+        if fraction <= Tuning.batteryLowThresholdDefault {
             return .batteryLow(percent: batteryState.percent)
         }
         return nil

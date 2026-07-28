@@ -302,8 +302,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     sleeps the system follows it down, so the Mac slept with Keep Awake on. Preventing display sleep is
     what actually holds it awake (matches KeepingYouAwake's default). Auto-disengage conditions are a
     **reason, not a Bool** (`keepAwakeSuspension` → `KeepAwakeSuspension?`, `nil` = run): serious/critical
-    thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤ `Tuning.batteryLowThreshold`
-    (20%) — deliberately NOT
+    thermal, battery ≤ `Tuning.batteryCriticalThreshold` (5%), or battery ≤
+    `Tuning.batteryLowThresholdDefault` (20%) — deliberately NOT
     memory pressure (sleep costs negligible RAM), or Low Power Mode (a performance policy,
     not a sleep policy; the battery-low threshold already guards drain).
     Only `.batteryLow` is **overridable**: arming from the menu on a low battery sets

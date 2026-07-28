@@ -599,7 +599,7 @@ persistence + `--keep-awake` v1.13.0):
 - [ ] Auto-disengage: on battery below ~20% (or serious/critical thermal) the line hides and caffeinate
       is suspended while the chosen color stays marked (intent preserved); it re-engages when the
       condition clears. Hard to force by hand — spot-check the color/track behavior and trust the code path.
-      If you do force it (a test build with a raised `Tuning.batteryLowThreshold`), the resume must
+      If you do force it (a test build with a raised `Tuning.batteryLowThresholdDefault`), the resume must
       respawn with the **remaining** time, not the original window, and the **Off** mark must not move.
 - [ ] Selection marks (Presets, Keep Awake) render as a small solid **dot**, not the native checkmark
       (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.

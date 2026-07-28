@@ -654,6 +654,11 @@
             <span class="mono">on</span>) arms it at launch, so it can be baked straight into the
             login item. A unit is required — a bare number reads as either minutes or hours, and guessing
             wrong is a 60× error in how long your Mac stays awake.</li>
+          <li><b>Move the battery cliff.</b> <span class="mono">--battery-threshold 10</span> releases at
+            10% instead of 20%; <span class="mono">off</span> never releases on charge alone. Whole
+            percents only — <span class="mono">0.20</span> reads as 0.2% or 20% depending on who's
+            asking, so it's refused rather than guessed. A bad value clamps or falls back <i>and still
+            launches</i>: a typo in your login item shouldn't cost you the app.</li>
           <li>A thin line rides the bottom edge of the icon. The <span class="mono">Keep&nbsp;Awake</span>
             submenu is one radio group — <b>Off</b> plus five track-line tints
             (<b>Dusty&nbsp;Teal</b> default, <b>Sand</b>, <b>Graphite</b>, <b>Mauve</b>, <b>Sage</b>):
@@ -696,7 +701,7 @@
         </div>
         <div class="awake-conditions" aria-label="Simulate an auto-disengage condition">
           <span>try a condition →</span>
-          <button class="cond" type="button" data-cond="battery" aria-pressed="false">battery ≤ 20%</button>
+          <button class="cond" type="button" data-cond="battery" aria-pressed="false">battery ≤ 20% (default)</button>
           <button class="cond" type="button" data-cond="thermal" aria-pressed="false">serious thermal</button>
         </div>
       </div>

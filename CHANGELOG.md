@@ -29,6 +29,20 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+### Changed
+
+- **`Other Assertions` now shows one row per owner, listing every assertion type that process holds** —
+  `caffeinate — PreventUserIdleDisplaySleep, PreventUserIdleSystemSleep ×2` — instead of a separate row
+  per owner+type. Nothing is lost: the `×N` count moved onto the type, so "which types, and how many of
+  each" still reads straight off the row. The reason is density on real data: `caffeinate -di` holds
+  **two** assertions, so a single process burned two of the four row slots, and the first live reading
+  after release (Brave Browser, caffeinate, coreaudiod) needed five rows and spilled into the
+  `…and N more` overflow. Grouped by owner, the same reading is three rows and fits.
+
+  Retention is deliberately **not** regrouped — it stays keyed on owner+type. The blink it exists to
+  prevent is an owner vanishing across a renewal gap; a per-owner window would instead let an individual
+  type flicker inside an owner that never left.
+
 ## [1.17.0] - 2026-07-29
 
 The Keep Awake menu stops being silent about the rest of the machine.

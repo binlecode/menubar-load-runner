@@ -290,6 +290,8 @@ section "§5 adaptive scaler [core]"
 swiftc tests/scaler.swift -o tmp/scaler 2>&1 && ./tmp/scaler || total_fail=$((total_fail+1)); rm -f tmp/scaler
 section "§5 semver + update-tag parse [core]"
 swiftc tests/semver.swift -o tmp/semver 2>&1 && ./tmp/semver || total_fail=$((total_fail+1)); rm -f tmp/semver
+section "§5 restart-after-update [core]"
+swiftc tests/restart.swift -o tmp/restart 2>&1 && ./tmp/restart || total_fail=$((total_fail+1)); rm -f tmp/restart
 else
 skip "§5 readers + adaptive scaler [core]" "core tier not selected (--gui)"
 fi

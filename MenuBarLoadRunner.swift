@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.15.1"
+    static let version = "1.15.2"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -152,6 +152,143 @@ private enum UpdateChecker {
                 return SemVer(String(line[range.upperBound...]))
             }
             .max()
+    }
+}
+
+// Restarting the app after a self-update. The app can't just re-exec itself: `git pull` moves the
+// *source*, and it is the launcher script that notices the source is newer than the binary and re-runs
+// `swiftc` — so coming back on the new version means invoking whatever started us. That differs per
+// install, and the difference is not inferrable from inside the process (a detached run and a
+// launchd-supervised one both reparent to pid 1), so each launch path leaves a signal:
+//   - launchd: no env marker works — a LaunchAgent job's XPC_SERVICE_NAME is "0", not the job label
+//     (verified; it is the obvious-looking signal and it is wrong). Instead launchd is *asked*: it
+//     reports the job's pid, and because the plist runs the launcher which `exec`s the binary, that pid
+//     IS ours when we are the agent's process.
+//   - the launcher: exports MENUBAR_LOAD_RUNNER_LAUNCHER / _LAUNCH_MODE, so a detached run knows the
+//     script to re-run.
+// Anything else — a `--foreground` run, a raw binary, an unrecognized environment — is `.unsupported`
+// and simply gets no Restart button: a foreground run belongs to the shell waiting on it.
+private enum Restarter {
+    enum Mode: Equatable {
+        case launchAgent
+        case launcher(path: String)
+        case unsupported
+    }
+
+    // Must match `LABEL` in scripts/install-login-item.sh — the plist that owns the login-item job.
+    static let launchAgentLabel = "ai.bera.menubarloadrunner"
+
+    // Pure so the mapping is testable without a launchd job or a real launcher (tests/restart.swift);
+    // the one impure question ("am I the agent's process?") is answered by the caller and passed in.
+    static func mode(environment: [String: String], isLaunchAgentJob: Bool) -> Mode {
+        if isLaunchAgentJob { return .launchAgent }
+        guard environment["MENUBAR_LOAD_RUNNER_LAUNCH_MODE"] == "detached",
+              let launcher = environment["MENUBAR_LOAD_RUNNER_LAUNCHER"], !launcher.isEmpty else {
+            return .unsupported
+        }
+        return .launcher(path: launcher)
+    }
+
+    // Asks launchd whether the login-item job's process is this one. `launchctl list <label>` prints
+    // a `"PID" = <n>;` line for a running job (absent when the job is loaded but idle, and the whole
+    // call fails when no such job exists — both correctly read as "not the agent").
+    static func isLaunchAgentJob() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["list", launchAgentLabel]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return false }
+        return reportedPID(inLaunchctlList: text) == ProcessInfo.processInfo.processIdentifier
+    }
+
+    // Pure parse of `launchctl list <label>` output. nil when there is no PID line (job idle).
+    static func reportedPID(inLaunchctlList text: String) -> Int32? {
+        for line in text.split(whereSeparator: \.isNewline) where line.contains("\"PID\"") {
+            let digits = line.filter(\.isNumber)
+            return digits.isEmpty ? nil : Int32(digits)
+        }
+        return nil
+    }
+
+    // The argv to run *after* this process exits. For the agent, `kickstart` on a job that is no
+    // longer running starts it fresh (no `-k`, which would SIGKILL us mid-quit and skip the clean
+    // shutdown that kills the caffeinate child). For a launcher run, the launcher itself — with
+    // arguments, which is why `.launchAgent` loses menu-chosen state a launcher run keeps: the plist's
+    // baked ProgramArguments are fixed and nothing here can inject into them.
+    static func restartCommand(mode: Mode, appArguments: [String], uid: uid_t) -> [String]? {
+        switch mode {
+        case .launchAgent:
+            return ["/bin/launchctl", "kickstart", "gui/\(uid)/\(launchAgentLabel)"]
+        case .launcher(let path):
+            return [path] + appArguments
+        case .unsupported:
+            return nil
+        }
+    }
+
+    // The argv that reproduces the configuration RUNNING NOW, not the one originally typed: preset,
+    // driving source, label, battery threshold and the Other Sources disclosure are all menu-mutable,
+    // and a Restart that reverted them would read as the app forgetting what you just set. Keep Awake
+    // is the exception — its intent is in the state file and the new process restores it, so only an
+    // *indefinite* window needs a flag, because that restore deliberately refuses to resume one (a
+    // launch with nobody present must not hold the Mac awake forever; a user-initiated restart is a
+    // different situation, and passing the flag is how that intent survives).
+    static func appArguments(
+        presetOrPath: String,
+        loadSourceKey: String,
+        labelArgument: String,
+        batteryThresholdPercent: Int,
+        speedMultiplierOverride: Double?,
+        showAllSources: Bool,
+        keepAwakeIndefinite: Bool
+    ) -> [String] {
+        var args: [String] = []
+        if !presetOrPath.isEmpty { args.append(presetOrPath) }
+        args += ["--load-source", loadSourceKey]
+        args += ["--label", labelArgument]
+        args += ["--battery-threshold", batteryThresholdPercent <= 0 ? "off" : String(batteryThresholdPercent)]
+        if let speedMultiplierOverride {
+            args += ["--speed-multiplier", String(speedMultiplierOverride)]
+        }
+        if showAllSources { args.append("--show-all-sources") }
+        if keepAwakeIndefinite { args += ["--keep-awake", "on"] }
+        return args
+    }
+
+    // Hands the restart to a detached `/bin/sh` that waits for our pid to disappear and then runs
+    // `command`. It cannot be done in-process: the launcher's singleton guard refuses while we are
+    // still alive, and launchd won't restart a job whose process is still up. The wait is bounded
+    // (~30s) so a quit that hangs leaves no shell spinning forever — and if it does time out, the
+    // command runs anyway and the singleton guard (or launchd) declines it harmlessly. Args go through
+    // `sh`'s argv, never interpolated into the script, so a GIF path with a space or a quote in it
+    // can't reshape the command.
+    static func spawnRestart(command: [String]) -> Bool {
+        guard !command.isEmpty else { return false }
+        let script = """
+        pid=$1; shift; i=0
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i+1)); done
+        exec "$@"
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script, "sh", String(ProcessInfo.processInfo.processIdentifier)] + command
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        return true
     }
 }
 
@@ -535,6 +672,17 @@ private enum MenuBarLabel: Equatable {
     var persistedCustomText: String? {
         if case .custom(let text) = self { return text }
         return nil
+    }
+
+    // The `--label` value that reproduces this mode, for the restart re-exec. Round-trips through
+    // `parse` for every mode; a custom label reading literally "off" or "value" collapses to that
+    // mode, which is the same thing typing it on the command line has always done.
+    var launchArgument: String {
+        switch self {
+        case .off: return "off"
+        case .value: return "value"
+        case .custom(let text): return text
+        }
     }
 
     // nil means "nothing usable saved" — an absent block, an unrecognized mode, or `custom` with no
@@ -3029,16 +3177,68 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     self.updateCheckInFlight = false
                     self.refreshUpdateStatus()
                     if result.ok {
-                        self.informational(
-                            title: "Updated to \(latest.tagString)",
-                            message: "Restart MenuBar Load Runner to load the new version — quit from the menu and relaunch (it also starts fresh at next login)."
-                        )
+                        self.showUpdateSucceeded(version: latest)
                     } else {
                         self.showUpdateFailed(message: result.message)
                     }
                 }
             }
         }
+    }
+
+    // Update applied. The pull moved the source; the *running* process is still the old binary, so the
+    // alert's job is to get the user onto the new one. Restart is offered only when we know how to come
+    // back (`Restarter.Mode`) — otherwise the alert says what to do by hand, which is all there was
+    // before. Resolved fresh on each alert rather than cached at launch: a login item can be installed
+    // while the app runs, and this is a click-gated path where one `launchctl list` costs nothing.
+    private func showUpdateSucceeded(version: SemVer) {
+        let title = "Updated to \(version.tagString)"
+        let mode = Restarter.mode(
+            environment: ProcessInfo.processInfo.environment,
+            isLaunchAgentJob: Restarter.isLaunchAgentJob()
+        )
+        let manualHint = "Restart MenuBar Load Runner to load the new version — quit from the menu and relaunch (it also starts fresh at next login)."
+        guard mode != .unsupported else {
+            informational(title: title, message: manualHint)
+            return
+        }
+        if suppressModalAlerts {
+            fputs("\(title): \(manualHint)\n", stderr)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        if let icon = makeMenuAlertIcon() {
+            alert.icon = icon
+        }
+        alert.informativeText = "Restart now to load it. The app quits and comes straight back — your Keep Awake window, label, and settings carry over."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restart")   // first = default (Return)
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        restart(mode: mode)
+    }
+
+    // Spawns the waiter that relaunches us, then quits normally. Order matters: `terminate` runs
+    // applicationWillTerminate, which persists intent and kills the caffeinate child — the waiter is
+    // blocked on our pid until that has happened, so the new process reads a settled state file and
+    // the launcher's singleton guard sees no live instance.
+    private func restart(mode: Restarter.Mode) {
+        let arguments = Restarter.appArguments(
+            presetOrPath: activePreset?.key ?? activeGifPath,
+            loadSourceKey: activeLoadSource.key,
+            labelArgument: labelMode.launchArgument,
+            batteryThresholdPercent: Int((keepAwakeBatteryThreshold * Tuning.percentScale).rounded()),
+            speedMultiplierOverride: config.speedMultiplierOverride,
+            showAllSources: showAllSources,
+            keepAwakeIndefinite: sleepPreventer.isEnabled && keepAwakeDeadline == nil
+        )
+        guard let command = Restarter.restartCommand(mode: mode, appArguments: arguments, uid: getuid()),
+              Restarter.spawnRestart(command: command) else {
+            showRuntimeError("Couldn't restart automatically. Quit from the menu and relaunch to load the new version.")
+            return
+        }
+        NSApp.terminate(nil)
     }
 
     // Update failed (dirty tree / non-fast-forward / conflict): surface git's message and offer the

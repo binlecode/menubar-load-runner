@@ -629,6 +629,16 @@ persistence + `--keep-awake` v1.13.0):
 - [ ] **Update check**: on launch (network permitting) a **Check for Updates…** item is present; when a
       newer release tag exists it becomes **Update available: vX.Y.Z**. Relaunching with
       `--no-update-check` (or `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0`) removes the check (no network hit).
+- [ ] **Restart after update** (needs a real newer tag, so this is a once-per-release check on the
+      *previous* version's binary). The success alert offers **Restart**; clicking it quits and the app
+      comes back within a couple of seconds on the new version (confirm via **About**). Check the state
+      carry-over in the same click: switch the preset and load source from the menu first, and after the
+      restart they should still be what you picked — for a **detached** run they are passed on the
+      re-exec, whereas under the **LaunchAgent** they correctly reset to the plist's baked args.
+      Launch with `--foreground` and the alert must show **no** Restart button (that run belongs to the
+      shell). One thing to watch for rather than assume: exactly one instance afterwards
+      (`pgrep -U "$(id -u)" -fl MenuBarLoadRunner`) — the relaunch waits on the old pid precisely
+      because the launcher's singleton guard would otherwise refuse.
 - [ ] **`Settings ▸ Menu Bar Label`** (Off / Live Value / Custom Text…) — note it is one level deeper
       than it was before the Settings restructure. Switching to Live Value shows a
       second menu-bar slot with the active source's compact reading (`CPU 47%`, `MEM 63%`, `GPU 30%`,

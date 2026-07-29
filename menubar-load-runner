@@ -3,7 +3,13 @@ set -euo pipefail
 
 readonly APP_CMD_NAME="menubar-load-runner/menubar-load-runner"
 
-resolve_script_dir() {
+# Absolute, symlink-resolved path of THIS script. The app re-execs it for the update prompt's
+# Restart button (exported as MENUBAR_LOAD_RUNNER_LAUNCHER below), and it is also where the
+# script dir comes from — one resolution, so the two can't disagree. Resolving through the
+# symlink matters: the PATH entry install.sh creates is ~/.local/bin/menubar-load-runner
+# pointing into the install dir, and a restart has to run the real file, not the link's name
+# joined to the real dir.
+resolve_script_path() {
   local source dir
   # In zsh functions, $0 is the function name; %x is the current script path.
   source="${(%):-%x}"
@@ -22,7 +28,8 @@ resolve_script_dir() {
     [[ "$source" != /* ]] && source="$dir/$source"
   done
 
-  cd -P -- "$(dirname -- "$source")" && pwd
+  dir="$(cd -P -- "$(dirname -- "$source")" && pwd)" || return 1
+  print -- "$dir/${source:t}"
 }
 
 print_help() {
@@ -104,13 +111,14 @@ main() {
     exit 127
   fi
 
-  local script_dir swift_module_cache
+  local script_dir launcher_path swift_module_cache
   local launch_detached=1
   local allow_extra=0
   local log_file pid
   local -a passthrough_args swift_cmd
 
-  script_dir="$(resolve_script_dir)"
+  launcher_path="$(resolve_script_path)"
+  script_dir="${launcher_path:h}"
   swift_module_cache="${SWIFT_MODULE_CACHE:-/tmp/swift-module-cache}"
 
   passthrough_args=()
@@ -186,10 +194,18 @@ main() {
     fi
   fi
 
+  # MENUBAR_LOAD_RUNNER_LAUNCHER / _LAUNCH_MODE are how the app answers "can I restart myself, and
+  # how" for the update prompt's Restart button — it cannot infer that on its own, because a
+  # detached run and a launchd-supervised one both reparent to pid 1. `detached` means "re-exec this
+  # launcher once I've exited"; `attached` means the caller is waiting on us, so the app offers a
+  # restart only when launchd is the caller (it checks XPC_SERVICE_NAME for that) and never steals a
+  # --foreground run out from under the shell that started it.
   if (( launch_detached )); then
     log_file="${MENUBAR_LOAD_RUNNER_LOG_FILE:-/tmp/menubar-load-runner.log}"
     mkdir -p -- "$(dirname -- "$log_file")"
     MENUBAR_LOAD_RUNNER_BIN_NAME="$APP_CMD_NAME" \
+    MENUBAR_LOAD_RUNNER_LAUNCHER="$launcher_path" \
+    MENUBAR_LOAD_RUNNER_LAUNCH_MODE="detached" \
       nohup "${swift_cmd[@]}" >>"$log_file" 2>&1 < /dev/null &
     pid=$!
     disown "$pid" 2>/dev/null || true
@@ -198,6 +214,8 @@ main() {
   fi
 
   MENUBAR_LOAD_RUNNER_BIN_NAME="$APP_CMD_NAME" \
+  MENUBAR_LOAD_RUNNER_LAUNCHER="$launcher_path" \
+  MENUBAR_LOAD_RUNNER_LAUNCH_MODE="attached" \
     exec "${swift_cmd[@]}"
 }
 

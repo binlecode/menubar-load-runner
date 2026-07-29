@@ -28,6 +28,39 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-07-28
+
+"Updated — now go quit and relaunch it yourself" was the weakest sentence in the app. The update prompt
+now has a **Restart** button, and the reason it took until now is worth stating: the app can't simply
+re-exec itself, because the pull moves the *source* and it is the launcher that recompiles. Coming back
+on the new version means re-invoking whatever started you — which the process cannot work out on its
+own, since a detached run and a login-item run both reparent to pid 1. So each launch path now leaves a
+signal, and launchd is *asked* rather than guessed at.
+
+### Added
+
+- **A `Restart` button on the post-update alert.** Click it and the app quits and comes straight back on
+  the new version — no hunting for `Exit` and a terminal. It appears for a normal (detached) launcher run
+  and for a start-at-login LaunchAgent; a `--foreground` run belongs to the shell that started it, so
+  there the alert still says to quit and relaunch by hand.
+
+  What carries across the restart: everything already saved to disk (Keep Awake window and tint, menu-bar
+  label, battery threshold) **plus** the things that are not — the preset, load source, fixed
+  `--speed-multiplier`, and the Other Sources disclosure you picked from the menu are passed on the
+  re-exec, so a Restart doesn't quietly revert what you just set. An **indefinite** Keep Awake window is
+  passed explicitly too, because the ordinary restore path refuses to resume one on purpose (a launch with
+  nobody present must not hold the Mac awake forever) — a restart you asked for is a different situation.
+
+  One documented asymmetry: under the LaunchAgent the relaunch uses the arguments baked into the login
+  item, since nothing can inject into a plist's `ProgramArguments`. Menu-chosen preset/source reset to
+  those there; everything saved to disk still carries over.
+
+### Changed
+
+- The launcher now exports `MENUBAR_LOAD_RUNNER_LAUNCHER` (its own symlink-resolved path) and
+  `MENUBAR_LOAD_RUNNER_LAUNCH_MODE` (`detached`/`attached`), which is how the app knows whether — and
+  how — it can restart itself. Neither affects normal operation.
+
 ## [1.15.1] - 2026-07-28
 
 A one-click update that can't update is worse than no update button, and on a checkout that was copied

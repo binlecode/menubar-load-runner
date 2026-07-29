@@ -57,6 +57,7 @@ Re-propose only with a concrete report of the behavior being missed.
 | Clamshell sleep can't be prevented | `caffeinate` cannot inhibit it. |
 | Below 5% on battery the Mac sleeps regardless | Deliberate floor under the arm-anyway override: an explicit "anyway" is honored from 20% to 5%, not into a hard power-off. |
 | The interpreted-`swift` fallback isn't singleton-guarded | Runs only when `swiftc` fails; the guard matches the compiled binary's path. |
+| The menu-bar label may not sit adjacent to the icon on a **full** bar | macOS owns status-item placement and offers no reorder API. Verified 2026-07-29: on a notched built-in display, 6/6 runs scattered the three items (`icon=908 right=955 left=1117`, foreign icons between) while the external bar placed the same build correctly 100% of the time. Creation order still decides *intent*; the bar decides the outcome. The v1.16.0 no-jitter guarantee is unaffected (fixed width + no icon movement held throughout). `tests/qa.sh` §3c reports NOTE instead of FAIL when it detects this, so adjacency goes **unverified** on such a machine — re-run on a roomy bar. |
 
 ## Verification debt
 

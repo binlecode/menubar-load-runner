@@ -144,6 +144,19 @@ echo "  lifecycle: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 # Assertions are on RELATIVE geometry, deliberately: an unrelated menu-bar change (another app's icon
 # appearing, a display change) shifts the whole group at once — observed mid-run during development —
 # and absolute x would read that as jitter. Adjacency and constant width are what the design promises.
+#
+# ADJACENCY IS CONDITIONAL, and it took a false failure to learn why. macOS decides where a status item
+# goes, there is no reorder API, and on a bar with no room left it does NOT keep a process's items
+# together: on this developer's notched built-in display all six runs placed ours as
+# icon=908 right=955 left=1117, with other apps' icons interleaved — while the roomy external display
+# placed the same build correctly. So the section detects that case geometrically (group span vs the sum
+# of the three widths: equal = one contiguous run; wider = foreign items inside the group) and reports
+# NOTE instead of FAIL, because a bar that scattered the items cannot answer the question being asked.
+# Width-constancy and icon-relative-stability — the v1.16.0 no-jitter promise — are asserted either way,
+# and they held throughout the scattered runs. The cost is real: on a machine that always scatters,
+# adjacency goes UNVERIFIED here, so re-run where the items land contiguously (a roomy external bar, or
+# CI) before trusting it. A genuine ordering regression is still caught, since a contiguous-but-wrong
+# order fails the check rather than skipping it. See ROADMAP known limits.
 section "§3c label slot geometry [gui — needs WindowServer]"
 pass=0; fail=0
 SG="$PWD/tmp/qa-slots-state.json"
@@ -164,6 +177,12 @@ geom(){ awk -v want="$1" '
     adj = (want == "left") ? (lx + lw == ix) : (ix + iw == rx);
     live = (want == "left") ? lw : rw;
     if (!adj) bad_adj++;
+    # Did the bar keep our three items as ONE run? Span from the leftmost edge of the group to its
+    # rightmost must equal the sum of the three widths; wider means foreign items sit inside the group,
+    # so this bar never gave adjacency a chance. Independent of which side is live.
+    lo = ix; if (lx < lo) lo = lx; if (rx < lo) lo = rx;
+    hi = ix + iw; if (lx + lw > hi) hi = lx + lw; if (rx + rw > hi) hi = rx + rw;
+    if (hi - lo != iw + lw + rw) { noncontig++; ng_icon = ix; ng_live = (want == "left") ? lx : rx }
     if (widths != "" && widths != live) bad_width++;
     widths = live;
     if (icon_off != "" && icon_off != ix - lx) bad_icon++;   # icon moved relative to the left slot
@@ -171,12 +190,20 @@ geom(){ awk -v want="$1" '
     if (index($0, "label=\"") > 0) { t=$0; sub(/.*label="/, "", t); sub(/".*/, "", t); seen[t]=1 }
   }
   END { texts=0; for (t in seen) texts++;
-        print (ticks >= 2 && !bad_adj && !bad_width && !bad_icon) ? 1 : 0, ticks, texts,
-              bad_adj+0, bad_width+0, bad_icon+0, widths }' ; }
+        # $1 is the ADJACENCY verdict alone now — width and icon-shift have their own fields and their
+        # own assertions, and folding them in here made one failure read as three.
+        print (ticks >= 2 && !bad_adj) ? 1 : 0, ticks, texts,
+              bad_adj+0, bad_width+0, bad_icon+0, widths, noncontig+0, ng_icon+0, ng_live+0 }' ; }
 for want in left right; do
   out=$(slots "$want" | geom "$want")
   set -- $out
-  gk "label slot is adjacent, $want of the icon (${2:-0} ticks, slot ${7:-?}pt)" "$1" "adj_fails=$4 raw=$out"
+  if [ "${8:-0}" -gt 0 ]; then
+    # Not a pass and not a fail: the bar scattered the items, so adjacency is unanswerable here.
+    echo "  NOTE [adjacency unverifiable, $want of the icon: this bar placed the items non-contiguously" \
+         "(icon=${9:-?} slot=${10:-?}, foreign items between) — re-run on a bar with room]"
+  else
+    gk "label slot is adjacent, $want of the icon (${2:-0} ticks, slot ${7:-?}pt)" "$1" "adj_fails=$4 raw=$out"
+  fi
   gk "slot width constant while the value changes ($want, ${3:-0} distinct readings)" \
      "$([ "${5:-1}" = 0 ] && [ "${3:-0}" -ge 1 ] && echo 1 || echo 0)" "width_changes=$5 raw=$out"
   gk "icon does not move relative to the slot ($want)" \

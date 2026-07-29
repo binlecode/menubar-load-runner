@@ -105,6 +105,18 @@ Run from the repository root:
   # SLOTS icon[x=1089.0 w=47.0] left[x=994.0 w=95.0] right[x=1136.0 w=16.0] side=left label="CPU  11%"
   #        ^ left slot's maxX (994+95) == icon's minX → adjacent, and w=95 never changes
   ```
+- `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1` prints the **filtered, post-hysteresis** other-sleep-assertions
+  list each 2s tick, for the same no-TCC-grant reason as `LOG_SLOTS` (`tests/qa.sh` §3d). Pair it with
+  `tests/hold-assertion.swift`, which holds a **real** assertion under a unique process name — the fixture
+  exists because a `caffeinate` row proves nothing on a machine that already has a stray one. The line also
+  reports `own=N` — how many assertions were dropped for being ours — which is the only race-free way to
+  assert the app skipped its own child (`caffeinate -di` holds two, so an armed window reads `own=2`);
+  comparing against a count taken from outside drifts mid-run on a machine with a renewal loop.
+  ```bash
+  swiftc -O tests/hold-assertion.swift -o tmp/mblr-assert-probe && tmp/mblr-assert-probe 6 &
+  MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 ./tmp/mblr-check 2>&1 | grep ASSERTIONS
+  # ASSERTIONS n=2 [caffeinate x3 PreventUserIdleSystemSleep] [mblr-assert-probe x1 PreventUserIdleSystemSleep]
+  ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
   the process args, since args no longer carry a `.gif` path now that Swift resolves preset keywords. The
@@ -168,7 +180,7 @@ sequence, or `.app` bundle. Use the scripts:
 
 ## Architecture
 
-Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bottom as:
+Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bottom as:
 
 - **`Tuning`** — every magic number (icon-aspect clamp, label char cap, alpha trim threshold,
   hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
@@ -407,6 +419,40 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     `attributedTitle`, or a previous countdown render keeps winning for display. Anything scripting this
     menu must resolve items **by index, not by title** — the parent title ticks every second while open,
     so a title-based reference goes stale mid-script (`-1728`).
+  - **Other sleep assertions — the read side of sleep** (`SleepAssertionMonitor`, immediately above
+    `SleepPreventer`; rendered by `refreshOtherAssertionRows` from `refreshKeepAwakeSelectionState`).
+    `IOPMCopyAssertionsByProcess` (IOKit `pwr_mgt`, public, headered, unprivileged — `import
+    IOKit.pwr_mgt`), **never** `pmset -g assertions` prose. Deliberately **not** a `LoadSource`: no 0…1
+    fraction, nothing driven — keep it out of `LoadSource.allCases` and out of Other Sources. Six things
+    are load-bearing:
+    - **It reports the observation, never the conclusion.** Rows are `owner — RawAssertionType` and must
+      never render as "something is holding your Mac awake": an assertion is not an effect
+      (`PreventUserIdleSystemSleep` alone doesn't hold the display, and the system follows the display
+      down — the reason this app spawns `-di`), so that sentence can be false while the list is accurate.
+      The type is printed **raw**, not glossed, so a user can diff the rows against `pmset -g assertions`.
+    - **The grouping key is `owner + type`, never the pid or `AssertionId`.** A renewal loop
+      (`caffeinate -i -t 300` on repeat) is a *new process* each cycle, so a pid-keyed identity churns and
+      the retention window below can never see continuity. Grouping is also where `×3` comes from.
+    - **Sampling is unconditional on the 2s tick** — a deliberate exception to the active-only ethos that
+      gates `showAllSources`, and not a thing to "fix". Menu-gated sampling restores the founding bug: with
+      no history a menu opened inside a renewal gap reads `none` while a loop is in fact holding. The
+      IOKit call measures ~126 µs, i.e. 0.006% duty. It is also primed once in
+      `applicationDidFinishLaunching`, because an unsampled list renders `none` — a wrong answer, where a
+      load reader would honestly say `warming up...`.
+    - **Both filters are a heuristic** even though every line they pass is a fact
+      (`Tuning.assertionSleepTypes` + `assertionNoiseOwners`). The type allowlist does the real work;
+      the owner denylist is **two named exceptions** (`powerd`'s is literally "Prevent sleep while display
+      is on", so it is present whenever anyone could read the menu), not a policy. Don't grow it into an
+      is-a-daemon test — `backupd` and `sharingd` are signal, and `caffeinate`/`Music`/`zoom.us` wouldn't
+      match anyway. `BundlePath` can't stand in either: `caffeinate` reports `powerd.bundle`.
+    - **Our own child is excluded** via `SleepPreventer.childPID` — the countdown row two lines above
+      already reports it. Another *user's* instance still shows as `caffeinate`, correctly.
+    - **The section is inline in `Keep Awake ▸`, not a nested submenu**: that would be two deep, and
+      `tests/menu-dump.applescript` descends one level. Rows are pre-created (`otherAssertionRowItems` +
+      `otherAssertionsMoreItem`) and driven by `isHidden`/`title`, the `otherSourceRowItems` pattern.
+      `none` is a **row**, not an empty section, and the `…and N more` overflow row is required — a cap
+      must never be silent. The `kIOPMAssertionType*` constants are `CFSTR` macros and don't import into
+      Swift, so the type strings are literals.
   - **Keep Awake at launch and across launches** (`applyLaunchKeepAwakeState`, run from
     `applicationDidFinishLaunching` before the first `refreshKeepAwakeSelectionState`). Precedence:
     `--keep-awake` / `MENUBAR_LOAD_RUNNER_KEEP_AWAKE` (parsed by `KeepAwakeDuration.parse` into a
@@ -520,7 +566,9 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
       `Tuning.batteryThresholdRows` + `Never` + `Custom…`, readout in the parent title via
       `refreshBatteryThresholdSelectionState`, mutated through `setBatteryThreshold`). It governs Keep
       Awake but lives here, not in that submenu, because it is a standing preference that outlives any
-      single arm — everything in `Keep Awake ▸` is an action. Its rows spell the zero value **`Never`**
+      single arm, whereas every *gesture* in `Keep Awake ▸` is an action (its two readout sections — the
+      countdown/paused row and `Other Assertions` — report on the thing this submenu does, so they belong
+      with it). Its rows spell the zero value **`Never`**
       where the CLI says `off`: `Keep Awake ▸` already has an `Off` row meaning *disarm keep-awake*, and
       a second `Off` nearby meaning *disarm the threshold* is a collision worth one word to avoid (the
       parser accepts `never`, so the surfaces agree).

@@ -18,8 +18,8 @@ MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATC
   `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
   `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
   `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`,
-  `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, `MENUBAR_LOAD_RUNNER_STATE_FILE`, and
-  `MENUBAR_LOAD_RUNNER_LOG_SLOTS`.
+  `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, `MENUBAR_LOAD_RUNNER_STATE_FILE`,
+  `MENUBAR_LOAD_RUNNER_LOG_SLOTS`, and `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -28,6 +28,45 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+## [1.17.0] - 2026-07-29
+
+The Keep Awake menu stops being silent about the rest of the machine.
+
+### Added
+
+- **The Keep Awake menu now tells you what *else* is holding the Mac awake** (roadmap R13). A new
+  `Other Assertions` section at the bottom of `Keep Awake ▸` lists every *other* process holding a sleep
+  assertion, one row per holder as `owner — AssertionType`
+  (`caffeinate ×3 — PreventUserIdleSystemSleep`), or a single `none` row. It exists because the menu was
+  truthful about itself and silent about the machine: it read `Off` while two `caffeinate -i -t 300`
+  renewals from a background agent held the Mac awake and this app's own window had expired an hour
+  earlier. Read via `IOPMCopyAssertionsByProcess` — IOKit's public, headered, unprivileged
+  power-management API, the same tier as every load reader here; the `pmset -g assertions` output is
+  never parsed.
+
+  It reports the **observation, never a conclusion.** The rows name the holder and the assertion type
+  and stop there — no "something is holding your Mac awake", because an assertion is not an effect:
+  `PreventUserIdleSystemSleep` alone does not hold the *display*, and the system follows the display down
+  (which is exactly why this app spawns `caffeinate -di` and not `-i`). So that sentence can be false
+  while the list is accurate. For the same reason the type is printed **raw** rather than glossed into
+  prose — the raw string is what `pmset -g assertions` prints, so the two surfaces can be checked
+  against each other.
+
+  Two details worth knowing. The list is filtered, and the filter is a heuristic even though every line
+  it shows is a fact: only assertion types whose name is about preventing sleep are considered, and
+  `powerd` / `WindowServer` are dropped because their assertions are structural — `powerd` holds one
+  named "Prevent sleep while display is on" whenever the display is on, i.e. whenever you could be
+  reading the menu. And a holder is **retained for 8 seconds** after it stops appearing, because a
+  renewal loop gaps between assertions and the row would otherwise blink in and out. This app's own
+  `caffeinate` is never listed; the countdown row above already reports it. Read-only, like every other
+  row in this app — there is no button here to kill anything.
+
+  New QA hook `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1` prints the filtered list each tick (no TCC grant
+  needed, like `MENUBAR_LOAD_RUNNER_LOG_SLOTS`), including `own=N` for how many assertions were dropped
+  for being ours, and `tests/qa.sh` §3d asserts detection, the noise filter, own-child exclusion, and both
+  halves of the retention window against a real assertion held by a new `tests/hold-assertion.swift`
+  fixture.
 
 ## [1.16.0] - 2026-07-29
 

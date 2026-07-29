@@ -6,7 +6,8 @@
 #   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler + semver.
 #             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
 #             a headless CI runner). This is the required gate.
-#   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3c label slot geometry ·
+#   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3b settings persistence ·
+#             §3c label slot geometry · §3d other sleep assertions ·
 #             §4 error paths. These boot NSApplication + create an NSStatusItem, so they need an active
 #             WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on hosted runners.
 #   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
@@ -333,6 +334,74 @@ grep -q '"keepAwake"' "$SF" \
   || { echo "  FAIL [both blocks written after an unreadable file]"; fail=$((fail+1)); }
 rm -f "$SF"
 echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
+# --- §3d Other sleep assertions [gui] --------------------------------------
+# The read side of sleep (R13): which OTHER processes hold a sleep assertion. Asserted through
+# MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1, which prints the FILTERED, post-hysteresis list each tick — the
+# LOG_SLOTS trick, and for the same reason: it needs no TCC grant, while the rows themselves are only
+# reachable via menu-dump (Accessibility) or a screenshot (Screen Recording). What the rows LOOK like
+# stays a §7 click-step; what the app decided is asserted here.
+#
+# tests/hold-assertion.swift is the fixture: it holds a real assertion under a unique process name, so
+# detection and the retention window don't depend on whether this machine happens to have a stray
+# caffeinate. No injection hook exists and none should be added — a real holder is one binary away.
+section "§3d other sleep assertions [gui — needs WindowServer]"
+pass=0; fail=0
+PROBE=./tmp/mblr-assert-probe
+AS="$PWD/tmp/qa-assert-state.json"    # every launch here is state-redirected: case 3 arms a window
+ak(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
+if ! swiftc -O tests/hold-assertion.swift -o "$PROBE" 2>&1; then
+  ak "assertion fixture builds" 0 "swiftc failed"
+else
+  # 1+2. A real foreign holder is listed, and the structural noise never is. powerd holds
+  # PreventUserIdleSystemSleep ("Prevent sleep while display is on") throughout — the display is on, or
+  # this tier wouldn't be running — so "no powerd line" is a live negative, not a vacuous one.
+  "$PROBE" 6 & probe_pid=$!
+  out=$(MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$AS" \
+        MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 $BIN 2>&1 | grep '^ASSERTIONS')
+  wait $probe_pid 2>/dev/null
+  ak "a real foreign holder is listed by owner + type" \
+     "$(echo "$out" | grep -qc . >/dev/null && echo "$out" | grep -q 'mblr-assert-probe x1 PreventUserIdleSystemSleep' && echo 1 || echo 0)" \
+     "got: $(echo "$out" | tail -1)"
+  ak "structural noise filtered (no powerd, no UserIsActive)" \
+     "$(echo "$out" | grep -qE 'powerd|UserIsActive' && echo 0 || echo 1)" \
+     "got: $(echo "$out" | grep -E 'powerd|UserIsActive' | head -1)"
+
+  # 3. Our OWN caffeinate is excluded — asserted on `own=N`, the count of assertions the app dropped for
+  # being its own. Necessary because "not listed" and "listed but there are none" print identically, and
+  # comparing against a count taken from outside is a RACE on any machine with a renewal loop: the foreign
+  # total drifts mid-run, which is exactly how this case first failed. `caffeinate -di` holds TWO
+  # assertions (display + idle), so an armed window is own=2. Regresses silently if ignoringPIDs is
+  # dropped: the app would list its own window as a second, mysterious holder right under the countdown
+  # row that already reports it. The state file is removed first — a *saved* bounded window restores on
+  # launch, so a stale file arms the unarmed case and both readings come out the same.
+  own(){ rm -f "$AS"
+    MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$AS" \
+      MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN "$@" 2>&1 | grep '^ASSERTIONS' | tail -1; }
+  out=$(own --keep-awake 30m)
+  ak "an armed window's own caffeinate is excluded (own=2, -di holds two)" \
+     "$(echo "$out" | grep -q ' own=2 ' && echo 1 || echo 0)" "got: $out"
+  out=$(own)
+  ak "nothing excluded when this app holds no assertion (own=0)" \
+     "$(echo "$out" | grep -q ' own=0 ' && echo 1 || echo 0)" "got: $out"
+
+  # 4. Hysteresis: a holder retained across a gap, and bounded. Both halves matter — a renewal loop
+  # (`caffeinate -i -t 300` on repeat) gaps between assertions and would otherwise blink, while a
+  # retention that never expires would leave a finished job listed forever. The fixture holds for 2s and
+  # the run is long enough to see it clear (retention is 8s).
+  "$PROBE" 2 & probe_pid=$!
+  out=$(MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$AS" \
+        MENUBAR_LOAD_RUNNER_EXIT_AFTER=15 $BIN 2>&1 | grep '^ASSERTIONS')
+  wait $probe_pid 2>/dev/null
+  seen=$(echo "$out" | grep -c 'mblr-assert-probe')
+  ak "retained across a renewal gap (listed in $seen ticks after a 2s hold)" \
+     "$([ "${seen:-0}" -ge 3 ] && echo 1 || echo 0)" "raw:\n$out"
+  ak "retention is bounded — the holder clears once it is gone" \
+     "$(echo "$out" | tail -1 | grep -q 'mblr-assert-probe' && echo 0 || echo 1)" \
+     "last: $(echo "$out" | tail -1)"
+fi
+rm -f "$PROBE" "$AS"
+echo "  other sleep assertions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
 # --- §4 Error paths [gui] --------------------------------------------------
 section "§4 error paths (fast, no modal) [gui — needs WindowServer]"

@@ -430,9 +430,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       (`PreventUserIdleSystemSleep` alone doesn't hold the display, and the system follows the display
       down — the reason this app spawns `-di`), so that sentence can be false while the list is accurate.
       The type is printed **raw**, not glossed, so a user can diff the rows against `pmset -g assertions`.
-    - **The grouping key is `owner + type`, never the pid or `AssertionId`.** A renewal loop
+    - **Identity is `owner + type`, never the pid or `AssertionId`.** A renewal loop
       (`caffeinate -i -t 300` on repeat) is a *new process* each cycle, so a pid-keyed identity churns and
-      the retention window below can never see continuity. Grouping is also where `×3` comes from.
+      the retention window below can never see continuity. **Rows then group by owner alone** — one row
+      listing every type that owner holds, with `×N` on the *type* — because `caffeinate -di` holds two and
+      one process burning two of `Tuning.assertionRowCap` slots pushed a real 5-holder reading into the
+      overflow row. Retention stays keyed on owner+type on purpose: the blink it guards is an owner
+      vanishing across a gap, and a per-owner window would let a type flicker inside a present owner.
     - **Sampling is unconditional on the 2s tick** — a deliberate exception to the active-only ethos that
       gates `showAllSources`, and not a thing to "fix". Menu-gated sampling restores the founding bug: with
       no history a menu opened inside a renewal gap reads `none` while a loop is in fact holding. The

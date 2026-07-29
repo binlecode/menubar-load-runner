@@ -361,7 +361,7 @@ else
         MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 $BIN 2>&1 | grep '^ASSERTIONS')
   wait $probe_pid 2>/dev/null
   ak "a real foreign holder is listed by owner + type" \
-     "$(echo "$out" | grep -qc . >/dev/null && echo "$out" | grep -q 'mblr-assert-probe x1 PreventUserIdleSystemSleep' && echo 1 || echo 0)" \
+     "$(echo "$out" | grep -q '\[mblr-assert-probe: PreventUserIdleSystemSleep x1\]' && echo 1 || echo 0)" \
      "got: $(echo "$out" | tail -1)"
   ak "structural noise filtered (no powerd, no UserIsActive)" \
      "$(echo "$out" | grep -qE 'powerd|UserIsActive' && echo 0 || echo 1)" \

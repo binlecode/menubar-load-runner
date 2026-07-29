@@ -660,9 +660,13 @@ private enum MenuTitle {
     // answer to the question someone opened this menu with.
     static let otherAssertions = "Other Assertions"
     static let otherAssertionsNone = "none"
-    static func otherAssertionRow(owner: String, count: Int, type: String) -> String {
-        let suffix = count > 1 ? " ×\(count)" : ""
-        return "\(owner)\(suffix) — \(type)"
+    // One row per owner, listing every type it holds: `caffeinate — PreventUserIdleDisplaySleep,
+    // PreventUserIdleSystemSleep ×2`. The ×N rides the TYPE, not the owner, so no information is lost
+    // relative to the per-type rows this replaced — "which types, and how many of each" still reads off
+    // the row exactly.
+    static func otherAssertionRow(owner: String, types: [(type: String, count: Int)]) -> String {
+        let parts = types.map { $0.count > 1 ? "\($0.type) ×\($0.count)" : $0.type }
+        return "\(owner) — \(parts.joined(separator: ", "))"
     }
     static func otherAssertionsMore(_ count: Int) -> String { "…and \(count) more" }
     static func batteryLowReason(_ percent: Double) -> String {
@@ -2272,12 +2276,18 @@ private final class DisclosureMenuItemView: NSView {
 // cannot support.
 @MainActor
 private final class SleepAssertionMonitor {
-    // One filtered row: an owner holding `count` assertions of one type. `count` matters because the
-    // founding observation was three simultaneous caffeinates.
-    struct Holder {
-        let owner: String
+    // One filtered row: an owner, and every assertion type it holds. Grouped per OWNER rather than per
+    // owner+type because a single process routinely holds several — `caffeinate -di` holds two, and one
+    // process burning two of `Tuning.assertionRowCap` slots is what pushed a real 5-holder reading into
+    // the overflow row. Per-type counts are kept, so collapsing the rows loses nothing: the count
+    // matters because the founding observation was three simultaneous caffeinates.
+    struct TypeCount {
         let type: String
         let count: Int
+    }
+    struct Holder {
+        let owner: String
+        let types: [TypeCount]
     }
 
     private(set) var holders: [Holder] = []
@@ -2314,10 +2324,21 @@ private final class SleepAssertionMonitor {
 
         for (key, count) in seen { lastSeen[key] = (count, now) }
         lastSeen = lastSeen.filter { now - $0.value.at <= Tuning.assertionRetentionSeconds }
-        // Sorted every time: dictionary order is unstable, and unsorted rows would reshuffle each tick.
-        holders = lastSeen
-            .map { Holder(owner: $0.key.owner, type: $0.key.type, count: $0.value.count) }
-            .sorted { ($0.owner, $0.type) < ($1.owner, $1.type) }
+        // Retention stays keyed on owner+type while DISPLAY groups by owner. Deliberate: the blink this
+        // guards against is an owner vanishing across a renewal gap, and keying the window per owner
+        // would let an individual type flicker inside a still-present owner. Grouping is a rendering
+        // concern; the hysteresis is not.
+        //
+        // Sorted at both levels every time: dictionary order is unstable, and unsorted rows (or types
+        // within a row) would reshuffle each tick.
+        holders = Dictionary(grouping: lastSeen, by: { $0.key.owner })
+            .map { owner, entries in
+                Holder(owner: owner,
+                       types: entries
+                           .map { TypeCount(type: $0.key.type, count: $0.value.count) }
+                           .sorted { $0.type < $1.type })
+            }
+            .sorted { $0.owner < $1.owner }
     }
 
     private static func currentAssertions() -> [[String: Any]] {
@@ -4119,7 +4140,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             guard index < shown else { item.isHidden = true; continue }
             let holder = holders[index]
             item.title = MenuTitle.otherAssertionRow(
-                owner: holder.owner, count: holder.count, type: holder.type)
+                owner: holder.owner, types: holder.types.map { ($0.type, $0.count) })
             item.isHidden = false
         }
         let dropped = holders.count - shown
@@ -4142,7 +4163,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // shell with no TCC grant can assert the filter and the retention window — which neither
         // menu-dump.applescript (Accessibility) nor screencapture (Screen Recording) can reach.
         let rows = assertionMonitor.holders
-            .map { "[\($0.owner) x\($0.count) \($0.type)]" }
+            .map { holder in
+                let types = holder.types.map { "\($0.type) x\($0.count)" }.joined(separator: ", ")
+                return "[\(holder.owner): \(types)]"
+            }
             .joined(separator: " ")
         fputs("ASSERTIONS n=\(assertionMonitor.holders.count) own=\(assertionMonitor.excludedOwnCount)"
               + (rows.isEmpty ? "" : " " + rows) + "\n", stderr)

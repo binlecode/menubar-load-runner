@@ -647,8 +647,9 @@ persistence + `--keep-awake` v1.13.0):
       If you do force it (a test build with a raised `Tuning.batteryLowThresholdDefault`), the resume must
       respawn with the **remaining** time, not the original window, and the **Off** mark must not move.
 - [ ] **Other Assertions** (v1.17.0): the last section of the submenu — a disabled `Other Assertions`
-      header, then one indented row per *other* process holding a sleep assertion, as
-      `owner — RawAssertionType` (`caffeinate ×3 — PreventUserIdleSystemSleep`), or a single `none` row.
+      header, then one indented row per *other* process holding a sleep assertion — `owner — Type, Type ×N`
+      (`caffeinate — PreventUserIdleDisplaySleep, PreventUserIdleSystemSleep ×3`), or a single `none` row.
+      One row per **owner**, not per assertion: a process holding several types lists them all on its row.
       Force a row with `swiftc -O tests/hold-assertion.swift -o tmp/mblr-assert-probe &&
       tmp/mblr-assert-probe 30` and reopen the menu; the row appears within ~2s and clears ~8s after the
       fixture exits. Three things to check by eye, since §3d asserts the *decision* and not the rendering:

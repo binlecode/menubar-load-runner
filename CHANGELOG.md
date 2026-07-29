@@ -28,6 +28,18 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-07-28
+
+The 20% battery cliff was never yours to move. Now it is — from the command line, from the menu, and it
+remembers. The number had been hardwired since Keep Awake shipped, which is wrong in both directions:
+too eager if you're finishing a render at 18%, too patient if you'd rather the Mac gave up earlier.
+Note this *relocates* the cliff; it does not replace the arm-anyway override added in 1.13.1, which
+answers a different question ("hold it anyway, just this once") and stays.
+
+One thing that did not change, deliberately: the battery sparkline's red band still turns at 20%
+whatever you set the release point to. Those two numbers had been a single constant, and separating
+them was the first commit of this release precisely so moving one could never recolor the other.
+
 ### Added
 
 - **The battery level that releases Keep Awake is now yours to set.** It has always been a hardwired

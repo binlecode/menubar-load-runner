@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.15.2"
+    static let version = "1.16.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -377,10 +377,31 @@ private enum Tuning {
     static let loadAverage15mIndex = 2
     static let minAlphaPixelComponents = 4
     static let alphaVisibleThreshold: UInt8 = 3
-    // Max length of a custom menu-bar label (the adjacent text slot). The slot auto-sizes
-    // (variableLength), so this only bounds how much menu-bar width one instance may claim; live-value
-    // readouts are always short and unaffected.
+    // Max length of a custom menu-bar label (the adjacent text slot). This bounds how much menu-bar
+    // width one instance may claim; live-value readouts are always short and unaffected.
     static let labelMaxChars = 24
+
+    // Adjacent-label slot sizing. The slot's width is RESERVED from the widest reading each shape can
+    // produce and then held fixed, never auto-sized to the live text — auto-sizing is what made a value
+    // change shove the neighbouring animation sideways twice a second.
+    //
+    // Each numeric field is sized for a ceiling (below) and padded out to it, so every value of a field
+    // measures the same. Percentages use Tuning.percentScale, which is an exact ceiling. The two rate
+    // shapes have no true maximum, so these are realistic ones in MB/s: a burst past them widens the slot
+    // for that tick rather than clipping the number (see labelSlotWidth) — a rare nudge beats an
+    // unreadable value. Raise them if you routinely saturate faster hardware; the cost is a wider slot
+    // at all times.
+    static let labelRateCeiling = 999.9    // network, one decimal
+    static let labelDiskCeiling = 9999.0   // disk, whole MB/s
+    // Slack between the text and the slot's content box, on top of the ~16pt of chrome AppKit adds to
+    // every status item window regardless. 4pt because that is what AppKit's own variableLength sizing
+    // uses: measured with MENUBAR_LOAD_RUNNER_LOG_SLOTS, an auto-sized slot holding a 66.8pt string
+    // reported an 87pt window — 16 chrome + 71 content — so matching it keeps the reserved slot visually
+    // identical to the native one at its widest, with none of the dead space a generous guess would leave
+    // on the widest source (network reserves ~125pt of glyphs). Enough to absorb any rounding between
+    // NSAttributedString.size() and the button's own layout, which measure the same string in the same
+    // font; too little would truncate the text to an ellipsis, which is the failure to avoid.
+    static let labelSlotPadding: CGFloat = 4
 
     // Keep Awake auto-disengage: on battery power at or below this charge fraction we kill
     // `caffeinate` so an unattended Mac doesn't drain to death mid-task. See SleepPreventer.
@@ -531,6 +552,7 @@ private enum MenuTitle {
     static let labelOffItem = "Off"
     static let labelValueItem = "Live Value"
     static func labelCustomItem(max: Int) -> String { "Custom Text… (max \(max))" }
+    static let labelPositionHeader = "Position"
 
     // Read-only readouts.
     static let widthPrefix = "Width"
@@ -698,6 +720,35 @@ private enum MenuBarLabel: Equatable {
             return .custom(String(text.prefix(Tuning.labelMaxChars)))
         default: return nil
         }
+    }
+}
+
+// Which side of the animation the label slot sits on. A registry like KeepAwakeColor — the menu rows,
+// the radio-selection check, and the persisted keyword all derive from these cases, so adding one needs
+// no menu edit. Menu-only and persisted, also like the tint: it is cosmetic, so it doesn't earn a CLI
+// flag (a new flag is public API forever), and the restart-after-update path picks it up off disk.
+//
+// Why the side is a choice at all: it changes which neighbour absorbs the label's presence. Left (the
+// default) keeps the animation pinned where it has always been, with the label growing away from it into
+// the row of app icons; right puts the reading next to the system icons — nearer the clock, where the
+// eye already goes for status — at the cost of shifting the creature by the width of the slot. Neither
+// jitters, because the slot's width is reserved rather than auto-sized (see labelSlotWidth).
+private enum MenuBarLabelSide: String, CaseIterable {
+    case left
+    case right
+
+    var menuTitle: String {
+        switch self {
+        case .left: return "Left of Icon"
+        case .right: return "Right of Icon"
+        }
+    }
+
+    // nil means "nothing usable saved" (absent or unrecognized), so the caller falls through to the
+    // launch default rather than pinning a side the user never chose — same rule as MenuBarLabel.
+    static func fromPersisted(_ raw: String?) -> MenuBarLabelSide? {
+        guard let raw else { return nil }
+        return MenuBarLabelSide(rawValue: raw)
     }
 }
 
@@ -1170,6 +1221,9 @@ private struct PersistedState: Codable {
         // MenuBarLabel.persistedMode, with the `.custom` payload in the sibling field.
         var labelMode: String?
         var labelCustomText: String?
+        // MenuBarLabelSide.rawValue — which side of the animation the label slot sits on. Cosmetic and
+        // menu-only (no flag can override it), so it restores unconditionally, like the Keep Awake tint.
+        var labelSide: String?
         // The Keep Awake battery release point, as a charge FRACTION (0.20 = 20%) — the same unit the
         // live property holds, not the whole percent the CLI takes, so the value round-trips exactly
         // and every reader stays in one unit. `0` is a real value (never release on charge alone) and
@@ -2348,16 +2402,35 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // refresh functions, @objc actions) — never before launch. The `!` reflects that
     // single-init lifecycle; they are guaranteed non-nil for the app's lifetime.
     private var statusItem: NSStatusItem!
-    // Second slot for the adjacent label (live value / custom text). Created ONCE, unconditionally, and
-    // *before* the animation statusItem (see applicationDidFinishLaunching) — macOS orders status items
-    // by creation time (oldest = rightmost) with no API to reorder, so making it the older item pins it
-    // to the right of the animation, adjacent to the system icons. That keeps a wide GIF (which grows
-    // the animation item leftward, toward the notch) from shoving the label into the space macOS hides
-    // when the bar is crowded — the wide icon gets clipped there instead of the number. It stays
-    // permanently visible; `.off` just sets length = 0 (zero footprint, no clickable gap, slot position
-    // retained) so a later toggle-on reappears on the right, and on/custom use variableLength to
-    // auto-size to the text. See applyLabelMode()/updateValueLabel().
-    private var valueStatusItem: NSStatusItem!
+    // The adjacent label (live value / custom text) — TWO status items, of which at most one is ever
+    // wider than zero. Both exist because macOS assigns a status item its slot when it becomes visible,
+    // orders slots by that moment (oldest = rightmost), and offers no API to reorder or re-place a
+    // visible item. So "which side of the animation is the label on?" is decided entirely by creation
+    // order, and a runtime switch is impossible for a single item: it would mean destroying and
+    // rebuilding one of the two, and the one that would have to go is the *animation* (its button, layer,
+    // keep-awake bar, display link and occlusion observer) whenever the label moved right.
+    //
+    // Creating both up front — right slot, animation, left slot — makes the switch free: pick which one
+    // carries the text and zero the other.
+    //
+    // Both stay permanently visible because a slot is only adjacent to the animation if it was created
+    // back-to-back with it: reveal an item later and it lands leftmost of *every* status item on the bar
+    // (newest wins), with other apps' icons between it and ours. That rules out hiding the idle one, and
+    // rules out creating either lazily. So `.off` and "not the active side" are both expressed as
+    // length = 0; on, the active side gets the RESERVED width from labelSlotWidth (never variableLength —
+    // see there). applyLabelMode()/updateValueLabel() are the only writers.
+    //
+    // **A length-0 item is not free: it still claims ~16pt of menu bar.** Measured with
+    // MENUBAR_LOAD_RUNNER_LOG_SLOTS on macOS 26 — hiding the idle item moves its neighbour 16pt over,
+    // reproducibly (an earlier comment here claimed "zero footprint, no clickable gap"; the width half of
+    // that is simply false). So the pair costs 16pt more bar than a single item would, permanently. It is
+    // still the right trade: the only way to switch sides without it is to destroy and rebuild the
+    // ANIMATION item — its button, layer, keep-awake bar, display link and occlusion observer — on every
+    // switch to the right, which is a lot of moving parts to break for 16pt. If that 16pt ever matters
+    // more than an instant switch, the cheap retreat is to create only the persisted side's item at
+    // launch and make the menu row take effect on the next launch.
+    private var labelItemLeft: NSStatusItem!
+    private var labelItemRight: NSStatusItem!
     private var infoMenu: NSMenu!
     // Trace chart of the active source's recent driving fractions, and its ring buffer. The buffer
     // holds only the active source's samples (cleared on a source switch, since a mixed-source
@@ -2380,6 +2453,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var labelOffItem: NSMenuItem!
     private var labelValueItem: NSMenuItem!
     private var labelCustomItem: NSMenuItem!
+    // Second radio group in the same submenu: the slot's side. Rows carry indices into
+    // MenuBarLabelSide.allCases, read only by selectLabelSide.
+    private var labelSideItems: [NSMenuItem] = []
     // "Battery Threshold" submenu, the second Settings row: a radio group over
     // Tuning.batteryThresholdRows plus Never and Custom…, with the parent title carrying the readout
     // exactly as the label group's does. The rows' tags are indices into that array and are read ONLY
@@ -2446,8 +2522,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var memoryPressureSource: DispatchSourceMemoryPressure?
     private var speedMultiplier: Double = Tuning.initialSpeedMultiplier
     // Content of the adjacent label slot (see MenuBarLabel). Initialized from config; mutated by the
-    // "Menu Bar Label" menu. applyLabelMode() reconciles valueStatusItem's existence with it.
+    // "Menu Bar Label" menu. applyLabelMode() reconciles the two slot items' widths with it.
     private var labelMode: MenuBarLabel = .off
+    // Which of the two label items is the live one (see labelItemLeft/labelItemRight). Menu-only, and
+    // restored from the state file by applyLaunchLabelState(); mutated only by setLabelSide.
+    private var labelSide: MenuBarLabelSide = .left
+    // The slot on the chosen side. nil only before applicationDidFinishLaunching creates both.
+    private var activeLabelItem: NSStatusItem? {
+        labelSide == .left ? labelItemLeft : labelItemRight
+    }
+    // Menu-bar font with monospaced digits: a reading's width then depends only on how MANY characters
+    // it has, not which digits it happens to show ("111%" and "888%" measure the same). That is what
+    // lets one reserved width hold for a whole shape, and it stops the digits wobbling within it.
+    private static let labelFont = NSFont.monospacedDigitSystemFont(
+        ofSize: NSFont.menuBarFont(ofSize: 0).pointSize,
+        weight: .regular
+    )
     private var cachedLoadAverages: (Double, Double, Double)?
     private var screenObserver: NSObjectProtocol?
     private var powerStateObserver: NSObjectProtocol?
@@ -2602,18 +2692,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return
         }
 
-        // Create the value slot FIRST so it's the older *visible* status item and thus sits to the right
-        // of the animation (see the valueStatusItem doc comment). macOS assigns an item's position when
-        // it becomes visible, not when created — and never re-assigns it while it stays visible. So we
-        // keep this item permanently visible and let applyLabelMode() switch its WIDTH (length = 0 when
-        // .off → zero footprint, no clickable gap; variableLength when on). Toggling isVisible instead
-        // would surrender the slot and re-insert the item leftmost on the next reveal. Menu wired up
-        // later, once infoMenu exists.
-        valueStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        valueStatusItem.button?.font = NSFont.menuBarFont(ofSize: 0)
-        valueStatusItem.button?.imagePosition = .noImage
-        valueStatusItem.isVisible = true
-        if labelMode == .off { valueStatusItem.length = 0 }
+        // Slot order is creation order, and it is fixed for the lifetime of a visible item (see the
+        // labelItemLeft/labelItemRight doc comment), so all three items are created here, in the order
+        // they appear on screen from RIGHT to left: the right-hand label slot, the animation, then the
+        // left-hand label slot. applyLabelMode() decides which label slot is the live one; the other
+        // stays at length 0 and is invisible in every sense that matters.
+        labelItemRight = makeLabelItem()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else {
@@ -2640,6 +2724,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         button.toolTip = activeGifPath
         // Base label for VoiceOver; refreshMenuMetrics() enriches it with live CPU load.
         button.setAccessibilityLabel("MenuBar Load Runner")
+
+        // The left-hand label slot — newest item, so it lands left of the animation.
+        labelItemLeft = makeLabelItem()
 
         infoMenu = NSMenu()
         infoMenu.delegate = self
@@ -2745,6 +2832,23 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelCustomItem.target = self
         useSelectionMark(labelCustomItem)
         labelSubmenu.addItem(labelCustomItem)
+
+        // Second, independent radio group in the same submenu — which side of the animation the slot sits
+        // on. Same shape as the Keep Awake submenu's tint + duration pair. These rows carry indices into
+        // MenuBarLabelSide.allCases and are read ONLY by selectLabelSide, so they share no tag space with
+        // anything else (the three mode rows above are distinguished by selector, and carry no tags).
+        labelSubmenu.addItem(NSMenuItem.separator())
+        let labelPositionHeaderItem = NSMenuItem(title: MenuTitle.labelPositionHeader, action: nil, keyEquivalent: "")
+        labelPositionHeaderItem.isEnabled = false
+        labelSubmenu.addItem(labelPositionHeaderItem)
+        for (index, side) in MenuBarLabelSide.allCases.enumerated() {
+            let item = NSMenuItem(title: side.menuTitle, action: #selector(selectLabelSide(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            useSelectionMark(item)
+            labelSubmenu.addItem(item)
+            labelSideItems.append(item)
+        }
 
         labelMenuItem.submenu = labelSubmenu
         settingsSubmenu.addItem(labelMenuItem)
@@ -2879,12 +2983,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Root items only — anything nested in a submenu sets its own target at construction.
         infoMenu.items.forEach { $0.target = self }
         statusItem.menu = infoMenu
-        valueStatusItem.menu = infoMenu   // value slot shares the same dropdown as the animation
+        // Both label slots share the animation's dropdown, so clicking the number opens the same menu.
+        labelItemLeft.menu = infoMenu
+        labelItemRight.menu = infoMenu
         refreshPresetSelectionState()
         refreshWidthInfo()
-        applyLaunchLabelState()   // resolve --label vs. the saved mode BEFORE the slot is created
+        applyLaunchLabelState()   // resolve --label vs. the saved mode/side BEFORE sizing the slots
         refreshLabelSelectionState()
-        applyLabelMode()   // create the value slot now if launched with --label value / custom text
+        applyLabelMode()   // size the live slot now if launched with --label value / custom text
         refreshShowAllSourcesState()
         // caffeinate exited on its own → an armed window elapsed. Drop the window and let the UI fall
         // back to Off; the Mac is free to sleep from here. This is the whole timed release.
@@ -3671,6 +3777,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Refresh the adjacent live-value slot on the same cadence (2s tick + menuWillOpen). Cheap
         // when the label is off or custom — updateValueLabel() only rebuilds text in .value mode.
         updateValueLabel()
+        logSlotGeometry()   // no-op unless MENUBAR_LOAD_RUNNER_LOG_SLOTS=1
     }
 
     private func memoryPressureText() -> String {
@@ -3847,6 +3954,32 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         return Set(raw.lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
     }()
 
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 prints every status item's frame in SCREEN
+    // coordinates on each 2s tick. Mirrors the EXIT_AFTER hook convention, and exists because the two
+    // properties it measures are otherwise unverifiable outside a human's eyes:
+    //
+    //   1. slot ORDER — is the label left or right of the animation? (There is no API to ask.)
+    //   2. slot STABILITY — does the animation's x, or the label's width, move as the value changes?
+    //      This is the jitter bug; it is a few points twice a second, which no screenshot diff would
+    //      reliably catch and which tests/label.swift can only reason about via font metrics.
+    //
+    // A status item's button lives in its own NSStatusBarWindow, whose frame is the slot. Reading it is
+    // the app inspecting its own window, so unlike a screenshot (Screen Recording) or a menu dump
+    // (Accessibility) it needs no TCC grant at all — which is what makes it scriptable in qa.sh §3.
+    private func logSlotGeometry() {
+        guard ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_SLOTS"] == "1" else { return }
+        func frame(_ item: NSStatusItem?) -> String {
+            guard let f = item?.button?.window?.frame else { return "x=n/a w=n/a" }
+            return String(format: "x=%.1f w=%.1f", f.minX, f.width)
+        }
+        let text = activeLabelItem?.button?.title ?? ""
+        fputs(
+            "SLOTS icon[\(frame(statusItem))] left[\(frame(labelItemLeft))]"
+                + " right[\(frame(labelItemRight))] side=\(labelSide.rawValue) label=\"\(text)\"\n",
+            stderr
+        )
+    }
+
     // Read-only: report the GIF-derived item size (there is no width control). Shows the slot
     // width in points and the GIF's aspect ratio that produced it.
     private func refreshWidthInfo() {
@@ -3874,6 +4007,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelOffItem.state = (labelMode == .off) ? .on : .off
         labelValueItem.state = (labelMode == .value) ? .on : .off
         if case .custom = labelMode { labelCustomItem.state = .on } else { labelCustomItem.state = .off }
+        // Position group. The rows stay live while the label is off — picking a side then is a
+        // preference for the next time it's on, not a no-op the user has to redo.
+        let sides = MenuBarLabelSide.allCases
+        for (index, item) in labelSideItems.enumerated() where sides.indices.contains(index) {
+            item.state = (sides[index] == labelSide) ? .on : .off
+        }
     }
 
     // Parent title carries the readout ("Battery Threshold: 20%" / ": Never") and the rows mark the
@@ -3902,66 +4041,182 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         batteryThresholdCustomItem.state = matchedARow ? .off : .on
     }
 
-    // Reconcile the value slot's existence and content with labelMode. .off tears the second status
-    // item down (freeing the menu-bar slot); .value / .custom create it on demand and refresh its text.
-    private func applyLabelMode() {
-        // The value slot is created once, up front, and kept permanently visible (see
-        // applicationDidFinishLaunching), so here we only switch its WIDTH — never create/remove or
-        // hide/show — to preserve its right-of-animation slot order. length = 0 gives .off a zero-width
-        // footprint (no clickable gap); variableLength lets it auto-size to its text when on.
-        guard valueStatusItem != nil else { return }
-        if labelMode == .off {
-            valueStatusItem.length = 0
-            return
-        }
-        valueStatusItem.length = NSStatusItem.variableLength
-        updateValueLabel()
+    // One of the two label slots. Both are built identically and differ only in when they were created,
+    // which is what fixes them either side of the animation (see labelItemLeft/labelItemRight). Created
+    // at variableLength but never left there: applyLabelMode gives the live one a reserved width and
+    // zeroes the other. Menu is wired later, once infoMenu exists.
+    private func makeLabelItem() -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.font = Self.labelFont
+        item.button?.imagePosition = .noImage
+        item.isVisible = true
+        item.length = 0
+        return item
     }
 
-    // Write the current label text into the value slot (no-op if the slot doesn't exist). In .value
-    // mode this is the active source's compact live reading; in .custom mode, the fixed user string.
+    // Reconcile both label slots with labelMode and labelSide: the slot on the chosen side carries the
+    // text at its reserved width, the other is zeroed (~16pt, not 0 — see labelItemLeft). Nothing is
+    // created, destroyed, hidden or shown: slot order is creation order, and both items must stay
+    // visible to keep theirs.
+    private func applyLabelMode() {
+        guard let live = activeLabelItem, let left = labelItemLeft, let right = labelItemRight else { return }
+        (live === left ? right : left).length = 0
+        guard labelMode != .off else {
+            live.length = 0
+            return
+        }
+        // Align the text toward the animation, so the gap that a reserved slot sometimes leaves opens
+        // away from the icon and the reading stays visually attached to it.
+        live.button?.alignment = (labelSide == .left) ? .right : .left
+        updateValueLabel()   // writes the text, the tint, and the width
+    }
+
+    // The width to hold the live slot at: the wider of the current text and a worst-case template for
+    // the shape on show (Tuning.labelTemplate*). Reserving from the template — not measuring the live
+    // text — is the whole point: an auto-sized slot changes width whenever the value does, and macOS
+    // shifts every item to the LEFT of one that resizes, so the label used to drag its neighbour
+    // sideways twice a second. Held fixed, the label can sit on either side without moving anything.
+    //
+    // max() rather than the template alone so an unbounded rate that overruns its realistic ceiling
+    // widens the slot for that tick instead of being truncated to an ellipsis. That is the only case
+    // where the width moves at all, and a wrong-looking number is worse than a rare nudge.
+    private func labelSlotWidth(for text: String) -> CGFloat {
+        let reserved: String
+        switch labelMode {
+        case .off:
+            return 0
+        case .value:
+            reserved = labelWidthTemplate(for: activeLoadSource)
+        case .custom(let label):
+            reserved = label   // a fixed string is its own worst case
+        }
+        let width = max(measuredLabelWidth(reserved), measuredLabelWidth(text))
+        return ceil(width) + Tuning.labelSlotPadding
+    }
+
+    private func measuredLabelWidth(_ text: String) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: Self.labelFont]).width
+    }
+
+    // Write the current label text into the live slot (no-op before the slots exist, or when off). In
+    // .value mode this is the active source's compact live reading; in .custom mode, the fixed user
+    // string. Also carries the slot's width and the Keep Awake tint (see below), so it is called both on
+    // the 2s tick and from updateKeepAwakeBar() — a toggle/suspend must recolor at once, not up to 2s
+    // later.
     private func updateValueLabel() {
-        guard let button = valueStatusItem?.button else { return }
+        guard let item = activeLabelItem, let button = item.button else { return }
+        let text: String
         switch labelMode {
         case .off:
             return
         case .value:
-            button.title = compactLabelText(for: activeLoadSource)
-        case .custom(let text):
+            text = compactLabelText(for: activeLoadSource)
+        case .custom(let label):
+            text = label
+        }
+        // Sizing before the text, so the slot is never briefly too narrow for what is about to go in it.
+        // Assigning only on a real change keeps the 2s tick from handing AppKit a status-bar relayout it
+        // doesn't need — the whole point of a reserved width is that this almost never fires twice.
+        let width = labelSlotWidth(for: text)
+        if abs(item.length - width) > 0.01 {
+            item.length = width
+        }
+        // While Keep Awake is actually running, the label wears the same tint as the bar under the
+        // animation (keyed on isRunning, exactly like updateKeepAwakeBar, so a battery/thermal suspend
+        // drops both together) — the two read as one indicator instead of two unrelated marks. Off, the
+        // text goes back to inheriting the menu bar's own color, which is what tracks appearance and the
+        // highlight when the dropdown is open; the tint has per-appearance tones for the same reason.
+        // attributedTitle is the only way to color a status button's text, and it is invisible to
+        // VoiceOver, hence the explicit accessibility label.
+        if sleepPreventer.isRunning {
+            let color = activeKeepAwakeColor.color(for: button.effectiveAppearance)
+            button.attributedTitle = NSAttributedString(
+                string: text,
+                attributes: [.foregroundColor: color, .font: Self.labelFont]
+            )
+        } else {
             button.title = text
         }
+        // Strip the width padding for VoiceOver — the figure spaces are a layout device, and "CPU 47%"
+        // is what the row means. (All padding is leading-within-a-field, so removing it is lossless.)
+        button.setAccessibilityLabel(text.replacingOccurrences(of: "\u{2007}", with: ""))
     }
 
-    // A short, menu-bar-sized readout of a source's live value: "CPU 47%", "MEM 63%", "NET ↓3.4↑0.1",
+    // A short, menu-bar-sized readout of a source's live value: "CPU 47%", "MEM 63%", "NET ↓3.4 ↑0.1",
     // "DSK R12 W4", "GPU 30%", "FAN 45%", "BAT 88%" (MB/s implied for the rate sources). Compact
     // deliberately — the dropdown carries the fully-labeled figures; this is the at-a-glance number.
+    //
+    // Every number goes through labelField, so each is padded to a constant width (see there) — the
+    // reading is a fixed-width readout with the digits in columns, not a string that grows and shrinks.
     private func compactLabelText(for source: LoadSource) -> String {
         let tag = source.menuTitle.prefix(3).uppercased()
         guard activeSourceHasSample else { return "\(tag) …" }
         switch source {
         case .cpu:
-            return String(format: "CPU %.0f%%", loadMonitor.smoothedUsage * Tuning.percentScale)
+            return "CPU \(Self.percentField(loadMonitor.smoothedUsage))%"
         case .memory:
-            return String(format: "MEM %.0f%%", memoryMonitor.currentUsedFraction * Tuning.percentScale)
+            return "MEM \(Self.percentField(memoryMonitor.currentUsedFraction))%"
         case .gpu:
-            return String(format: "GPU %.0f%%", gpuMonitor.currentUtilization * Tuning.percentScale)
+            return "GPU \(Self.percentField(gpuMonitor.currentUtilization))%"
         case .network:
-            return String(
-                format: "NET ↓%.1f ↑%.1f",
-                networkMonitor.currentInboundBytesPerSec / Tuning.bytesPerMiB,
-                networkMonitor.currentOutboundBytesPerSec / Tuning.bytesPerMiB
-            )
+            return "NET ↓\(Self.rateField(networkMonitor.currentInboundBytesPerSec))"
+                + " ↑\(Self.rateField(networkMonitor.currentOutboundBytesPerSec))"
         case .disk:
-            return String(
-                format: "DSK R%.0f W%.0f",
-                diskMonitor.currentReadBytesPerSec / Tuning.bytesPerMiB,
-                diskMonitor.currentWriteBytesPerSec / Tuning.bytesPerMiB
-            )
+            return "DSK R\(Self.diskField(diskMonitor.currentReadBytesPerSec))"
+                + " W\(Self.diskField(diskMonitor.currentWriteBytesPerSec))"
         case .fan:
-            return String(format: "FAN %.0f%%", fanMonitor.currentUtilization * Tuning.percentScale)
+            return "FAN \(Self.percentField(fanMonitor.currentUtilization))%"
         case .battery:
-            return String(format: "BAT %.0f%%", batteryMonitor.currentChargeFraction * Tuning.percentScale)
+            return "BAT \(Self.percentField(batteryMonitor.currentChargeFraction))%"
         }
+    }
+
+    // The widest reading compactLabelText can produce for a source — measured by labelSlotWidth to
+    // reserve the slot, never displayed. The numeric fields come from the same three field builders fed
+    // their own ceilings, so a field's reservation cannot drift from the field itself; only the fixed
+    // prose ("NET ↓", " W") is written in both places, so keep the two in step when editing a format.
+    private func labelWidthTemplate(for source: LoadSource) -> String {
+        switch source {
+        case .cpu, .memory, .gpu, .fan, .battery:
+            return "\(source.menuTitle.prefix(3).uppercased()) \(Self.percentField(1))%"
+        case .network:
+            return "NET ↓\(Self.rateField(Tuning.labelRateCeiling * Tuning.bytesPerMiB))"
+                + " ↑\(Self.rateField(Tuning.labelRateCeiling * Tuning.bytesPerMiB))"
+        case .disk:
+            return "DSK R\(Self.diskField(Tuning.labelDiskCeiling * Tuning.bytesPerMiB))"
+                + " W\(Self.diskField(Tuning.labelDiskCeiling * Tuning.bytesPerMiB))"
+        }
+    }
+
+    // The three numeric field shapes the label uses. Each takes the reader's own unit (a 0…1 fraction,
+    // or bytes/sec) so no caller has to remember the conversion, and each pads to the width of its
+    // ceiling — the ceiling doubles as the reservation, so the two can't disagree.
+    private static func percentField(_ fraction: Double) -> String {
+        labelField(fraction * Tuning.percentScale, decimals: 0, ceiling: Tuning.percentScale)
+    }
+
+    private static func rateField(_ bytesPerSec: Double) -> String {
+        labelField(bytesPerSec / Tuning.bytesPerMiB, decimals: 1, ceiling: Tuning.labelRateCeiling)
+    }
+
+    private static func diskField(_ bytesPerSec: Double) -> String {
+        labelField(bytesPerSec / Tuning.bytesPerMiB, decimals: 0, ceiling: Tuning.labelDiskCeiling)
+    }
+
+    // Format one numeric field at a fixed width: the value, left-padded with FIGURE SPACE (U+2007) to
+    // the character count of `ceiling`. U+2007 exists for exactly this — it is defined to be as wide as a
+    // digit, which combined with the label's monospaced-digit font (labelFont) makes the field's width a
+    // constant, independent of the value in it. A normal space would not do: at menu-bar size it is 3.6pt
+    // against a digit's 8.1pt, so `%3.0f`-style padding still changes width as the digit count changes,
+    // which is the jitter this whole path exists to remove.
+    //
+    // A value above the ceiling formats wider than the field and is NOT truncated — labelSlotWidth widens
+    // the slot for that tick instead. Rare, honest, and self-correcting.
+    private static func labelField(_ value: Double, decimals: Int, ceiling: Double) -> String {
+        let format = "%.\(decimals)f"
+        let text = String(format: format, value)
+        let width = String(format: format, ceiling).count
+        return String(repeating: "\u{2007}", count: max(0, width - text.count)) + text
     }
 
     @objc
@@ -4149,6 +4404,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 settings: PersistedState.Settings(
                     labelMode: labelMode.persistedMode,
                     labelCustomText: labelMode.persistedCustomText,
+                    labelSide: labelSide.rawValue,
                     batteryThreshold: keepAwakeBatteryThreshold
                 )
             )
@@ -4161,8 +4417,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // is nothing self-limiting to weigh here: a label holds no assertion and costs nothing but a slot,
     // so every mode is restorable, not just bounded ones.
     private func applyLaunchLabelState() {
+        let saved = StateStore.load()?.settings
+        // The side has no flag to defer to (menu-only, like the Keep Awake tint), so it restores on its
+        // own terms — independently of the mode, whose flag may well have won below.
+        if let side = MenuBarLabelSide.fromPersisted(saved?.labelSide) {
+            labelSide = side
+        }
         guard config.label == nil else { return }
-        guard let saved = StateStore.load()?.settings,
+        guard let saved,
               let restored = MenuBarLabel.fromPersisted(mode: saved.labelMode,
                                                         customText: saved.labelCustomText)
         else { return }
@@ -4297,6 +4559,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     @objc
     private func selectLabelValue() {
         setLabelMode(.value)
+    }
+
+    // Tag is an index into MenuBarLabelSide.allCases — see the Position group's construction.
+    @objc
+    private func selectLabelSide(_ sender: NSMenuItem) {
+        let sides = MenuBarLabelSide.allCases
+        guard sides.indices.contains(sender.tag) else { return }
+        setLabelSide(sides[sender.tag])
     }
 
     // Prompt for a fixed custom label. Switches to .custom on Apply; an empty field means .off.
@@ -4446,6 +4716,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private func setLabelMode(_ mode: MenuBarLabel) {
         guard mode != labelMode else { return }
         labelMode = mode
+        applyLabelMode()
+        refreshLabelSelectionState()
+        persistState()
+    }
+
+    // Single point that changes the label's side, same contract as setLabelMode. The move itself is just
+    // applyLabelMode swapping which of the two slots is non-zero; nothing is rebuilt. Takes effect even
+    // while the label is off, so the choice is already in place when it next comes on.
+    private func setLabelSide(_ side: MenuBarLabelSide) {
+        guard side != labelSide else { return }
+        labelSide = side
         applyLabelMode()
         refreshLabelSelectionState()
         persistState()
@@ -4719,6 +5000,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // (applySizing). Uses isRunning (not isEnabled), so the bar vanishes while a battery/thermal
     // condition has caffeinate suspended and reappears when it resumes — it tracks the ACTUAL state.
     private func updateKeepAwakeBar() {
+        // The adjacent label wears the same tint on the same condition, so it recolors here rather than
+        // waiting for the next 2s tick (see updateValueLabel).
+        updateValueLabel()
         guard let bar = keepAwakeBar, let host = animationView?.layer else { return }
         bar.isHidden = !sleepPreventer.isRunning
         guard !bar.isHidden else { return }

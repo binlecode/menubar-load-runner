@@ -18,7 +18,8 @@ MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATC
   `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
   `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
   `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`,
-  `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, and `MENUBAR_LOAD_RUNNER_STATE_FILE`.
+  `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, `MENUBAR_LOAD_RUNNER_STATE_FILE`, and
+  `MENUBAR_LOAD_RUNNER_LOG_SLOTS`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -27,6 +28,53 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+## [1.16.0] - 2026-07-29
+
+The menu-bar label stops dragging the animation around, and you get to say which side it sits on.
+
+### Fixed
+
+- **The animated icon no longer jitters when the menu-bar label is on.** The label slot used to
+  auto-size to its text, so its width changed with the value (`CPU 9%` → `CPU 100%`) — and macOS shifts
+  every item to the **left** of one that resizes, which meant the creature slid a few points sideways
+  twice a second, forever. The slot is now a **fixed width**, reserved for the widest reading the shape
+  on show can produce, and the reading is padded out to fill it: numbers are right-aligned in
+  monospaced digits, with the padding done in `U+2007 FIGURE SPACE` (a space defined to be exactly as
+  wide as a digit — an ordinary space is less than half that, so ordinary padding would still move).
+  Every reading of a shape therefore measures identically and nothing resizes. A rate past its ceiling
+  (over 999.9 MB/s of network) widens the slot for that tick rather than truncating the number; the
+  exact figures are always in the dropdown. Covered by a new `tests/label.swift`, which measures real
+  font metrics — the invariant is sub-point and no other tier could see it.
+
+### Added
+
+- **`Settings ▸ Menu Bar Label ▸ Position` — put the label on either side of the animation.**
+  `Left of Icon` (the new default) or `Right of Icon`, applied immediately and remembered across
+  relaunches. Left keeps the animation exactly where it has always been and grows the label away from
+  it; right puts the reading nearer the clock, where the eye already looks for status. Neither jitters,
+  which is what makes it a free choice — and the reason it took a fixed-width slot to offer at all.
+  Menu-only, like the Keep Awake tint: it's cosmetic, and a new flag is public API forever. Worth
+  knowing: a crowded menu bar hides the leftmost items first, so the left position risks clipping the
+  number and the right position risks clipping the icon. Switching sides instantly costs about **16pt**
+  of permanently-claimed menu-bar width: macOS fixes a status item's position when it first appears and
+  has no reorder API, so both possible slots have to exist from launch, and a zero-width slot still
+  claims ~16pt (measured — the previous claim that it was free was wrong). The alternative was rebuilding
+  the animation item, with its layer, track line and display link, on every switch.
+- **`MENUBAR_LOAD_RUNNER_LOG_SLOTS=1`** — a QA hook that prints each menu-bar item's on-screen frame
+  every 2s. Menu-bar placement was previously eyeball-only: there is no API to ask a status item where it
+  sits, and the alternatives need macOS privacy grants a plain shell doesn't have (screenshots need
+  Screen Recording; reading the menu needs Accessibility). A process can always measure its own windows,
+  so this needs nothing — which is how the 16pt above was measured, and it turns "does the icon move?"
+  into an assertion (`tests/qa.sh` §3c, both sides).
+
+### Changed
+
+- **The menu-bar label wears the Keep Awake tint** while Keep Awake is actually holding the Mac awake,
+  matching the track line under the icon so the two read as one indicator instead of two unrelated
+  marks. It is keyed on the *running* state, exactly like the track line, so a battery or thermal
+  suspend drops the color from both at once; off, the text goes back to inheriting the menu bar's own
+  color.
 
 ## [1.15.2] - 2026-07-28
 

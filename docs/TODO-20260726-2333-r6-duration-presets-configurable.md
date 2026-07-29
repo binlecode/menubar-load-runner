@@ -7,8 +7,18 @@ the list into the settings block so it can be added to, removed from, and reorde
 `state.json`. **Scope is add/remove/reorder-by-file only** — no in-app editor (wants a Preferences
 window, deferred) and no set-default (a different feature, see Catch 6).
 
-Line anchors are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines). Re-resolve by symbol if
-they don't land.
+Line anchors are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines) and are now **~1,100 lines
+stale** — the file is 5647 lines at v1.17.1. Assume no `:NNN` lands; resolve every one by symbol
+(`Tuning.keepAwakeDurations` is at `:534`, `KeepAwakeDuration.presetRows` at `:864-866`,
+`PersistedState.Settings` at `:1283`).
+
+**Re-checked against v1.17.1 on 2026-07-29 — the plan still applies unchanged.** Both pieces have the
+shape described: `keepAwakeDurations` is still a hardcoded five-entry `static let`, and `presetRows`
+still prepends `.indefinite` so row 0 is not a duration. One thing to reuse rather than reinvent:
+`PersistedState.Settings` has since gained `batteryThreshold` (v1.15.0), which is a worked example of the
+whole round trip this item needs — Optional field, clamped on the way back in because a state file is an
+untrusted entry point, restored in an `applyLaunch…State()` helper, written only through the single
+mutating gesture. There is still no duration-list field.
 
 ---
 

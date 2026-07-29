@@ -4,8 +4,17 @@
 System notifications are off the table — they need a bundle, and the project decided on 2026-07-26 to
 stay a source-built, bundle-less binary (see the Declined table in `ROADMAP.md`).
 
-Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines). Re-resolve by
-symbol if they don't land.
+Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines) and are now
+**~1,100 lines stale** — the file is 5647 lines at v1.17.1. Assume no `:NNN` lands; resolve every one by
+symbol.
+
+**Re-checked against v1.17.1 on 2026-07-29 — the plan still applies unchanged.** Every symbol it depends
+on is present and has the shape described (`SleepPreventer`, `onWindowExpired`, `keepAwakeStatusItem`,
+`keepAwakeBar`/`updateKeepAwakeBar`), and nothing has been built toward it: the source has zero matches
+for `HUD`, `NSPanel`, or `UNUserNotification`. What *has* changed around it is that `Keep Awake ▸` grew
+the `Other Assertions` section (v1.17.0, regrouped per owner in v1.17.1), so the submenu is more crowded
+than when this was written — which strengthens the case for an ambient signal outside the menu, not a
+sixth row inside it.
 
 Today, engaging, pausing, and expiry are silent unless the menu is open. The 2pt track line
 (`keepAwakeBar`) is the only ambient signal, and it conveys running/not-running — never *why*.

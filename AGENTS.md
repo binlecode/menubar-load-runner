@@ -103,6 +103,11 @@ Run from the repository root:
   ```
 - Detached runs log to `/tmp/menubar-load-runner.log` (override with `MENUBAR_LOAD_RUNNER_LOG_FILE`); use
   `--foreground` while developing so output goes straight to the terminal.
+- The launcher exports `MENUBAR_LOAD_RUNNER_LAUNCHER` (its own symlink-resolved absolute path) and
+  `MENUBAR_LOAD_RUNNER_LAUNCH_MODE` (`detached`/`attached`) purely so the app can restart itself after an
+  update (see `Restarter` below). Keep them exported from **both** launch branches, and keep them derived
+  from `resolve_script_path` — the PATH entry `install.sh` creates is a symlink whose *name* may differ, so
+  the app must be handed the real file, not a name joined to the real dir.
 - `MenuBarLoadRunner` (the compiled binary) is gitignored; `MenuBarLoadRunner.swift` is the only source of truth.
 
 ## Installer (`install.sh` — end-user install, already exists — do not rebuild)
@@ -400,6 +405,28 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     `updateSleepPrevention()`, which also runs on every thermal/battery/power event and would write
     disk for a change in *running* state. Persist intent, never running state: the
     `isEnabled`/`isRunning` split has to survive a relaunch too.
+  - **Self-update, and the restart after it** (`UpdateChecker` / `Restarter`, both above `Tuning`). The
+    check is `git ls-remote --tags origin 'v*'` (no token, no API, honors the checkout's own origin);
+    applying is a click-gated `git pull --ff-only`, never `--force`. Two things are load-bearing:
+    - **The pull names its refspec when tracking is missing.** A bare `pull --ff-only` needs
+      `branch.<name>.remote`/`.merge`, which a *copied* (not cloned) checkout lacks — it then dies on
+      "no tracking information", an error no button in the alert can fix. So `pullArguments` falls back to
+      `pull --ff-only origin <branch>`, and detached HEAD keeps the bare form so git's own message shows.
+    - **The app cannot restart itself directly** — the pull moves the *source*, and the launcher is what
+      recompiles, so the restart re-invokes whoever started us. That is not inferrable in-process (a
+      detached run and a launchd job both reparent to pid 1), hence the launcher's exported markers, and
+      hence launchd being *asked* rather than sniffed: a LaunchAgent job's `XPC_SERVICE_NAME` is `"0"`,
+      **not** the label (verified — it is the obvious-looking signal and it is wrong), so `isLaunchAgentJob`
+      compares our pid to the one `launchctl list <label>` reports, which works because the plist's launcher
+      `exec`s the binary and `exec` preserves the pid. The relaunch runs from a detached `/bin/sh` that
+      waits for our pid to disappear (bounded ~30s) — required, since the launcher's singleton guard
+      refuses while we live and launchd won't restart a job whose process is up — and `kickstart` is
+      deliberately **without `-k`**, which would SIGKILL us mid-quit and skip the caffeinate teardown.
+      `appArguments` reproduces the *running* config (menu-chosen preset/source/label/threshold/disclosure
+      and a fixed `--speed-multiplier`), because none of those persist; Keep Awake needs a flag only when
+      **indefinite**, since a bounded window restores from the saved deadline and the restore path refuses
+      indefinite ones on purpose. The `.launchAgent` path can't inject argv (baked `ProgramArguments`), so
+      it resumes those baked args — a documented asymmetry, not a bug.
   - **Menu bar state is menu-driven**: the status item menu doubles as a live dashboard — metrics and
     selection state are refreshed on `menuWillOpen` (`refreshMenuMetrics`, `refreshPresetSelectionState`,
     `refreshWidthInfo`, `refreshLabelSelectionState`, `refreshBatteryThresholdSelectionState`,

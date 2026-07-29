@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
 
-Current version: **1.15.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.15.2** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -439,8 +439,16 @@ never automatic:
 1. Click **`Update available`** (or **`Check for Updates...`** when it finds a newer version).
 2. Confirm the dialog. The app runs `git pull --ff-only` in its install directory (never `--force` /
    `reset`, so a modified or diverged checkout aborts cleanly and offers the releases page instead).
-3. On success it asks you to **restart** — quit from the menu and relaunch (or it starts fresh at next
-   login). The launcher recompiles automatically because the source is now newer than the binary.
+3. On success it offers a **Restart** button, which quits and relaunches you onto the new version. The
+   launcher recompiles automatically because the source is now newer than the binary. Your Keep Awake
+   window, label, battery threshold, and Keep Awake tint carry over (they're saved to disk), and a
+   restart also carries the preset, load source, fixed speed, and Other Sources disclosure you picked
+   from the menu, which are not saved between ordinary launches.
+   - The button appears only when the app knows how to bring itself back: a normal (detached) launcher
+     run, or a start-at-login LaunchAgent. A `--foreground` run belongs to the shell that started it,
+     so there you get the manual instruction instead — quit from the menu and relaunch.
+   - Under the LaunchAgent, the relaunch uses the arguments baked into the login item, so a preset or
+     source you picked from the menu resets to those (everything saved to disk still carries over).
 
 Disable the check entirely with `--no-update-check` or `MENUBAR_LOAD_RUNNER_UPDATE_CHECK=0`.
 

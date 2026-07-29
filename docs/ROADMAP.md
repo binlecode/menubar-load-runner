@@ -1,7 +1,7 @@
 # ROADMAP
 
 Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.14.0.
+of v1.15.2.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
@@ -45,8 +45,7 @@ Re-propose only with a concrete report of the behavior being missed.
 | `--replace` / auto-kill a running instance | Silently killing a running instance is a surprising default. |
 | Installer tag-pinning, `--ref`, `VERSION` | Cut as non-MVP; it tracks the default branch and power users check out a tag. |
 | An `.app` bundle · notarization · Homebrew cask · Sparkle · a URL scheme / automation interface | **Decided 2026-07-26: stays a source-built, bundle-less binary.** Notarization is $99/yr forever for a free OSS utility, and Homebrew disables unsigned casks on 2026-09-01 — ad-hoc signing can't substitute, since identity churns on every recompile and this app recompiles on every update. Bundling would also retire the git-checkout self-update for Sparkle and break the CLI-first interface, which a `.app` can't take argv for. |
-| **Restart Now** on the update prompt | Needs install-type detection, which has no clean signal (a detached run also reparents to pid 1). |
-| Persisted update-check throttle · in-app recompile+relaunch · persisted auto-check toggle · About version line | Cut for v1; the menu item is the real surface. |
+| Persisted update-check throttle · persisted auto-check toggle · About version line | Cut for v1; the menu item is the real surface. (Relaunch-after-update **shipped** in v1.15.2 — as a `Restart` button that re-invokes the launcher, which is what recompiles; the app never compiles in-process.) |
 | A doc-drift checker beyond version strings (grep prose for symbol names) | Version strings are the only mechanically checkable claim; semantic drift (wrong reader count, max-vs-average, mA-vs-amps) is invisible to a grep, and a symbol-name checker false-positives on every intentional rewording, which is how checks get disabled. Version consistency **is** enforced — `tests/qa.sh` §2. |
 
 ## Known limits — not gaps

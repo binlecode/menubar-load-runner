@@ -6,8 +6,14 @@ already uses covers temperature keys. This is the cheapest remaining open item.
 Deliverable: an eighth `LoadSource` driven by die temperature, at the same unprivileged tier as every
 other reader.
 
-Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines). Re-resolve by
-symbol if they don't land.
+Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines) and are now
+**~1,100 lines stale** — the file is 5647 lines at v1.17.1. Assume no `:NNN` lands; resolve every one by
+symbol. `FanLoadMonitor`'s block has moved from `:1263-1452` to roughly `:1685-1870`.
+
+**Re-checked against v1.17.1 on 2026-07-29 — the plan still applies unchanged, Step 1 included.** The SMC
+plumbing is still `private` to `FanLoadMonitor` (`private struct SMCKeyData`, `private var connection:
+io_connect_t`, `openSMC()`), and no `SMCClient` exists anywhere in the source — so the extraction this
+plan opens with has not been done or partly done by another change.
 
 ---
 

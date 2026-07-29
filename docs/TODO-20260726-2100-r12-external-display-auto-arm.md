@@ -7,8 +7,17 @@
 The roadmap says the wiring is nearly free and the asymmetry is the problem. Both are true. Two more
 things surfaced while writing this up, and either could sink the item.
 
-Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines). Re-resolve by
-symbol if they don't land.
+Line anchors below are against **v1.14.0** (`MenuBarLoadRunner.swift`, 4553 lines) and are now
+**~1,100 lines stale** — the file is 5647 lines at v1.17.1. Assume no `:NNN` lands; resolve every one by
+symbol (`screenObserver` is registered near `:3222`, `conditionsDidChange()` near `:5115`, `Settings ▸`
+near `:2971`, `PersistedState.Settings` near `:1283`).
+
+**Re-checked against v1.17.1 on 2026-07-29 — status is unchanged: still a candidate, still do not
+implement as specified.** The wiring premise holds (`screenObserver` still calls only `applySizing()` /
+`renderCurrentFrame()`, so adding `conditionsDidChange()` is still the one-line change), and the blocker
+is still not code: `tests/clamshell-sleep-check.sh` has been committed since 2026-07-27 (`da65f63`) and
+**trial 2 is still unrun** — it needs physical lid open/close and real idle time. Nothing in this file
+can be settled from a keyboard.
 
 ---
 

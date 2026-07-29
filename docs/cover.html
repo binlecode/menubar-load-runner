@@ -378,10 +378,11 @@
   @media (prefers-color-scheme:dark){ .seg button[aria-pressed="true"]{color:#141821} }
   :root[data-theme="dark"] .seg button[aria-pressed="true"]{color:#141821}
   .seg button:focus-visible{outline:2px solid var(--lantern); outline-offset:2px}
-  .readout-note{font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:var(--fg-soft);
-    display:flex; align-items:center; gap:8px}
+  /* Flows as normal text: the <code> chip is inline, not a flex item. It was display:flex, which made
+     the sentence's three children (text, chip, text) three columns with the chip stranded between. */
+  .readout-note{font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:var(--fg-soft)}
   .readout-note code{color:var(--lantern-deep); background:var(--surface-2); border:1px solid var(--hair);
-    border-radius:6px; padding:2px 7px; font-size:11px}
+    border-radius:6px; padding:2px 7px; font-size:11px; white-space:nowrap}
 
   .readout-stage{background:var(--bar); border:1px solid var(--bar-line); border-radius:16px;
     padding:24px 22px; display:flex; flex-direction:column; gap:18px;
@@ -759,7 +760,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.15.0</span>
+        <span class="badge">v1.15.1</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

@@ -9,7 +9,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.15.0"
+    static let version = "1.15.1"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -106,7 +106,7 @@ private enum UpdateChecker {
     // output on failure — dirty tree, non-fast-forward, conflict). Never --force / reset --hard, so a
     // diverged or dirty checkout aborts cleanly rather than losing work. Blocking; dispatch off-main.
     static func pull(repoDir: URL) -> (ok: Bool, message: String) {
-        guard let result = runGit(["pull", "--ff-only"], in: repoDir) else {
+        guard let result = runGit(pullArguments(in: repoDir), in: repoDir) else {
             return (false, "Could not run git.")
         }
         if result.status == 0 {
@@ -114,6 +114,32 @@ private enum UpdateChecker {
         }
         let raw = result.stderr.isEmpty ? result.stdout : result.stderr
         return (false, raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    // Reads the two facts `pullArguments(upstreamConfigured:branch:)` decides on: whether
+    // `@{upstream}` resolves, and the checked-out branch (nil when HEAD is detached).
+    private static func pullArguments(in repoDir: URL) -> [String] {
+        let upstream = runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], in: repoDir)
+        let head = runGit(["symbolic-ref", "--short", "--quiet", "HEAD"], in: repoDir)
+        return pullArguments(
+            upstreamConfigured: upstream?.status == 0,
+            branch: head?.status == 0 ? head?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        )
+    }
+
+    // Bare `git pull --ff-only` needs `branch.<name>.remote`/`.merge`, and a checkout that was copied
+    // rather than cloned (or whose branch was made with `--no-track`) has neither — the pull then dies
+    // on "There is no tracking information for the current branch", which is *unfixable from inside the
+    // app*: no button in the alert can write git config, so the one-click update dead-ends on a
+    // checkout that is otherwise a clean fast-forward. Naming the refspec explicitly sidesteps the
+    // config entirely. `origin` is the same remote `latestRemoteTag` already reads, so the update
+    // applies from wherever the check looked. Detached HEAD keeps the bare form: git's own "You are not
+    // currently on a branch" is the right message, and there is no branch to pull into anyway. Pure so
+    // the decision is testable without a repo (mirrored in `tests/semver.swift`).
+    static func pullArguments(upstreamConfigured: Bool, branch: String?) -> [String] {
+        let base = ["pull", "--ff-only"]
+        guard !upstreamConfigured, let branch, !branch.isEmpty else { return base }
+        return base + ["origin", branch]
     }
 
     // Parses `ls-remote` output: each line is "<sha>\trefs/tags/<tag>". Extracts the tag after the

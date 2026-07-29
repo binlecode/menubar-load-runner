@@ -554,6 +554,10 @@
           refreshed on the same tick as the icon. Set <span class="mono">--label&nbsp;&lt;text&gt;</span> for a
           fixed tag (handy for telling two instances apart). It’s a real status item in the native menu-bar
           font — never text baked onto the tiny icon.</p>
+        <p>Its slot is a <b>fixed width</b>, sized for the widest reading it could ever show, with the digits
+          right-aligned in monospaced figures. So the number changes and <b>nothing moves</b> — no creature
+          twitching sideways twice a second. Sits left of the icon by default; <span class="mono">Position</span>
+          puts it on the right if you’d rather have it next to the clock.</p>
         <div class="seg" role="group" aria-label="Menu Bar Label mode">
           <button type="button" data-mode="off" aria-pressed="false">Off</button>
           <button type="button" data-mode="value" aria-pressed="true">Live Value</button>
@@ -580,7 +584,7 @@
         <span class="caption" id="labelCaption">flip the modes — the slot appears beside the icon</span>
       </div>
     </div>
-    <p class="heroBar cap">Off by default (claims no space); switchable live from the <span class="mono">Menu&nbsp;Bar&nbsp;Label</span> submenu or at launch via <span class="mono">--label</span> / <span class="mono">MENUBAR_LOAD_RUNNER_LABEL</span>.</p>
+    <p class="heroBar cap">Off by default; switchable live from the <span class="mono">Settings&nbsp;▸&nbsp;Menu&nbsp;Bar&nbsp;Label</span> submenu — mode and side, both remembered — or at launch via <span class="mono">--label</span> / <span class="mono">MENUBAR_LOAD_RUNNER_LABEL</span>.</p>
   </section>
 
   <section id="cast">
@@ -760,7 +764,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.15.2</span>
+        <span class="badge">v1.16.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

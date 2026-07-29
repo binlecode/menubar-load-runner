@@ -91,6 +91,20 @@ Run from the repository root:
   MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 \
     ./tmp/mblr-check --keep-awake 30m     # expect: no caffeinate child, menu says paused
   ```
+- `MENUBAR_LOAD_RUNNER_LOG_SLOTS=1` prints every status item's frame in **screen coordinates** each 2s
+  tick, so slot order and slot stability become assertable instead of eyeball-only (`tests/qa.sh` §3c).
+  This is the tool to reach for on any menu-bar layout question: a status item's button lives in its own
+  window, and a process may always inspect its own windows, so unlike `screencapture` (needs Screen
+  Recording) or `tests/menu-dump.applescript` (needs Accessibility) it works from any shell with **no TCC
+  grant** — including an agent's, where both of those are denied. It is also how the 16pt cost of a
+  `length = 0` item was measured. Assert on *relative* geometry: an unrelated menu-bar change shifts the
+  whole group at once, which absolute x reads as jitter.
+  ```bash
+  MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=9 \
+    ./tmp/mblr-check --label value --load-source cpu 2>&1 | grep SLOTS
+  # SLOTS icon[x=1089.0 w=47.0] left[x=994.0 w=95.0] right[x=1136.0 w=16.0] side=left label="CPU  11%"
+  #        ^ left slot's maxX (994+95) == icon's minX → adjacent, and w=95 never changes
+  ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
   the process args, since args no longer carry a `.gif` path now that Swift resolves preset keywords. The
@@ -181,8 +195,9 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   **fail-silent** (missing/corrupt/unwritable → defaults, never a startup error or a modal). Contrast
   `gifs/presets.json`, whose failure IS fatal — that's app identity, this is a convenience. Two blocks:
   `keepAwake` (intent — tint, deadline, enabled) and `settings` (menu-driven preferences that outlive a
-  relaunch; today the menu-bar label mode and the Keep Awake battery release threshold, the latter
-  stored as a charge *fraction* — the unit the live property holds, not the whole percent the CLI takes).
+  relaunch; today the menu-bar label's mode and side, and the Keep Awake battery release threshold, the
+  last stored as a charge *fraction* — the unit the live property holds, not the whole percent the CLI
+  takes).
   **`persistState()` is the only writer, and must stay the only one:** `StateStore.save()` replaces the
   whole file, so a block-specific writer would silently drop the block it doesn't own. It composes both
   blocks from live in-memory state, which also removes any read-modify-write window. Call it from the
@@ -194,7 +209,9 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
   an explicit `off` suppresses it — resolved in `applyLaunchLabelState()` before the first
   `applyLabelMode()`. An empty env value counts as absent, so `MENUBAR_LOAD_RUNNER_LABEL=` can't clobber
   a saved mode. Unlike a keep-awake window, *every* label mode is restorable: a label holds no assertion,
-  so there's no runaway state to guard against. The battery threshold restores the same way
+  so there's no runaway state to guard against. The label's **side** sits at the other end of that
+  spectrum — no flag exists to defer to, so it restores unconditionally and independently of the mode,
+  before the same `applyLabelMode()`. The battery threshold restores the same way
   (`applyLaunchBatteryThresholdState()`: flag/env → saved value → `batteryLowThresholdDefault`), with one
   asymmetry — `off` is a *value* (`0`), not a mode, so a flag can only override the saved setting, never
   read as absent. Every value restores, `off` most of all: dropping it would reinstate a release policy
@@ -440,17 +457,58 @@ Everything lives in `MenuBarLoadRunner.swift` (~4450 lines), organized top to bo
     the status-item length (menu-bar height × aspect, floored at `Tuning.minBaseSlotWidth`) — the sole
     driver of item width, used by both `applySizing()` and the read-only `refreshWidthInfo()` menu line.
     There is no user width control (`--width` / slot submenu removed) and no per-preset slot constant.
-  - **Menu-bar label is a second status item**: `MenuBarLabel` (`.off`/`.value`/`.custom(String)`,
-    parsed from `--label` / `MENUBAR_LOAD_RUNNER_LABEL`) drives an optional `valueStatusItem` — a
-    *separate* `NSStatusItem` (variableLength), NOT text baked onto the animation (that was the old
-    overlay; it was illegible on a 22pt icon and re-rasterized frames on every value change). `applyLabelMode()`
-    creates the second item on demand for `.value`/`.custom` and tears it down for `.off` (freeing the slot);
-    `updateValueLabel()` (called from `refreshMenuMetrics`, so it tracks the 2s tick) writes the text — the
-    active source's compact reading via `compactLabelText(for:)` in `.value` mode, or the fixed string in
-    `.custom`. The item shares `infoMenu` (same dropdown) and uses `NSFont.menuBarFont` so its color tracks
-    the menu-bar appearance. Menu switcher: the **Menu Bar Label** submenu (`labelOffItem`/`labelValueItem`/
-    `labelCustomItem`, radio group via `refreshLabelSelectionState`, mutated through `setLabelMode`, which
-    also persists — it is the mutating gesture).
+  - **Menu-bar label is a separate status item — in fact two of them.** `MenuBarLabel`
+    (`.off`/`.value`/`.custom(String)`, parsed from `--label` / `MENUBAR_LOAD_RUNNER_LABEL`) drives an
+    adjacent `NSStatusItem`, NOT text baked onto the animation (that was the old overlay; illegible on a
+    22pt icon, and it re-rasterized frames on every value change). `updateValueLabel()` (called from
+    `refreshMenuMetrics`, so it tracks the 2s tick) writes the text — `compactLabelText(for:)` in `.value`
+    mode, the fixed string in `.custom` — plus the width and the tint. Four things are load-bearing:
+    - **Two items (`labelItemLeft`, `labelItemRight`), because slot order is creation order and cannot be
+      changed.** macOS assigns a status item its slot when it becomes *visible*, orders slots oldest =
+      rightmost, and offers no reorder API. So the label's side is decided by whether it was created before
+      (→ right) or after (→ left) the animation, and a runtime switch with one item would mean tearing down
+      and rebuilding the *animation* (button, layer, keep-awake bar, display link, occlusion observer) every
+      time the label moved right. Instead both are created up front — right slot, animation, left slot —
+      and `applyLabelMode()` gives the live one its width and zeroes the other. Both stay permanently
+      visible because adjacency comes from being created back-to-back with the animation: reveal an item
+      later and it lands leftmost of *every* item on the bar, other apps' icons in between. So `.off` and
+      "wrong side" are both just `length = 0`. `activeLabelItem` is the one on `labelSide`; **address the
+      slot through it, never by name.** Cost, measured with `MENUBAR_LOAD_RUNNER_LOG_SLOTS` (below): a
+      `length = 0` item still claims **~16pt** of menu bar — hiding it moves its neighbour 16pt over — so
+      the pair permanently costs 16pt more than one item would. An older comment here claimed "zero
+      footprint"; that half is false. Accepted because the only alternative is rebuilding the *animation*
+      item on every switch to the right; the retreat, if 16pt ever outweighs an instant switch, is to
+      create only the persisted side's item and defer the menu row to the next launch.
+    - **The width is RESERVED, never auto-sized** (`labelSlotWidth`). A `variableLength` slot resizes with
+      its text, and macOS shifts every item to the *left* of one that resizes, so the label used to shove
+      its neighbour sideways twice a second (1.11.2 → 1.15.2 put the label on the right, which moved the
+      jitter onto the icon; that's the bug this replaced). Each number goes through `labelField`, which pads
+      it with **U+2007 FIGURE SPACE** — a space defined to be exactly as wide as a digit — out to the
+      character count of that field's ceiling (`Tuning.percentScale`, `labelRateCeiling`,
+      `labelDiskCeiling`), and the font is `labelFont`, the menu-bar font with **monospaced digits**. Both
+      halves are required: monospaced digits make `111` and `888` measure alike, and the figure space makes
+      the pad measure like a digit (a normal space is 3.6pt against a digit's 8.1pt, so `%3.0f` padding
+      still moves). Result: every reading of a shape measures identically, so the reservation from
+      `labelWidthTemplate` holds exactly and the text fills it with no dead space. `tests/label.swift`
+      asserts this with real font metrics — the only tier that can see sub-point drift. Overflow past a
+      ceiling formats wider and `max()` widens the slot for that tick rather than truncating.
+    - **VoiceOver gets the depadded string.** Coloring a status button's text needs `attributedTitle`,
+      which is invisible to VoiceOver, hence the explicit `setAccessibilityLabel` — and it is handed the
+      reading with U+2007 stripped (lossless: all padding is leading-within-a-field).
+    - **It wears the Keep Awake tint while keep-awake is running**, keyed on `sleepPreventer.isRunning`
+      exactly like `updateKeepAwakeBar()` — which calls `updateValueLabel()` so a toggle/suspend recolors
+      at once instead of up to 2s later. The plain `title =` assignment in the not-running branch resets
+      the color back to the default catalog color — that default is what tracks appearance and dropdown
+      highlighting, so don't "fix" it into an explicit `.labelColor`.
+
+    Menu switcher: the **Menu Bar Label** submenu holds two independent radio groups — the mode
+    (`labelOffItem`/`labelValueItem`/`labelCustomItem`, distinguished by selector, no tags) and the side
+    (`labelSideItems`, tags = indices into `MenuBarLabelSide.allCases`, read only by `selectLabelSide`),
+    both refreshed by `refreshLabelSelectionState` and mutated through `setLabelMode` / `setLabelSide`,
+    which persist — they are the mutating gestures. The side is **menu-only, like the Keep Awake tint**: no
+    flag, no env var (a new flag is public API forever, and this is cosmetic), so it restores from the
+    `settings` block unconditionally in `applyLaunchLabelState()` — independently of the mode, whose flag
+    may have won — and the restart-after-update path picks it up off disk rather than through `argv`.
   - **Root-menu layout, and why two things are submenus.** The root menu is the scarce surface: it also
     carries the 7-row metrics block, the Other Sources section (up to 6 rows expanded), and Update/About/
     Exit, so a new setting landing there by default is what made it ~33 rows. Two containers absorb that:

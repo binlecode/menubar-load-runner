@@ -13,12 +13,16 @@ Run everything from the repo root.
 > **Executable harness.** Sections 1–6 below are also available as runnable scripts so you don't have
 > to copy-paste:
 > - `tests/qa.sh` — the tiered harness; self-scoring, exit 0 only if every section that ran passes.
->   Default runs §1–5 (build, CLI parse + version, lifecycle, error paths, readers + scaler). Tier
+>   Default runs §1–5 (build, CLI parse + version, lifecycle, slot geometry, error paths,
+>   readers + scaler + label widths). Tier
 >   flags: `--core` = §1/§2/§5 only (no GUI — the headless / CI-safe subset), `--gui` = §3/§4 only,
 >   `--launcher` = also run §6 (it stops running instances). `--help` lists them.
 > - `tests/install-smoke.sh` — install/uninstall round-trip in a `tmp/` sandbox (never touches your
 >   real `~/.local` / LaunchAgents).
-> - `tests/readers.swift`, `tests/scaler.swift` — the §5 probes as standalone files.
+> - `tests/readers.swift`, `tests/scaler.swift`, `tests/label.swift` — the §5 probes as standalone
+>   files. `label.swift` is the odd one: it measures real AppKit font metrics to prove the menu-bar
+>   label's slot width is constant at every value, which is the one thing §7's eyes can't reliably
+>   judge (sub-point drift) and no other tier observes at all.
 >
 > **Not part of any tier:** `tests/clamshell-sleep-check.sh` is a *diagnostic*, not a gate — it
 > measures host power-management behavior (does this Mac idle-sleep while docked; can Keep Awake hold
@@ -64,6 +68,16 @@ These make a *blocking GUI menu-bar app* testable from a shell:
   the 5% floor testable with no real battery and on a desktop (§3b), and makes the §3a arming checks
   deterministic — pin `100:ac` there, or a tester running below 20% sees every "arms `-t N`" case fail
   because the battery condition is correctly releasing the child.
+
+- **`MENUBAR_LOAD_RUNNER_LOG_SLOTS=1`** — prints each status item's frame in screen coordinates on
+  every 2s tick (`SLOTS icon[x=… w=…] left[…] right[…] side=… label="…"`). The answer to any "where is
+  the item / did it move?" question, and the *only* one that works without a TCC grant: a process may
+  always inspect its own windows, whereas `screencapture` needs **Screen Recording** and
+  `menu-dump.applescript` needs **Accessibility** — both of which are denied to a plain shell session
+  (and to any agent working in one), with `could not create image from display` / `osascript is not
+  allowed assistive access` as the tells. §3c asserts on it. Two things to know: compare **relative**
+  geometry (an unrelated menu-bar change shifts the whole group at once, and absolute x reads that as
+  jitter), and the first tick prints `x=0` everywhere before the windows are placed — skip it.
 
 ### Gotchas that have bitten us
 
@@ -646,6 +660,19 @@ persistence + `--keep-awake` v1.13.0):
       switch; Custom Text… shows a fixed string; Off frees the slot. Also settable via `--label`.
       The parent row still reads `Menu Bar Label: value` from inside `Settings ▸` — that readout is the
       reason it stays a nested submenu rather than three flat rows.
+- [ ] **`Settings ▸ Menu Bar Label ▸ Position`** (`Left of Icon` default / `Right of Icon`) — switching
+      moves the slot to the other side of the animation *immediately* (the icon shifts once, by the slot's
+      width; that's the move, not a bug). Set it while the label is **Off** too: nothing should appear,
+      and turning the label on afterwards must come up on the chosen side. It is menu-only by design —
+      no flag — so verify it survives a relaunch with no arguments (`labelSide` in the state file).
+- [ ] **Neither side jitters.** Mostly automated now — §3c asserts adjacency and constant slot width on
+      both sides, and `tests/label.swift` asserts the readings measure alike to a hundredth of a point,
+      so the eyes-only residue is what neither can see: that the number is not *truncated* to an `…`,
+      that a reservation isn't showing as obvious dead space (check `--load-source network`, the widest
+      one), and that the digits read as columns rather than as a wobble.
+- [ ] **With Keep Awake running, the label is tinted the same as the track line** under the icon (pick
+      a loud one — Sage or Mauve — so it's unmistakable), and both revert together the instant it is
+      turned Off or suspended (`MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery` gives you a suspend).
 - [ ] **`Settings ▸ Battery Threshold`** (10 / 15 / 20 / 30% · Never · Custom…) — the parent row reads
       `Battery Threshold: 20%` and the mark sits on the matching row; a value from `--battery-threshold`
       that no row covers (say `18`) reads `: 18%` and marks **Custom…** instead. `Custom…` pre-fills the

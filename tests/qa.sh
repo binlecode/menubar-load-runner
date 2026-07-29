@@ -6,9 +6,9 @@
 #   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler + semver.
 #             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
 #             a headless CI runner). This is the required gate.
-#   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §4 error paths. These boot
-#             NSApplication + create an NSStatusItem, so they need an active WindowServer (GUI)
-#             session. Fine on a logged-in Mac; best-effort on hosted runners (some are headless).
+#   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3c label slot geometry ·
+#             §4 error paths. These boot NSApplication + create an NSStatusItem, so they need an active
+#             WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on hosted runners.
 #   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
 #             so it STOPS any running instance (incl. a login-item one). Opt-in only.
 #   §7        interactive menu spot-check — always manual, never scripted.
@@ -133,6 +133,57 @@ run "env LOAD_SOURCE"          "" env MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network $B
 run "env PATH=<gif>"           "" env MENUBAR_LOAD_RUNNER_PATH="$GIF" $BIN --load-source disk
 echo "  lifecycle: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
+# --- §3c Label slot geometry [gui] -----------------------------------------
+# The one thing about the adjacent label that nothing else can observe: WHERE its slot sits, and whether
+# it stays put. There is no API to ask a status item its slot order, a screenshot needs Screen Recording
+# (and would have to catch a few points of drift), and menu-dump needs Accessibility — so
+# MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 has the app print its own items' screen frames each tick instead,
+# which needs no TCC grant because a process may always inspect its own windows.
+#
+# Assertions are on RELATIVE geometry, deliberately: an unrelated menu-bar change (another app's icon
+# appearing, a display change) shifts the whole group at once — observed mid-run during development —
+# and absolute x would read that as jitter. Adjacency and constant width are what the design promises.
+section "§3c label slot geometry [gui — needs WindowServer]"
+pass=0; fail=0
+SG="$PWD/tmp/qa-slots-state.json"
+gk(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
+slots(){ # $1 = side; prints the SLOTS lines from a short run with the label on
+  printf '{"version":1,"settings":{"labelMode":"value","labelSide":"%s"}}' "$1" > "$SG"
+  MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$SG" \
+    MENUBAR_LOAD_RUNNER_EXIT_AFTER=7 $BIN --load-source cpu 2>&1 | grep '^SLOTS'
+}
+# awk over the captured lines: field 1 = icon x/w, then left, then right. Skips the pre-placement tick
+# (every x = 0 before the window is positioned) and reports the distinct values it saw.
+geom(){ awk -v want="$1" '
+  { n=split($0, f, /[][]/); icon=f[2]; left=f[4]; right=f[6];
+    split(icon, i, /[ =]/); split(left, l, /[ =]/); split(right, r, /[ =]/);
+    ix=i[2]+0; iw=i[4]+0; lx=l[2]+0; lw=l[4]+0; rx=r[2]+0; rw=r[4]+0;
+    if (ix == 0) next;                      # window not placed yet
+    ticks++;
+    adj = (want == "left") ? (lx + lw == ix) : (ix + iw == rx);
+    live = (want == "left") ? lw : rw;
+    if (!adj) bad_adj++;
+    if (widths != "" && widths != live) bad_width++;
+    widths = live;
+    if (icon_off != "" && icon_off != ix - lx) bad_icon++;   # icon moved relative to the left slot
+    icon_off = ix - lx;
+    if (index($0, "label=\"") > 0) { t=$0; sub(/.*label="/, "", t); sub(/".*/, "", t); seen[t]=1 }
+  }
+  END { texts=0; for (t in seen) texts++;
+        print (ticks >= 2 && !bad_adj && !bad_width && !bad_icon) ? 1 : 0, ticks, texts,
+              bad_adj+0, bad_width+0, bad_icon+0, widths }' ; }
+for want in left right; do
+  out=$(slots "$want" | geom "$want")
+  set -- $out
+  gk "label slot is adjacent, $want of the icon (${2:-0} ticks, slot ${7:-?}pt)" "$1" "adj_fails=$4 raw=$out"
+  gk "slot width constant while the value changes ($want, ${3:-0} distinct readings)" \
+     "$([ "${5:-1}" = 0 ] && [ "${3:-0}" -ge 1 ] && echo 1 || echo 0)" "width_changes=$5 raw=$out"
+  gk "icon does not move relative to the slot ($want)" \
+     "$([ "${6:-1}" = 0 ] && echo 1 || echo 0)" "icon_shifts=$6 raw=$out"
+done
+rm -f "$SG"
+echo "  slot geometry: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
 # --- §3a Keep Awake battery conditions [gui] -------------------------------
 # Asserts whether `caffeinate` actually runs under each power state, which is the only way to catch a
 # keep-awake that *looks* armed and holds nothing — the R1 bug. MENUBAR_LOAD_RUNNER_FORCE_BATTERY pins
@@ -232,6 +283,22 @@ sp "unknown mode -> launch default"   off    $BIN
 grep -q '"tint" : 3' "$SF" \
   && { echo "  PASS [keepAwake block survives a settings write]"; pass=$((pass+1)); } \
   || { echo "  FAIL [keepAwake block survives a settings write]"; fail=$((fail+1)); }
+# The label's SIDE is the first setting with no flag at all (menu-only, like the Keep Awake tint), so
+# "an explicit flag wins" has no analogue — what has to hold instead is that a launch cannot quietly
+# reset it. A run with no arguments must write back the side it read, and an unrecognized one must
+# degrade to the left default rather than to an empty/absent field.
+side(){ desc="$1"; expect="$2"; shift 2
+  MENUBAR_LOAD_RUNNER_STATE_FILE="$SF" MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" >/dev/null 2>&1; rc=$?
+  got=$(sed -n 's/.*"labelSide" *: *"\([a-z]*\)".*/\1/p' "$SF" 2>/dev/null)
+  if [ "$rc" = 0 ] && [ "$got" = "$expect" ]; then echo "  PASS [$desc]"; pass=$((pass+1))
+  else echo "  FAIL [$desc] rc=$rc expect=$expect got=${got:-<none>}"; fail=$((fail+1)); fi; }
+rm -f "$SF"
+side "side defaults to left"          left  $BIN
+printf '{"version":1,"settings":{"labelMode":"value","labelSide":"right"}}' > "$SF"
+side "saved side survives a relaunch" right $BIN
+side "not reset by a --label"         right $BIN --label off
+printf '{"version":1,"settings":{"labelSide":"middle"}}' > "$SF"
+side "unknown side -> left default"   left  $BIN
 # The battery release threshold is the second settings value, and the first whose unit differs between
 # surfaces: the CLI takes whole percents, the file stores the charge fraction. Same three-part contract
 # as the label — survives a relaunch, an explicit flag still wins, a bad value degrades — asserted on
@@ -288,6 +355,8 @@ section "§5 reader correctness [core]"
 swiftc tests/readers.swift -o tmp/readers 2>&1 && ./tmp/readers || total_fail=$((total_fail+1)); rm -f tmp/readers
 section "§5 adaptive scaler [core]"
 swiftc tests/scaler.swift -o tmp/scaler 2>&1 && ./tmp/scaler || total_fail=$((total_fail+1)); rm -f tmp/scaler
+section "§5 menu-bar label width [core]"
+swiftc tests/label.swift -o tmp/label 2>&1 && ./tmp/label || total_fail=$((total_fail+1)); rm -f tmp/label
 section "§5 semver + update-tag parse [core]"
 swiftc tests/semver.swift -o tmp/semver 2>&1 && ./tmp/semver || total_fail=$((total_fail+1)); rm -f tmp/semver
 section "§5 restart-after-update [core]"

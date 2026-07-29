@@ -1,7 +1,7 @@
 # ROADMAP
 
 Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.15.2.
+of v1.16.0.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
@@ -25,12 +25,14 @@ by **symbol, never by line number** — anchors rot every release, and a TODO fi
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
 | R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
 | R11 | **Die-temperature sensors.** Not API-blocked: the unprivileged SMC path the fan reader already uses covers temperature keys. **Catch:** that plumbing is private to `FanLoadMonitor` and must be extracted to a shared client (one `io_connect_t`, not two); key discovery is probe-a-candidate-list, since there is no `FNum`-equivalent for temperature. → `TODO-20260726-2059-r11-die-temperature-source.md` | P4 | — |
+| R14 | **The cover documents `Battery Threshold` as CLI-only.** `docs/cover.html`'s Keep Awake section describes the release point purely as `--battery-threshold`; the `Settings ▸ Battery Threshold` submenu that shipped in v1.15.0 (R5 Steps 4+5 — rows, `Never`, `Custom…`, persisted) is never named, though every other setting on that page names its menu surface. Prose-only fix, then rebuild + redeploy (`publish-cover`). Found 2026-07-29 by reading the page, not by a check: this is exactly the semantic drift the declined doc-drift checker can't catch, so it is tracked as an item instead. | P3 | — |
 
 ## Candidate — design open, do not implement as specified
 
 | ID | Item | Pri | Settle first |
 |---|---|---|---|
 | R12 | **Arm Keep Awake when an external display connects.** Wiring is nearly free: `screenObserver` already watches `didChangeScreenParametersNotification` and would call `conditionsDidChange()`. Must be opt-in; `Settings ▸` is the home for that toggle. → `TODO-20260726-2100-r12-external-display-auto-arm.md` | P3 | Three things. (1) The asymmetry, not the wiring: every condition in `keepAwakeSuspension` only turns keep-awake **off**; auto-engage inverts that and needs a matching auto-disengage on unplug. (2) That notification also fires on display sleep/wake and resolution changes, and `NSScreen.screens.count > 1` is false in clamshell — the common case. (3) Whether the docked-clamshell scenario people mean is one `caffeinate` even affects; if not, decline. Probe committed (`tests/clamshell-sleep-check.sh`) and **unrun** — the remaining blocker is physical (lid open/close, idle time, no sleep-assertion holders), not code. Don't mistake `powerd`'s display-gated assertion for the answer; it is a hypothesis until trial 2 runs. |
+| R13 | **Show when something *else* is holding the Mac awake.** Sparked 2026-07-29: the menu read `Off` while two agent-owned `caffeinate -i -t 300` renewals held `PreventUserIdleSystemSleep` and this app's own window had expired an hour earlier. If built it is read-only, same tier as every existing reader — `IOPMCopyAssertionsByProcess` (IOKit `pwr_mgt`, public, headered, unprivileged), **never** parsing `pmset -g assertions` prose — and distinct from the declined *automation interface*, which was about letting other processes drive this app. Not parity work: KeepingYouAwake 1.6.8 (inspected) links no assertion-read API and has no string for a foreign hold. | P4 | **Reading the assertions is easy; making a true claim from them is not.** (1) **An assertion is not an effect.** `PreventUserIdleSystemSleep` alone does not hold the display, and the declined idle-only item above says the system follows the display down — so "something is holding your Mac awake" can be true in the list and false in fact. That is exactly what the `-i` caffeinates that prompted this item were; the founding observation proves an assertion existed, not that sleep was prevented. (2) **The list is mostly noise** — `powerd` holds one whenever the display is on, `WindowServer` tickles `UserIsActive` on every keystroke — so any signal is a heuristic over assertion type + owner, not a reading. (3) **Renewal-based holders blink**: a 300s-renewal pattern gaps between assertions, so a 2s menu tick flickers without hysteresis. (4) **No lever** — naming the holder is information the user can't act on from the menu, and acting *would* be the declined automation interface. Settle by deriving one claim that is true, stable, and worth a row — or decline. `tests/clamshell-sleep-check.sh` is the nearest probe shape: the blocker is evidence about real sleep behavior, not code. |
 
 ## Declined
 
@@ -72,7 +74,9 @@ Re-propose only with a concrete report of the behavior being missed.
 A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
 `CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
 git tag the in-app update check reads. A changed badge also means the cover wants a redeploy
-(`publish-cover`).
+(`publish-cover`) — **v1.16.0's is done**: verified 2026-07-29 that both `docs/cover.html` and the
+live `menubar-load-runner.pages.dev` serve the v1.16.0 badge. The badge only proves the *version*
+matched at deploy time, never that the prose did (see R14).
 
 **Four of the five are enforced** — `tests/qa.sh` §2 derives `VER` from `AppInfo.version` and asserts
 it against `--help`, the CHANGELOG heading, the README line, and the cover badge. The **git tag is

@@ -29,6 +29,26 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-07-29
+
+One row per owner in the new Other Assertions section, and a QA check that stops crying wolf on a full menu bar.
+
+### Fixed
+
+- **`tests/qa.sh` §3c no longer reports a false failure on a full menu bar.** macOS owns status-item
+  placement and has no reorder API, and when the bar has no room left it does not keep one process's items
+  together — on a notched built-in display six consecutive runs placed ours as `icon=908 right=955
+  left=1117` with other apps' icons interleaved, while the roomy external display placed the same build
+  correctly every time. §3c now detects that geometrically (the group span versus the sum of the three
+  widths) and reports `NOTE` rather than `FAIL`, because a bar that scattered the items cannot answer the
+  question being asked. A contiguous-but-wrong order still FAILs, so a genuine ordering regression cannot
+  hide behind the NOTE. Width-constancy and icon-relative-stability — the v1.16.0 no-jitter promise — are
+  asserted either way, and they held throughout the scattered runs.
+
+  The honest cost: on a machine that always scatters, adjacency goes **unverified** locally. Recorded as a
+  known limit in `docs/ROADMAP.md`, and the `AGENTS.md` claim that back-to-back creation yields adjacency
+  is corrected — it does, but only on a bar with room.
+
 ### Changed
 
 - **`Other Assertions` now shows one row per owner, listing every assertion type that process holds** —

@@ -522,7 +522,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       and `applyLabelMode()` gives the live one its width and zeroes the other. Both stay permanently
       visible because adjacency comes from being created back-to-back with the animation: reveal an item
       later and it lands leftmost of *every* item on the bar, other apps' icons in between. So `.off` and
-      "wrong side" are both just `length = 0`. `activeLabelItem` is the one on `labelSide`; **address the
+      "wrong side" are both just `length = 0`.
+      **Back-to-back creation buys adjacency only on a bar with room** — measured 2026-07-29, and the
+      earlier unqualified claim here was wrong. macOS owns placement, and when the bar is full it does not
+      keep one process's items together: on a notched built-in display, six consecutive runs placed ours as
+      `icon=908 right=955 left=1117` with other apps' icons interleaved, while the roomy external display
+      placed the same build correctly every time. Nothing in-process can fix this (no reorder API), so it is
+      a **known limit**, not a bug to chase — see `docs/ROADMAP.md`. What survives a scattered bar is the
+      v1.16.0 no-jitter promise: fixed width and no icon movement held throughout. `tests/qa.sh` §3c
+      detects the scatter geometrically and reports NOTE rather than a false FAIL. `activeLabelItem` is the one on `labelSide`; **address the
       slot through it, never by name.** Cost, measured with `MENUBAR_LOAD_RUNNER_LOG_SLOTS` (below): a
       `length = 0` item still claims **~16pt** of menu bar — hiding it moves its neighbour 16pt over — so
       the pair permanently costs 16pt more than one item would. An older comment here claimed "zero

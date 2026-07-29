@@ -637,8 +637,8 @@
           off while long work runs (an idle-only lock lets modern Macs sleep once the screen naps). The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
           the app, so it's <b>reaped the instant the app quits or crashes</b>; no orphaned sleep lock.</p>
         <ul class="awake-list">
-          <li><b>Auto-disengages</b> on low battery (≤20% on battery, or wherever you put it with
-            <span class="mono">--battery-threshold</span> — including <span class="mono">off</span>) or
+          <li><b>Auto-disengages</b> on low battery (≤20% on battery, or wherever you put it — the
+            release point is yours to move, below) or
             serious/critical thermal — then <b>re-engages</b> the moment the condition clears. Below 5%
             it releases whatever you set: that floor isn't yours to move.</li>
           <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
@@ -659,8 +659,12 @@
             <span class="mono">on</span>) arms it at launch, so it can be baked straight into the
             login item. A unit is required — a bare number reads as either minutes or hours, and guessing
             wrong is a 60× error in how long your Mac stays awake.</li>
-          <li><b>Move the battery cliff.</b> <span class="mono">--battery-threshold 10</span> releases at
-            10% instead of 20%; <span class="mono">off</span> never releases on charge alone. Whole
+          <li><b>Move the battery cliff.</b> <span class="mono">Settings&nbsp;▸&nbsp;Battery&nbsp;Threshold</span>
+            sets the release point live — 10, 15, 20, 30%, a <span class="mono">Custom…</span> percent, or
+            <span class="mono">Never</span> — and remembers it across launches. A change lands on a window
+            that's <i>already</i> running, not at the next one. Or bake it in:
+            <span class="mono">--battery-threshold 10</span> releases at 10% instead of 20%;
+            <span class="mono">off</span> never releases on charge alone. Whole
             percents only — <span class="mono">0.20</span> reads as 0.2% or 20% depending on who's
             asking, so it's refused rather than guessed. A bad value clamps or falls back <i>and still
             launches</i>: a typo in your login item shouldn't cost you the app.</li>

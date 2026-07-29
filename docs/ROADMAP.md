@@ -25,7 +25,6 @@ by **symbol, never by line number** — anchors rot every release, and a TODO fi
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
 | R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
 | R11 | **Die-temperature sensors.** Not API-blocked: the unprivileged SMC path the fan reader already uses covers temperature keys. **Catch:** that plumbing is private to `FanLoadMonitor` and must be extracted to a shared client (one `io_connect_t`, not two); key discovery is probe-a-candidate-list, since there is no `FNum`-equivalent for temperature. → `TODO-20260726-2059-r11-die-temperature-source.md` | P4 | — |
-| R14 | **The cover documents `Battery Threshold` as CLI-only.** `docs/cover.html`'s Keep Awake section describes the release point purely as `--battery-threshold`; the `Settings ▸ Battery Threshold` submenu that shipped in v1.15.0 (R5 Steps 4+5 — rows, `Never`, `Custom…`, persisted) is never named, though every other setting on that page names its menu surface. Prose-only fix, then rebuild + redeploy (`publish-cover`). Found 2026-07-29 by reading the page, not by a check: this is exactly the semantic drift the declined doc-drift checker can't catch, so it is tracked as an item instead. | P3 | — |
 
 ## Candidate — design open, do not implement as specified
 
@@ -75,8 +74,12 @@ A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunn
 `CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
 git tag the in-app update check reads. A changed badge also means the cover wants a redeploy
 (`publish-cover`) — **v1.16.0's is done**: verified 2026-07-29 that both `docs/cover.html` and the
-live `menubar-load-runner.pages.dev` serve the v1.16.0 badge. The badge only proves the *version*
-matched at deploy time, never that the prose did (see R14).
+live `menubar-load-runner.pages.dev` serve the v1.16.0 badge.
+
+The badge only proves the *version* matched at deploy time, never that the prose did. R14 was one
+instance (the cover called `Battery Threshold` CLI-only for two releases after the menu shipped; fixed
+and redeployed 2026-07-29) and nothing prevents the next one — a **new user-facing setting needs its
+cover paragraph in the same pass as its menu row**, because no check will ever catch its absence.
 
 **Four of the five are enforced** — `tests/qa.sh` §2 derives `VER` from `AppInfo.version` and asserts
 it against `--help`, the CHANGELOG heading, the README line, and the cover badge. The **git tag is

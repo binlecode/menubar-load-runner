@@ -28,6 +28,25 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-07-28
+
+A one-click update that can't update is worse than no update button, and on a checkout that was copied
+between machines rather than cloned, that is exactly what shipped: the pull needed a piece of git config
+the copy never had, and the alert offered no way to supply it. The fix is to stop depending on the
+config at all.
+
+### Fixed
+
+- **`Check for Updates` no longer dead-ends on a checkout with no upstream branch.** The update ran a
+  bare `git pull --ff-only`, which needs `branch.<name>.remote`/`.merge` — config a *cloned* checkout
+  always has, but one that was copied between machines (or whose branch was made with `--no-track`)
+  does not. The pull then failed with git's "There is no tracking information for the current branch",
+  an error nothing in the alert could fix: no button in the app writes git config, so the one-click
+  update was stuck on a checkout that was otherwise a clean fast-forward. It now names the refspec
+  explicitly — `git pull --ff-only origin <current-branch>` — whenever tracking is absent, using the
+  same `origin` the update check reads its tags from. A detached HEAD still gets the bare form, so
+  git's own "you are not currently on a branch" is what surfaces.
+
 ## [1.15.0] - 2026-07-28
 
 The 20% battery cliff was never yours to move. Now it is — from the command line, from the menu, and it

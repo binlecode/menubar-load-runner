@@ -32,6 +32,12 @@ func highestTag(inLsRemoteOutput text: String) -> SemVer? {
     }.max()
 }
 
+func pullArguments(upstreamConfigured: Bool, branch: String?) -> [String] {
+    let base = ["pull", "--ff-only"]
+    guard !upstreamConfigured, let branch, !branch.isEmpty else { return base }
+    return base + ["origin", branch]
+}
+
 var pass = 0, fail = 0
 func check(_ n: String, _ c: Bool) { c ? (pass += 1) : (fail += 1); print("  \(c ? "PASS" : "FAIL") [\(n)]") }
 
@@ -60,5 +66,16 @@ def456\trefs/tags/v1.6.0
 """
 check("highest tag = v1.6.0", highestTag(inLsRemoteOutput: out)?.tagString == "v1.6.0")
 check("no tags -> nil", highestTag(inLsRemoteOutput: "abc\trefs/heads/main") == nil)
+
+// Pull refspec: bare when tracking exists, explicit `origin <branch>` when it doesn't (a copied
+// checkout has no branch.<name>.remote, and bare pull would dead-end on "no tracking information"),
+// bare again on detached HEAD so git's own "not currently on a branch" is what surfaces.
+check("tracked -> bare pull", pullArguments(upstreamConfigured: true, branch: "main") == ["pull", "--ff-only"])
+check("untracked -> explicit origin main",
+      pullArguments(upstreamConfigured: false, branch: "main") == ["pull", "--ff-only", "origin", "main"])
+check("untracked non-main branch names itself",
+      pullArguments(upstreamConfigured: false, branch: "feat/x") == ["pull", "--ff-only", "origin", "feat/x"])
+check("detached HEAD -> bare pull", pullArguments(upstreamConfigured: false, branch: nil) == ["pull", "--ff-only"])
+check("empty branch -> bare pull", pullArguments(upstreamConfigured: false, branch: "") == ["pull", "--ff-only"])
 
 print("semver: passes=\(pass) fails=\(fail)"); exit(fail == 0 ? 0 : 1)

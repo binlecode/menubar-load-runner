@@ -24,11 +24,18 @@
     --ember:#D8532B;          /* vermilion — high load */
     --glow:rgba(231,162,60,.5);
     /* — keep-awake track-line tints (each its own fixed hue, never the system accent) — */
+    /* Each tint ships TWO tones, picked per menu-bar appearance (KeepAwakeColor.color(for:)); the
+       §mark appearance switch shows both, so keep the pairs together and in sync with Tuning. */
     --teal-bar:#82B3AF;       /* "Dusty Teal" on a dark menu bar (Tuning.keepAwakeBarTealDark) */
     --sand-bar:#D8C39B;       /* "Sand" on a dark menu bar (Tuning.keepAwakeBarSandDark) */
     --graphite-bar:#A8AEB5;   /* "Graphite" on a dark menu bar (Tuning.keepAwakeBarGraphiteDark) */
     --mauve-bar:#B3A6C4;      /* "Mauve" on a dark menu bar (Tuning.keepAwakeBarMauveDark) */
     --sage-bar:#93B583;       /* "Sage" on a dark menu bar (Tuning.keepAwakeBarSageDark) */
+    --teal-bar-lt:#557F7C;    /* the same five on a LIGHT menu bar (…BarTealLight, etc.) */
+    --sand-bar-lt:#B29A6E;
+    --graphite-bar-lt:#6B717A;
+    --mauve-bar-lt:#7E7191;
+    --sage-bar-lt:#64855A;
     --teal:#3E7E7B;           /* keep-awake accent for in-page controls, on the light ground */
     --teal-glow:rgba(85,127,124,.42);
 
@@ -262,7 +269,10 @@
   .card .meta .range{font-family:var(--mono); font-size:11.5px; color:var(--fg-soft); font-variant-numeric:tabular-nums}
 
   /* ---------- quickstart ---------- */
-  .qs{display:grid; grid-template-columns:1fr 1fr; gap:22px; align-items:start}
+  /* Three columns, not two: six fact cards in a single column ran twice the height of the terminal
+     beside them. The terminal keeps one column and the cards flow across the other two. */
+  .qs{display:grid; grid-template-columns:repeat(3,1fr); gap:22px; align-items:start}
+  .qs .terminal{grid-column:1}
   .terminal{
     background:var(--ink); border:1px solid var(--ink-3); border-radius:14px; overflow:hidden;
     box-shadow:0 26px 50px -34px rgba(0,0,0,.8);
@@ -278,14 +288,127 @@
   .terminal .c{color:#6FB7B3}     /* comment */
   .terminal .p{color:#E7A23C}     /* prompt / cmd accent */
   .terminal .f{color:#C7A0E0}     /* flag */
-  .facts{display:flex; flex-direction:column; gap:14px}
+  .facts{grid-column:2 / span 2; display:grid; grid-template-columns:1fr 1fr; gap:14px;
+    align-content:start}
   .fact{background:var(--surface); border:1px solid var(--hair); border-radius:14px; padding:16px 18px}
   .fact h4{margin:0 0 4px; font-size:14.5px; font-weight:600}
   .fact p{margin:0; font-size:13px; color:var(--fg-soft); line-height:1.5}
   .fact b{color:var(--fg)}
 
+  /* ---------- the indicator (§mark): track line + color-matched label ---------- */
+  /* Copy left, demo right — but unlike the other two-column sections this one starts at the top:
+     the stage is the taller child, so centring it would strand the copy mid-panel. */
+  .mk{display:grid; grid-template-columns:.92fr 1.08fr; gap:28px; align-items:start}
+  .mk-copy p{margin:0 0 15px; font-size:14.5px; color:var(--fg-soft); line-height:1.55; max-width:46ch}
+  .mk-copy p b{color:var(--fg); font-weight:600}
+  .mk-copy p.tight{margin-bottom:20px}
+
+  /* shared control row: the five tints (also the app's on-gesture — see §awake copy) */
+  .swatch-row{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
+  .swatch{display:inline-flex; align-items:center; gap:7px; cursor:pointer; background:var(--surface);
+    border:1px solid var(--hair); border-radius:999px; padding:4px 12px 4px 5px;
+    font-family:var(--mono); font-size:11px; color:var(--fg-soft); transition:color .18s, border-color .18s}
+  .swatch .dot{width:15px; height:15px; border-radius:50%; border:1px solid rgba(0,0,0,.18)}
+  .swatch:hover{color:var(--fg)}
+  .swatch[aria-pressed="true"]{color:var(--fg); border-color:currentColor}
+  .swatch:focus-visible{outline:2px solid var(--fg-soft); outline-offset:2px}
+
+  /* appearance switch — which of the tint's two tones is in play */
+  .mk-appearance{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
+  .mk-appearance .app-btn{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; cursor:pointer;
+    color:var(--fg-soft); background:var(--surface); border:1px solid var(--hair); border-radius:999px;
+    padding:4px 11px; transition:color .18s, border-color .18s, background .18s}
+  .mk-appearance .app-btn:hover{color:var(--fg)}
+  .mk-appearance .app-btn[aria-pressed="true"]{color:var(--fg); border-color:currentColor;
+    background:var(--surface-2)}
+  .mk-appearance .app-btn:focus-visible{outline:2px solid var(--fg-soft); outline-offset:2px}
+  .mk-tone{font-family:var(--mono); font-size:10.5px; color:var(--fg-soft); font-variant-numeric:tabular-nums}
+
+  /* the stage. Its menu-bar surface is switchable (dark/light) — unlike every other bar mock on the
+     page, because showing both tones is the point of this section. */
+  .mk-stage{border-radius:16px; padding:22px 20px; display:flex; flex-direction:column; gap:16px;
+    border:1px solid var(--bar-line); background:var(--bar); backdrop-filter:blur(6px);
+    box-shadow:0 10px 30px -18px rgba(0,0,0,.9);
+    transition:background .3s, border-color .3s}
+  .mk-stage.light{background:rgba(238,236,228,.92); border-color:rgba(0,0,0,.10)}
+
+  /* --- 1. the anatomy: the status item at 4×, so a 2pt line is actually visible --- */
+  .mk-zoom{position:relative; display:flex; justify-content:center; padding:8px 0 40px}
+  /* the dashed box IS the status item's bounds — the line spans it edge to edge */
+  .mk-slot{position:relative; display:inline-flex; align-items:flex-end; justify-content:center;
+    padding:10px 14px 0; border:1px dashed rgba(255,255,255,.28); border-radius:4px;
+    transition:border-color .3s}
+  .mk-stage.light .mk-slot{border-color:rgba(0,0,0,.24)}
+  .mk-slot img{height:96px; width:auto; display:block; position:relative; z-index:1}
+  /* 2pt × 4 = 8px. Bottom edge, full slot width, painted OVER the art — never into it. */
+  .mk-zoom-line{position:absolute; left:0; right:0; bottom:0; height:8px; border-radius:2px; z-index:2;
+    background:var(--teal-bar); opacity:0; transition:opacity .3s, background .25s, box-shadow .25s}
+  .mk-zoom-line.on{opacity:1}
+  /* callouts. Absolute so they can point at the geometry without disturbing the centred slot. */
+  .mk-note{position:absolute; font-family:var(--mono); font-size:9.5px; letter-spacing:.07em;
+    text-transform:uppercase; color:rgba(255,255,255,.62); white-space:nowrap; transition:color .3s}
+  .mk-stage.light .mk-note{color:rgba(0,0,0,.55)}
+  .mk-note.thick{right:0; bottom:26px; text-align:right}
+  .mk-note.thick::after{content:""; position:absolute; left:-34px; bottom:.42em; width:28px; height:1px;
+    background:currentColor; opacity:.5}
+  .mk-note.span{left:50%; transform:translateX(-50%); bottom:2px}
+  /* the width measure: a bracket the exact width of the slot, so "full item width" is shown, not asserted */
+  .mk-measure{position:absolute; left:0; right:0; bottom:-12px; height:6px;
+    border:1px solid rgba(255,255,255,.42); border-top:0; transition:border-color .3s}
+  .mk-stage.light .mk-measure{border-color:rgba(0,0,0,.34)}
+  .mk-note.scale{left:0; top:0}
+  /* Top-right, without a leader: it describes the line's layering, not a point on the diagram, and
+     at the same y as the 2pt note it read as a second label for the same edge. */
+  .mk-note.over{right:0; top:0}
+
+  /* --- 2. true scale: both marks together on a real menu bar --- */
+  .mk-bar{display:flex; align-items:center; gap:0; width:100%; height:32px; padding:0 8px;
+    border-radius:9px; background:rgba(0,0,0,.22); color:rgba(255,255,255,.85);
+    transition:background .3s, color .3s}
+  .mk-stage.light .mk-bar{background:rgba(255,255,255,.55); color:rgba(0,0,0,.8)}
+  .mk-bar .apple{font-size:13px; opacity:.9; margin-right:13px}
+  .mk-bar .mtitle{font-size:12.5px; font-weight:600; opacity:.9}
+  .mk-bar .spacer{flex:1}
+  /* the label slot — same reserved-width, monospaced-digit treatment as §readout */
+  .mk-label{font-family:var(--mono); font-size:12.5px; font-variant-numeric:tabular-nums;
+    white-space:nowrap; margin-right:9px; transition:color .25s}
+  .mk-bar .runner-slot{position:relative; display:inline-flex; align-items:center; margin:0 7px}
+  .mk-bar .runner-slot img{height:24px; width:auto; display:block}
+  .mk-bar-line{position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:1px;
+    background:var(--teal-bar); opacity:0; transition:opacity .3s, background .25s}
+  .mk-bar-line.on{opacity:1}
+  .mk-bar .clock{font-variant-numeric:tabular-nums; font-size:12px; opacity:.9; margin-left:9px}
+
+  .mk-foot{display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap}
+  .mk-run{font-family:var(--mono); font-size:11px; letter-spacing:.03em; cursor:pointer;
+    color:rgba(255,255,255,.9); background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.22);
+    border-radius:999px; padding:6px 13px; transition:background .18s, color .3s, border-color .3s}
+  .mk-run:hover{background:rgba(255,255,255,.18)}
+  .mk-stage.light .mk-run{color:rgba(0,0,0,.82); background:rgba(0,0,0,.06); border-color:rgba(0,0,0,.18)}
+  .mk-stage.light .mk-run:hover{background:rgba(0,0,0,.12)}
+  .mk-run:focus-visible{outline:2px solid var(--lantern); outline-offset:2px}
+  .mk-cap{font-family:var(--mono); font-size:10.5px; letter-spacing:.05em; color:rgba(255,255,255,.6);
+    transition:color .3s}
+  .mk-stage.light .mk-cap{color:rgba(0,0,0,.55)}
+
+  /* the palette bar, spanning the grid above it */
+  .mk-controls{margin-top:24px; padding-top:18px; border-top:1px solid var(--hair);
+    display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap}
+  .mk-controls .swatch-row,
+  .mk-controls .mk-appearance{margin-bottom:0}
+
   /* ---------- keep awake ---------- */
-  .awake{display:grid; grid-template-columns:.98fr 1.02fr; gap:28px; align-items:center}
+  /* Copy+controls left, stage right, both top-aligned. The stage is short and the copy column long,
+     so `align-items:center` used to strand the stage in the middle of a wall of text. */
+  .awake{display:grid; grid-template-columns:1.06fr .94fr; gap:28px; align-items:start}
+  /* The dense policy prose that used to be bullets 4-6 of one overloaded list — moved out to
+     full-width cards below the grid, reusing the .fact component from §start. */
+  .awake-facts{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:28px}
+  .awake-demo{display:flex; flex-direction:column; gap:14px}
+  .awake-demo .awake-controls,
+  .awake-demo .awake-durations{margin-bottom:0}
   .awake-copy p{margin:0 0 16px; font-size:14.5px; color:var(--fg-soft); line-height:1.55; max-width:48ch}
   .awake-copy p b{color:var(--fg); font-weight:600}
   .awake-list{list-style:none; margin:0 0 22px; padding:0; display:flex; flex-direction:column; gap:10px}
@@ -348,16 +471,8 @@
   .awake-line.on{opacity:1}
   /* the line's tint is set inline by JS from the selected swatch (5 colors) */
 
-  /* color picker (mirrors the merged "Keep Awake" submenu radio group) */
-  .awake-swatches{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px;
-    font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--fg-soft)}
-  .swatch{display:inline-flex; align-items:center; gap:7px; cursor:pointer; background:var(--surface);
-    border:1px solid var(--hair); border-radius:999px; padding:4px 12px 4px 5px;
-    font-family:var(--mono); font-size:11px; color:var(--fg-soft); transition:color .18s, border-color .18s}
-  .swatch .dot{width:15px; height:15px; border-radius:50%; border:1px solid rgba(0,0,0,.18)}
-  .swatch:hover{color:var(--fg)}
-  .swatch[aria-pressed="true"]{color:var(--fg); border-color:currentColor}
-  .swatch:focus-visible{outline:2px solid var(--fg-soft); outline-offset:2px}
+  /* The tint picker itself lives in §mark (.swatch-row / .swatch) — that section owns the
+     indicator's appearance, this one owns the sleep policy. One shared tint drives both stages. */
   .awake-stage .clock{font-variant-numeric:tabular-nums; font-size:12px; opacity:.9; margin-left:8px}
   .awake-stage .caption{font-family:var(--mono); font-size:10.5px; letter-spacing:.06em;
     color:rgba(255,255,255,.6); text-align:center}
@@ -423,12 +538,31 @@
     border:1px solid var(--hair); border-radius:999px; padding:6px 12px}
   .foot .sig{font-family:var(--serif); font-style:italic; color:var(--fg-soft); font-size:15px}
 
+  @media (max-width:960px){
+    .awake-facts{grid-template-columns:1fr 1fr}
+    /* not enough width for terminal + two card columns — back to one card column */
+    .qs{grid-template-columns:1fr 1fr}
+    .facts{grid-column:2; grid-template-columns:1fr}
+  }
   @media (max-width:820px){
     .demo{grid-template-columns:1fr}
     .presets{grid-template-columns:1fr}
     .qs{grid-template-columns:1fr}
+    .qs .terminal{grid-column:1}
+    .facts{grid-column:1; grid-template-columns:1fr}
     .awake{grid-template-columns:1fr}
     .readout-grid{grid-template-columns:1fr}
+    .mk{grid-template-columns:1fr}
+    .awake-facts{grid-template-columns:1fr}
+    /* Single column puts the demo above its explanation: the interactive thing is the hook, and
+       collapsed the other way every section opens with a wall of prose. */
+    .mk-stage, .awake-demo, .readout-stage{order:-1}
+    .mk-slot img{height:76px}
+  }
+  @media (max-width:560px){
+    /* the diagram's side annotations crowd the slot once the stage is this narrow; the layering
+       point is made in the copy directly below, so this one goes rather than collide */
+    .mk-note.over{display:none}
   }
   @media (max-width:520px){
     .menubar .mmenu{display:none}
@@ -558,6 +692,9 @@
           right-aligned in monospaced figures. So the number changes and <b>nothing moves</b> — no creature
           twitching sideways twice a second. Sits left of the icon by default; <span class="mono">Position</span>
           puts it on the right if you’d rather have it next to the clock.</p>
+        <p>And it doubles as a second Keep Awake indicator: while the Mac is being held awake the label
+          <b>wears the same tint as the track line</b> under the icon —
+          <a href="#mark">one mark in two places</a>.</p>
         <div class="seg" role="group" aria-label="Menu Bar Label mode">
           <button type="button" data-mode="off" aria-pressed="false">Off</button>
           <button type="button" data-mode="value" aria-pressed="true">Live Value</button>
@@ -625,6 +762,98 @@
     <p class="heroBar cap">…plus Dog (Black), Horse (Black), Chihiro white/black, Totoro white/black, and a wide Totoro group (white/black) — 12 in all. Drop in any <span class="mono">.gif</span> to make your own.</p>
   </section>
 
+  <section id="mark">
+    <div class="sechead">
+      <h2>One mark, in two places at&nbsp;once</h2>
+      <span class="n">The indicator</span>
+    </div>
+    <div class="mk">
+      <div class="mk-copy">
+        <p>While the Mac is being held awake, the app says so <b>twice, in the same color, in the same
+          instant</b>: a <b>2pt track line</b> rides the bottom edge of the icon, and the adjacent label
+          <b>wears that same tint</b> instead of the menu bar's own text color. Two marks, one state — so
+          whichever one your eye lands on, you know.</p>
+        <p>The line is a <b>sibling layer over the artwork</b>, never painted into it. Toggling it
+          re-rasterizes nothing; it spans the item's <b>full width</b>, sits flush on the bottom edge, and
+          snaps rather than slides when the slot resizes. The creature keeps running underneath, untouched.</p>
+        <p class="tight">Both marks key on whether <b>caffeinate is actually running</b> — not on the menu
+          checkmark. So the moment a low battery or a thermal condition suspends it, the line and the label's
+          color drop <i>together</i>, while the toggle stays on. An indicator that showed your intent instead
+          of the state would be lying at exactly the moment it mattered.</p>
+        <p class="readout-note">Every tint is a <b>fixed hue in two tones</b>, one per menu-bar appearance —
+          never your system accent, which could collide with the artwork or vanish into the bar. Flip the
+          bar below to see both tones (and why each preset ships white <i>and</i> black).</p>
+      </div>
+
+      <div class="mk-stage" id="mkStage">
+        <!-- 1. anatomy: the status item at 4×, because a 2pt line is invisible at true size -->
+        <div class="mk-zoom">
+          <span class="mk-note scale">4× detail</span>
+          <span class="mk-note over">line sits over the art</span>
+          <div class="mk-slot">
+            <img src="../gifs/running-horse-white.gif" alt="" id="mkZoomArt">
+            <span class="mk-zoom-line" id="mkZoomLine"></span>
+            <!-- measure bracket, drawn with borders rather than box-drawing glyphs (which don't
+                 align to the slot at any font size) -->
+            <span class="mk-measure" aria-hidden="true"></span>
+          </div>
+          <span class="mk-note thick">2pt · bottom edge</span>
+          <span class="mk-note span">full item width</span>
+        </div>
+
+        <!-- 2. true scale: both marks at once, on a real bar -->
+        <div class="mk-bar" role="img" aria-label="A macOS menu bar where the track line under the icon and the adjacent label share one Keep Awake tint">
+          <span class="apple"></span>
+          <span class="mtitle">Xcode</span>
+          <span class="spacer"></span>
+          <span class="mk-label" id="mkLabel">CPU 47%</span>
+          <span class="runner-slot">
+            <img src="../gifs/running-horse-white.gif" alt="" id="mkBarArt">
+            <span class="mk-bar-line" id="mkBarLine"></span>
+          </span>
+          <span class="clock">Wed 2:14</span>
+        </div>
+
+        <div class="mk-foot">
+          <button class="mk-run" id="mkRun" type="button" aria-pressed="false">keep awake: off</button>
+          <span class="mk-cap" id="mkCap">both marks are absent — the label uses the bar's own color</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full width, below the grid: five tints × two tones is 7 controls, which wrap badly in a
+         half-width column, and spanning the page lets the palette read as one row. -->
+    <div class="mk-controls">
+      <div class="swatch-row" aria-label="Track-line tint (the Keep Awake submenu's radio group)">
+        <span>tint:</span>
+        <button class="swatch" type="button" data-color="teal" aria-pressed="true">
+          <span class="dot" style="background:var(--teal-bar)"></span> Dusty Teal
+        </button>
+        <button class="swatch" type="button" data-color="sand" aria-pressed="false">
+          <span class="dot" style="background:var(--sand-bar)"></span> Sand
+        </button>
+        <button class="swatch" type="button" data-color="graphite" aria-pressed="false">
+          <span class="dot" style="background:var(--graphite-bar)"></span> Graphite
+        </button>
+        <button class="swatch" type="button" data-color="mauve" aria-pressed="false">
+          <span class="dot" style="background:var(--mauve-bar)"></span> Mauve
+        </button>
+        <button class="swatch" type="button" data-color="sage" aria-pressed="false">
+          <span class="dot" style="background:var(--sage-bar)"></span> Sage
+        </button>
+      </div>
+      <div class="mk-appearance" aria-label="Menu bar appearance">
+        <span>menu bar:</span>
+        <button class="app-btn" type="button" data-appearance="dark" aria-pressed="true">dark</button>
+        <button class="app-btn" type="button" data-appearance="light" aria-pressed="false">light</button>
+        <span class="mk-tone" id="mkTone">Dusty Teal · #82B3AF</span>
+      </div>
+    </div>
+    <p class="heroBar cap">The label's tint is repainted from the same call that redraws the line, so a
+      suspend recolors it at once rather than up to 2s later on the next sample tick. Colored status-item
+      text is invisible to VoiceOver, so the reading is also set as a plain accessibility label.</p>
+  </section>
+
   <section id="awake">
     <div class="sechead">
       <h2>It can keep the Mac awake — on your&nbsp;terms</h2>
@@ -637,67 +866,44 @@
           off while long work runs (an idle-only lock lets modern Macs sleep once the screen naps). The <span class="mono">-w&nbsp;&lt;pid&gt;</span> binds it to
           the app, so it's <b>reaped the instant the app quits or crashes</b>; no orphaned sleep lock.</p>
         <ul class="awake-list">
-          <li><b>Auto-disengages</b> on low battery (≤20% on battery, or wherever you put it — the
-            release point is yours to move, below) or
+          <li><b>Auto-disengages</b> on low battery (≤20% on battery, or wherever you put it) or
             serious/critical thermal — then <b>re-engages</b> the moment the condition clears. Below 5%
-            it releases whatever you set: that floor isn't yours to move.</li>
-          <li>The indicator tracks the <b>actual</b> caffeinate state, not your intent — so it dims the
-            instant a condition suspends it, even with the toggle still on.</li>
+            it releases whatever you set: that floor isn't yours to move. Low Power Mode and memory
+            pressure deliberately <i>don't</i> trigger it.</li>
           <li><b>Or give it a deadline.</b> Pick a window — 30&nbsp;min, 1, 2, 4, 8&nbsp;hours, or a custom
             <span class="mono">hr&nbsp;+&nbsp;min</span> — and the spawn becomes
             <span class="mono">caffeinate -di -t&nbsp;&lt;secs&gt;</span>: it drops the lock and exits <b>on its
             own</b> when the time is up, so a Mac left working overnight goes to sleep without you.
             The menu shows a real countdown — <span class="mono">29:24 left (until 8:18&nbsp;PM)</span>, ticking
             once a second — not the length you picked.</li>
-          <li><b>The window survives a reboot.</b> What's saved is the moment it <i>ends</i>, not the length —
-            so a restart at 2am resumes the <b>remainder</b>, never a fresh four hours, and a window that
-            already elapsed while the Mac was down doesn't come back at all. (A window with no end
-            <i>isn't</i> restored: it has no stopping condition, and a stale flag holding your Mac awake
-            after every reboot is the worse failure.)</li>
-          <li><b>Scriptable.</b> <span class="mono">--keep-awake 4h</span> (or
-            <span class="mono">30m</span>, <span class="mono">1h30m</span>,
-            <span class="mono">on</span>) arms it at launch, so it can be baked straight into the
-            login item. A unit is required — a bare number reads as either minutes or hours, and guessing
-            wrong is a 60× error in how long your Mac stays awake.</li>
-          <li><b>Move the battery cliff.</b> <span class="mono">Settings&nbsp;▸&nbsp;Battery&nbsp;Threshold</span>
-            sets the release point live — 10, 15, 20, 30%, a <span class="mono">Custom…</span> percent, or
-            <span class="mono">Never</span> — and remembers it across launches. A change lands on a window
-            that's <i>already</i> running, not at the next one. Or bake it in:
-            <span class="mono">--battery-threshold 10</span> releases at 10% instead of 20%;
-            <span class="mono">off</span> never releases on charge alone. Whole
-            percents only — <span class="mono">0.20</span> reads as 0.2% or 20% depending on who's
-            asking, so it's refused rather than guessed. A bad value clamps or falls back <i>and still
-            launches</i>: a typo in your login item shouldn't cost you the app.</li>
-          <li>A thin line rides the bottom edge of the icon. The <span class="mono">Keep&nbsp;Awake</span>
-            submenu is one radio group — <b>Off</b> plus five track-line tints
-            (<b>Dusty&nbsp;Teal</b> default, <b>Sand</b>, <b>Graphite</b>, <b>Mauve</b>, <b>Sage</b>):
-            picking a color turns it on with that tint, <b>Off</b> turns it off. Each is a fixed hue
-            (two tones, tuned per menu-bar appearance), never your system accent.</li>
+          <li>The <span class="mono">Keep&nbsp;Awake</span> submenu is <b>one radio group</b> — Off plus the
+            five tints — so <b>picking a color is the on gesture</b>. Whichever you pick becomes
+            <a href="#mark">the mark under the icon and on the label</a>.</li>
         </ul>
+      </div>
+      <!-- Stage + its controls in one column: the toggle, the window and the conditions all act on the
+           mock directly above them, and the copy column is long enough that leaving the right column
+           with only a short stage in it opened a hole the height of the bullet list. -->
+      <div class="awake-demo">
+        <div class="awake-stage">
+          <div class="barmock" role="img" aria-label="A macOS menu bar with a running creature; a Dusty Teal line marks that Keep Awake is holding the Mac awake">
+            <span class="apple"></span>
+            <span class="mtitle">Xcode</span>
+            <span class="spacer"></span>
+            <span class="runner-slot">
+              <img src="../gifs/chihiro-walk-white.gif" alt="">
+              <span class="awake-line" id="awakeLine"></span>
+            </span>
+            <span class="clock">Wed 2:14</span>
+          </div>
+          <span class="caption" id="awakeCaption">toggle it — the track line is the “ground it runs on”</span>
+        </div>
         <div class="awake-controls">
           <button class="switch" id="awakeToggle" role="switch" aria-checked="false" aria-label="Toggle Keep Awake">
             <span class="sw-track"><span class="sw-knob"></span></span> Keep Awake
           </button>
           <span class="awake-state" id="awakeState">off · caffeinate not running</span>
           <span class="awake-countdown" id="awakeCountdown" hidden></span>
-        </div>
-        <div class="awake-swatches" aria-label="Track-line color (Keep Awake submenu radio group)">
-          <span>line color:</span>
-          <button class="swatch" type="button" data-color="teal" aria-pressed="true">
-            <span class="dot" style="background:var(--teal-bar)"></span> Dusty Teal
-          </button>
-          <button class="swatch" type="button" data-color="sand" aria-pressed="false">
-            <span class="dot" style="background:var(--sand-bar)"></span> Sand
-          </button>
-          <button class="swatch" type="button" data-color="graphite" aria-pressed="false">
-            <span class="dot" style="background:var(--graphite-bar)"></span> Graphite
-          </button>
-          <button class="swatch" type="button" data-color="mauve" aria-pressed="false">
-            <span class="dot" style="background:var(--mauve-bar)"></span> Mauve
-          </button>
-          <button class="swatch" type="button" data-color="sage" aria-pressed="false">
-            <span class="dot" style="background:var(--sage-bar)"></span> Sage
-          </button>
         </div>
         <div class="awake-durations" aria-label="Keep Awake duration (the submenu's Duration radio group)">
           <span>duration:</span>
@@ -714,20 +920,34 @@
           <button class="cond" type="button" data-cond="thermal" aria-pressed="false">serious thermal</button>
         </div>
       </div>
-      <div class="awake-stage">
-        <div class="barmock" role="img" aria-label="A macOS menu bar with a running creature; a Dusty Teal line marks that Keep Awake is holding the Mac awake">
-          <span class="apple"></span>
-          <span class="mtitle">Xcode</span>
-          <span class="spacer"></span>
-          <span class="runner-slot">
-            <img src="../gifs/chihiro-walk-white.gif" alt="">
-            <span class="awake-line" id="awakeLine"></span>
-          </span>
-          <span class="clock">Wed 2:14</span>
-        </div>
-        <span class="caption" id="awakeCaption">toggle it — the track line is the “ground it runs on”</span>
+    </div>
+
+    <div class="awake-facts">
+      <div class="fact">
+        <h4>The window survives a reboot</h4>
+        <p>What's saved is the moment it <b>ends</b>, not the length — so a restart at 2am resumes the
+          <b>remainder</b>, never a fresh four hours, and a window that already elapsed while the Mac was
+          down doesn't come back at all. A window with <i>no</i> end isn't restored: it has no stopping
+          condition, and a stale flag holding your Mac awake after every reboot is the worse failure.</p>
+      </div>
+      <div class="fact">
+        <h4>Move the battery cliff</h4>
+        <p><b>Settings ▸ Battery Threshold</b> sets the release point live — 10, 15, 20, 30%, a custom
+          percent, or <b>Never</b> — and remembers it across launches. A change lands on a window that's
+          <i>already</i> running, not at the next one. Whole percents only:
+          <span class="mono">0.20</span> reads as 0.2% or 20% depending on who's asking, so it's refused
+          rather than guessed.</p>
+      </div>
+      <div class="fact">
+        <h4>Scriptable, for the login item</h4>
+        <p><span class="mono">--keep-awake 4h</span> (or <span class="mono">30m</span>,
+          <span class="mono">1h30m</span>, <span class="mono">on</span>) arms it at launch;
+          <span class="mono">--battery-threshold 10</span> moves the cliff. A unit is <b>required</b> — a
+          bare number reads as minutes or hours, and guessing wrong is a 60× error. A bad value clamps
+          <i>and still launches</i>: a typo in your login item shouldn't cost you the app.</p>
       </div>
     </div>
+
     <p class="heroBar cap">Display <b>and</b> idle system sleep are held (<span class="mono">-di</span>),
       unprivileged, OS-reaped. A timed window releases on its own; Low Power Mode and memory pressure are
       deliberately <b>not</b> disengage triggers.</p>
@@ -768,7 +988,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.16.0</span>
+        <span class="badge">v1.17.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
@@ -824,16 +1044,19 @@
   var awState=document.getElementById('awakeState');
   var awCaption=document.getElementById('awakeCaption');
   var conds=document.querySelectorAll('.awake-conditions .cond');
-  var swatches=document.querySelectorAll('.awake-swatches .swatch');
+  // One tint, page-wide: the picker lives in §mark but the §awake stage's line reads the same value.
+  var swatches=document.querySelectorAll('.swatch[data-color]');
   var enabled=false;
   var color='teal';
-  // dark-menu-bar tone + glow per color — mirrors KeepAwakeColor / Tuning.keepAwakeBar*Dark
+  // Both tones + a glow per tint — mirrors KeepAwakeColor.color(for:) / Tuning.keepAwakeBar*.
+  // `c` is the dark-menu-bar tone, `lt` the light one; every bar mock on the page is dark except
+  // §mark's, which switches so both tones are visible.
   var BAR={
-    teal:{c:'#82B3AF',g:'rgba(130,179,175,.5)'},
-    sand:{c:'#D8C39B',g:'rgba(216,195,155,.55)'},
-    graphite:{c:'#A8AEB5',g:'rgba(168,174,181,.5)'},
-    mauve:{c:'#B3A6C4',g:'rgba(179,166,196,.5)'},
-    sage:{c:'#93B583',g:'rgba(147,181,131,.5)'}
+    teal:{c:'#82B3AF',lt:'#557F7C',g:'rgba(130,179,175,.5)',n:'Dusty Teal'},
+    sand:{c:'#D8C39B',lt:'#B29A6E',g:'rgba(216,195,155,.55)',n:'Sand'},
+    graphite:{c:'#A8AEB5',lt:'#6B717A',g:'rgba(168,174,181,.5)',n:'Graphite'},
+    mauve:{c:'#B3A6C4',lt:'#7E7191',g:'rgba(179,166,196,.5)',n:'Mauve'},
+    sage:{c:'#93B583',lt:'#64855A',g:'rgba(147,181,131,.5)',n:'Sage'}
   };
   var active={battery:false,thermal:false};
   var reasons={battery:'battery ≤ 20%',thermal:'serious thermal'};
@@ -931,14 +1154,75 @@
   for(var s=0;s<swatches.length;s++){
     swatches[s].addEventListener('click',function(){
       color=this.getAttribute('data-color');
+      // Sync every swatch on the page, not just this row — the tint is one piece of state.
       for(var k=0;k<swatches.length;k++){
-        swatches[k].setAttribute('aria-pressed', swatches[k]===this?'true':'false');
+        swatches[k].setAttribute('aria-pressed',
+          swatches[k].getAttribute('data-color')===color?'true':'false');
       }
-      renderAwake();
+      renderAwake(); renderMark();
     });
   }
   syncDurButtons();
   renderAwake();
+
+  // ---- §mark: the track line + the color-matched label, as one indicator ----------------------
+  // Deliberately a plain on/off here rather than §awake's full intent-vs-running machinery: this
+  // section is about what the two marks LOOK like, so the only variable worth exposing is whether
+  // caffeinate is up. (The suspend case — both marks dropping together — is demoed in §awake.)
+  var mkStage=document.getElementById('mkStage');
+  var mkZoomLine=document.getElementById('mkZoomLine');
+  var mkBarLine=document.getElementById('mkBarLine');
+  var mkLabel=document.getElementById('mkLabel');
+  var mkRun=document.getElementById('mkRun');
+  var mkCap=document.getElementById('mkCap');
+  var mkTone=document.getElementById('mkTone');
+  var mkArt=[document.getElementById('mkZoomArt'),document.getElementById('mkBarArt')];
+  var appBtns=document.querySelectorAll('.mk-appearance .app-btn');
+  var mkAwake=false, mkAppearance='dark';
+
+  function renderMark(){
+    if(!mkStage) return;
+    var b=BAR[color]||BAR.teal;
+    var tone=mkAppearance==='dark'?b.c:b.lt;
+    mkStage.classList.toggle('light',mkAppearance==='light');
+    // Swap to the black silhouette on a light bar — the white one is invisible there, which is the
+    // whole reason every preset ships in both. The tints have two tones for the same reason.
+    var art='../gifs/running-horse-'+(mkAppearance==='dark'?'white':'black')+'.gif';
+    for(var m=0;m<mkArt.length;m++){
+      if(mkArt[m] && !mkArt[m].src.endsWith(art.slice(2))) mkArt[m].setAttribute('src',art);
+    }
+    if(mkTone) mkTone.textContent=b.n+' · '+tone.toUpperCase();
+    if(mkZoomLine){
+      mkZoomLine.classList.toggle('on',mkAwake);
+      mkZoomLine.style.background=tone;
+      // The real bar has no glow — it's a flat 2pt fill. Keep a faint one only at 4×, where the
+      // magnification would otherwise read as a hard printed rule rather than a screen pixel.
+      mkZoomLine.style.boxShadow=mkAwake?'0 0 10px '+b.g:'none';
+    }
+    if(mkBarLine){ mkBarLine.classList.toggle('on',mkAwake); mkBarLine.style.background=tone; }
+    // Running: the label wears the tint. Off: clear it, so the text falls back to inheriting the
+    // bar's own color — which is what tracks appearance, exactly like the app's plain `title =`.
+    if(mkLabel) mkLabel.style.color=mkAwake?tone:'';
+    if(mkRun){
+      mkRun.textContent='keep awake: '+(mkAwake?'on':'off');
+      mkRun.setAttribute('aria-pressed',mkAwake?'true':'false');
+    }
+    if(mkCap) mkCap.textContent=mkAwake
+      ? 'one tint, two marks — the line and the label, together'
+      : 'both marks are absent — the label uses the bar’s own color';
+  }
+  if(mkRun) mkRun.addEventListener('click',function(){ mkAwake=!mkAwake; renderMark(); });
+  for(var a=0;a<appBtns.length;a++){
+    appBtns[a].addEventListener('click',function(){
+      mkAppearance=this.getAttribute('data-appearance');
+      for(var k=0;k<appBtns.length;k++){
+        appBtns[k].setAttribute('aria-pressed',
+          appBtns[k].getAttribute('data-appearance')===mkAppearance?'true':'false');
+      }
+      renderMark();
+    });
+  }
+  renderMark();
 
   // menu-bar label — mirrors the Menu Bar Label submenu (off / live value / custom text)
   var segBtns=document.querySelectorAll('#readout .seg button');

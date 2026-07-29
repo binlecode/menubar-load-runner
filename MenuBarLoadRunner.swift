@@ -4,12 +4,13 @@ import Darwin
 import ImageIO
 import IOKit
 import IOKit.ps
+import IOKit.pwr_mgt
 import QuartzCore
 
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.16.0"
+    static let version = "1.17.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -451,6 +452,50 @@ private enum Tuning {
         return min(max(value, batteryThresholdMin), batteryThresholdMax)
     }
 
+    // ── Other sleep assertions (SleepAssertionMonitor) ────────────────────────────────────────────
+    // What the "Other Assertions" section under Keep Awake ▸ will show. The rows name owner + type and
+    // nothing more: an assertion is NOT an effect (PreventUserIdleSystemSleep alone does not hold the
+    // display, and the system follows the display down — which is why this app spawns `caffeinate -di`),
+    // so "your Mac can't sleep" can be false while the list is accurate.
+    //
+    // BOTH FILTERS BELOW ARE A HEURISTIC, even though every line they let through is a fact. Unfiltered,
+    // the list is mostly structure: WindowServer tickles UserIsActive on every keystroke and powerd holds
+    // one whenever the display is on.
+    //
+    // (1) Type allowlist — the types whose NAME is about preventing sleep. Resolve AssertionTrueType
+    // first (it resolves the deprecated aliases), fall back to AssertType. The last two are those
+    // aliases, kept defensively. String literals, not the kIOPMAssertionType* constants: those are
+    // `#define … CFSTR("…")` macros in IOPMLib.h and CFSTR macros aren't imported into Swift. No loss —
+    // these ARE the wire format, and the raw string is what `pmset -g assertions` prints, so a user
+    // cross-checking the app sees the same vocabulary.
+    static let assertionSleepTypes: Set<String> = [
+        "PreventUserIdleSystemSleep",
+        "PreventUserIdleDisplaySleep",
+        "PreventSystemSleep",
+        "NoIdleSleepAssertion",
+        "NoDisplaySleepAssertion",
+    ]
+
+    // (2) Owner denylist — deliberately TWO NAMED EXCEPTIONS, not a policy. An assertion is dropped only
+    // when it is a structural consequence of the machine being in use: powerd's is literally named
+    // "Prevent sleep while display is on", so it is present whenever anyone could be reading this menu
+    // and carries zero information. Resist growing this into an is-a-daemon heuristic (e.g. "name ends in
+    // d") — it gets the interesting cases wrong both ways: `backupd` (Time Machine) and `sharingd`
+    // (Handoff) are exactly what someone asking "why won't it sleep" wants to see, while caffeinate,
+    // Music and zoom.us don't end in `d` anyway. The type allowlist does the real work.
+    static let assertionNoiseOwners: Set<String> = ["powerd", "WindowServer"]
+
+    // Hysteresis. A renewal loop (`caffeinate -i -t 300` on repeat) GAPS between assertions, so a bare
+    // per-tick read flickers the row in and out. Keep a holder listed this long after it stops appearing
+    // — four 2s ticks, comfortably over a respawn gap and short enough that a finished job clears while
+    // the user is still looking.
+    static let assertionRetentionSeconds: Double = 8.0
+
+    // Rows before the "…and N more" overflow line. The section is inline in a submenu that is already
+    // ~17 rows, and the filtered list is 0–2 entries in practice; the overflow row exists so a cap is
+    // never silent.
+    static let assertionRowCap: Int = 4
+
     // Battery trace-chart color bands (charge fraction). The chart is a fuel gauge for the battery
     // source — low = alert — so ≤20% → red plus this mid band (≤40% → yellow, else green), mirroring
     // the macOS low-battery convention.
@@ -606,6 +651,20 @@ private enum MenuTitle {
         "\(keepAwake): \(remaining) \(keepAwakePausedSuffix)"
     }
     static func keepAwakePausedRow(_ reason: String) -> String { "paused — \(reason)" }
+
+    // "Other Assertions" — the read-only section listing OTHER processes' sleep assertions. The row is
+    // owner + raw assertion type and nothing else. Rendering the type verbatim rather than glossing it
+    // ("prevents idle sleep") is the whole discipline of the section: the gloss is an effect claim this
+    // data can't support, and the raw string is what `pmset -g assertions` prints, so a user checking the
+    // app against the system reads the same vocabulary. `none` is a ROW, not an empty section — it is the
+    // answer to the question someone opened this menu with.
+    static let otherAssertions = "Other Assertions"
+    static let otherAssertionsNone = "none"
+    static func otherAssertionRow(owner: String, count: Int, type: String) -> String {
+        let suffix = count > 1 ? " ×\(count)" : ""
+        return "\(owner)\(suffix) — \(type)"
+    }
+    static func otherAssertionsMore(_ count: Int) -> String { "…and \(count) more" }
     static func batteryLowReason(_ percent: Double) -> String {
         String(format: "battery low (%.0f%%)", percent)
     }
@@ -2199,6 +2258,76 @@ private final class DisclosureMenuItemView: NSView {
     }
 }
 
+// The READ side of sleep, paired with SleepPreventer below (the write side): which OTHER processes
+// currently hold a sleep assertion, and of which type. Exists because the menu used to be truthful about
+// itself and silent about the machine — it read `Off` while two agent-owned `caffeinate -i -t 300`
+// renewals held PreventUserIdleSystemSleep and this app's own window had expired an hour earlier.
+//
+// `IOPMCopyAssertionsByProcess` — IOKit pwr_mgt, public, headered, unprivileged: the same tier as every
+// load reader in this file. NEVER parse `pmset -g assertions` prose.
+//
+// Deliberately NOT a `LoadSource`: it drives no animation and has no 0…1 fraction, so it must stay out of
+// LoadSource.allCases and out of Other Sources. What it reports is an OBSERVATION, never a conclusion —
+// see Tuning.assertionSleepTypes for why "something is holding your Mac awake" would be a claim this data
+// cannot support.
+@MainActor
+private final class SleepAssertionMonitor {
+    // One filtered row: an owner holding `count` assertions of one type. `count` matters because the
+    // founding observation was three simultaneous caffeinates.
+    struct Holder {
+        let owner: String
+        let type: String
+        let count: Int
+    }
+
+    private(set) var holders: [Holder] = []
+    // How many assertions were dropped for being OURS this sample. Exists to make the exclusion
+    // observable: "not listed" and "listed but there are none" print identically, so the only way to
+    // assert the app skipped its own child is to have it say how many it skipped. Reported by the
+    // LOG_ASSERTIONS hook as `own=N`. Not a running total — it describes the latest sample.
+    private(set) var excludedOwnCount = 0
+
+    // Grouping key is owner+type, NEVER the pid or AssertionId: a renewal loop respawns caffeinate, so a
+    // pid-keyed identity churns every cycle and the retention below could never see continuity.
+    private struct Key: Hashable { let owner: String; let type: String }
+    private var lastSeen: [Key: (count: Int, at: TimeInterval)] = [:]
+
+    // `ignoringPIDs` drops this app's own contribution — our caffeinate is already reported by the
+    // countdown row right above the section, and listing it again reads as a second, mysterious holder.
+    // Another *user's* instance still shows up as `caffeinate`, which is correct.
+    func sample(now: TimeInterval, ignoringPIDs: Set<pid_t>) {
+        var seen: [Key: Int] = [:]
+        excludedOwnCount = 0
+        for entry in Self.currentAssertions() {
+            // pid_t is Int32, so int32Value already is one. -1 can never be a real pid.
+            let pid: pid_t = (entry["AssertPID"] as? NSNumber)?.int32Value ?? -1
+            if ignoringPIDs.contains(pid) { excludedOwnCount += 1; continue }
+            // AssertionTrueType resolves the deprecated aliases; AssertType is the fallback.
+            let type = (entry["AssertionTrueType"] as? String) ?? (entry["AssertType"] as? String) ?? ""
+            guard Tuning.assertionSleepTypes.contains(type) else { continue }
+            let owner = ((entry["Process Name"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+            // An unnamed owner is not actionable — a row reading "? — PreventSystemSleep" tells nobody
+            // anything, and BundlePath can't stand in for a name (caffeinate reports powerd.bundle).
+            guard !owner.isEmpty, !Tuning.assertionNoiseOwners.contains(owner) else { continue }
+            seen[Key(owner: owner, type: type), default: 0] += 1
+        }
+
+        for (key, count) in seen { lastSeen[key] = (count, now) }
+        lastSeen = lastSeen.filter { now - $0.value.at <= Tuning.assertionRetentionSeconds }
+        // Sorted every time: dictionary order is unstable, and unsorted rows would reshuffle each tick.
+        holders = lastSeen
+            .map { Holder(owner: $0.key.owner, type: $0.key.type, count: $0.value.count) }
+            .sorted { ($0.owner, $0.type) < ($1.owner, $1.type) }
+    }
+
+    private static func currentAssertions() -> [[String: Any]] {
+        var dict: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&dict) == kIOReturnSuccess,
+              let byProcess = dict?.takeRetainedValue() as? [NSNumber: [[String: Any]]] else { return [] }
+        return byProcess.values.flatMap { $0 }
+    }
+}
+
 // Owns the `caffeinate` child process that keeps the Mac awake while "Keep Awake" is on. The key
 // design choice is separating *intent* from *running state*: `isEnabled` is the user's toggle, while
 // the process may be independently suspended by conditions (battery-low, serious thermal) and
@@ -2218,6 +2347,8 @@ private final class SleepPreventer {
     private var process: Process?
     private(set) var isEnabled = false          // the user's toggle (intent)
     var isRunning: Bool { process != nil }      // whether caffeinate is actually spawned right now
+    // The child's pid, so SleepAssertionMonitor can exclude OUR assertion from the "other holders" list.
+    var childPID: pid_t? { process?.processIdentifier }
     // Bumped on every spawn and kill, and captured by each child's termination handler, so a handler
     // belonging to an already-replaced/already-killed child can't clear state that a newer one owns.
     // (An Int token rather than the Process itself: Process isn't Sendable, and the handler is.)
@@ -2561,6 +2692,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var keepAwakeDurationItems: [NSMenuItem] = []
     private var keepAwakeCustomDurationItem: NSMenuItem!
     private var keepAwakeStatusItem: NSMenuItem!
+    // "Other Assertions" — the read-only section listing other processes' sleep assertions. Rows are
+    // pre-created (cap + the overflow line + the `none` line) and driven by isHidden/title, the
+    // otherSourceRowItems pattern: refresh must never add or remove NSMenuItems.
+    private var otherAssertionRowItems: [NSMenuItem] = []
+    private var otherAssertionsMoreItem: NSMenuItem!
+    private let assertionMonitor = SleepAssertionMonitor()
     // The armed window, kept alongside the deadline because remaining time alone can't say which row
     // to mark (it shrinks). `.indefinite` whenever no window is armed.
     private var keepAwakeSelectedDuration: KeepAwakeDuration = .indefinite
@@ -2944,6 +3081,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         keepAwakeSubmenu.addItem(NSMenuItem.separator())
         keepAwakeSubmenu.addItem(keepAwakeStatusItem)
 
+        // "Other Assertions": which OTHER processes hold a sleep assertion, and of which type. Inline
+        // here rather than anywhere else, for three reasons. Not the root menu — it is the scarce surface
+        // (Settings ▸ and Presets ▸ exist to keep it short) and someone wondering about sleep opens this
+        // submenu. Not a nested submenu — that would be two deep, and tests/menu-dump.applescript
+        // descends one level, the same verification gap already recorded against the Battery Threshold
+        // rows. Not the parent row — its title already composes a countdown with (paused).
+        keepAwakeSubmenu.addItem(NSMenuItem.separator())
+        let assertionsHeaderItem = NSMenuItem(title: MenuTitle.otherAssertions, action: nil, keyEquivalent: "")
+        assertionsHeaderItem.isEnabled = false
+        keepAwakeSubmenu.addItem(assertionsHeaderItem)
+        // `assertionRowCap` list rows; row 0 doubles as the `none` line when the list is empty.
+        for _ in 0..<Tuning.assertionRowCap {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.indentationLevel = 1
+            item.isHidden = true
+            keepAwakeSubmenu.addItem(item)
+            otherAssertionRowItems.append(item)
+        }
+        otherAssertionsMoreItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        otherAssertionsMoreItem.isEnabled = false
+        otherAssertionsMoreItem.indentationLevel = 1
+        otherAssertionsMoreItem.isHidden = true
+        keepAwakeSubmenu.addItem(otherAssertionsMoreItem)
+
         keepAwakeMenuItem.submenu = keepAwakeSubmenu
         infoMenu.addItem(keepAwakeMenuItem)
 
@@ -3029,6 +3191,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             speedMultiplier = min(max(override, Tuning.speedOverrideMin), Tuning.speedOverrideMax)
         }
         startLoadMonitoring()
+        // Prime the other-holders list: the load timer doesn't fire for 2s, and unlike a load reader —
+        // which honestly reads "warming up..." until it has two samples — an unsampled assertion list
+        // would render `none`, a wrong answer rather than an absent one.
+        sampleOtherAssertions(now: ProcessInfo.processInfo.systemUptime)
         startGameLoop()
         refreshMenuMetrics()
 
@@ -3513,6 +3679,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
         }
 
+        // Who else holds a sleep assertion. Sampled on the tick whether or not the menu is open, because
+        // the hysteresis that keeps a renewal loop from blinking needs continuity — see the function.
+        sampleOtherAssertions(now: now)
+
         refreshMenuMetrics()
         // Keep Awake's countdown is the one selection-state row that changes on its own, so it refreshes
         // on the tick as well as on menuWillOpen — an open menu counts down live.
@@ -3925,7 +4095,61 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             keepAwakeStatusItem.isHidden = true
             keepAwakeMenuItem.title = MenuTitle.keepAwake
         }
+
+        refreshOtherAssertionRows()
     }
+
+    // Render the "Other Assertions" section from the monitor's already-filtered list. Addresses the
+    // stored arrays, never menu positions. Two rules the rows encode:
+    //   - `none` is a row, not an empty section: "nothing else holds one" is the answer someone opened
+    //     this submenu for, and an absent section doesn't say the app looked.
+    //   - the cap is never silent — the overflow row names how many were dropped.
+    private func refreshOtherAssertionRows() {
+        let holders = assertionMonitor.holders
+        if holders.isEmpty {
+            otherAssertionRowItems[0].title = MenuTitle.otherAssertionsNone
+            otherAssertionRowItems[0].isHidden = false
+            for item in otherAssertionRowItems.dropFirst() { item.isHidden = true }
+            otherAssertionsMoreItem.isHidden = true
+            return
+        }
+
+        let shown = min(holders.count, otherAssertionRowItems.count)
+        for (index, item) in otherAssertionRowItems.enumerated() {
+            guard index < shown else { item.isHidden = true; continue }
+            let holder = holders[index]
+            item.title = MenuTitle.otherAssertionRow(
+                owner: holder.owner, count: holder.count, type: holder.type)
+            item.isHidden = false
+        }
+        let dropped = holders.count - shown
+        otherAssertionsMoreItem.title = MenuTitle.otherAssertionsMore(dropped)
+        otherAssertionsMoreItem.isHidden = dropped == 0
+    }
+
+    // Sample the other-holders list. Called from the 2s tick UNCONDITIONALLY — a deliberate exception to
+    // the active-only sampling ethos that gates `showAllSources`, and not a thing to "fix" later. The
+    // cheap-looking alternative (sample only while the menu is open) restores the exact bug this feature
+    // exists to fix: with no history, a menu opened inside a renewal gap reads `none` while a
+    // `caffeinate -t 300` loop is in fact holding. Hysteresis needs samples taken when nobody is looking.
+    // Affordable because the IOKit call measures ~126 µs, i.e. a 0.006% duty cycle at one per 2s.
+    private func sampleOtherAssertions(now: TimeInterval) {
+        var ignored: Set<pid_t> = [ProcessInfo.processInfo.processIdentifier]
+        if let childPID = sleepPreventer.childPID { ignored.insert(childPID) }
+        assertionMonitor.sample(now: now, ignoringPIDs: ignored)
+        guard logAssertions else { return }
+        // Same contract as MENUBAR_LOAD_RUNNER_LOG_SLOTS: prints the FILTERED, post-hysteresis list, so a
+        // shell with no TCC grant can assert the filter and the retention window — which neither
+        // menu-dump.applescript (Accessibility) nor screencapture (Screen Recording) can reach.
+        let rows = assertionMonitor.holders
+            .map { "[\($0.owner) x\($0.count) \($0.type)]" }
+            .joined(separator: " ")
+        fputs("ASSERTIONS n=\(assertionMonitor.holders.count) own=\(assertionMonitor.excludedOwnCount)"
+              + (rows.isEmpty ? "" : " " + rows) + "\n", stderr)
+    }
+
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1. Mirrors the LOG_SLOTS hook convention.
+    private let logAssertions = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS"] == "1"
 
     // Whether a source's reader can produce a value on this machine. CPU/memory are always available
     // (core Mach/sysctl); gpu/network/disk defer to their monitor's probe. Availability is static, so

@@ -79,6 +79,17 @@ These make a *blocking GUI menu-bar app* testable from a shell:
   geometry (an unrelated menu-bar change shifts the whole group at once, and absolute x reads that as
   jitter), and the first tick prints `x=0` everywhere before the windows are placed — skip it.
 
+- **`MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1`** — prints the **filtered, post-hysteresis** list of other
+  processes' sleep assertions on every 2s tick (`ASSERTIONS n=2 [caffeinate x3 PreventUserIdle…]
+  [sharingd x1 …]`). Same rationale as `LOG_SLOTS`: no TCC grant, so it is the only way an agent's shell
+  can assert what the `Other Assertions` section decided (the rows themselves need Accessibility). §3d
+  asserts on it. Pair it with the fixture — `swiftc -O tests/hold-assertion.swift -o
+  tmp/mblr-assert-probe` then `tmp/mblr-assert-probe 6` holds a real assertion under a unique process
+  name, so detection and the 8s retention window don't depend on whether this machine happens to have a
+  stray `caffeinate`. The line also carries `own=N`, the number of assertions dropped for being **ours** —
+  the only race-free way to assert the app skipped its own child (`caffeinate -di` holds two, so an armed
+  window reads `own=2`), since a count taken from outside drifts mid-run whenever something is renewing.
+
 ### Gotchas that have bitten us
 
 - `--foreground` / `--no-detach` / `--extra` are **launcher-only** flags. Passing them to the raw
@@ -635,6 +646,17 @@ persistence + `--keep-awake` v1.13.0):
       condition clears. Hard to force by hand — spot-check the color/track behavior and trust the code path.
       If you do force it (a test build with a raised `Tuning.batteryLowThresholdDefault`), the resume must
       respawn with the **remaining** time, not the original window, and the **Off** mark must not move.
+- [ ] **Other Assertions** (v1.17.0): the last section of the submenu — a disabled `Other Assertions`
+      header, then one indented row per *other* process holding a sleep assertion, as
+      `owner — RawAssertionType` (`caffeinate ×3 — PreventUserIdleSystemSleep`), or a single `none` row.
+      Force a row with `swiftc -O tests/hold-assertion.swift -o tmp/mblr-assert-probe &&
+      tmp/mblr-assert-probe 30` and reopen the menu; the row appears within ~2s and clears ~8s after the
+      fixture exits. Three things to check by eye, since §3d asserts the *decision* and not the rendering:
+      the rows are indented one level under the header and unclickable, the type is the **raw** string
+      (never a gloss like "prevents idle sleep" — an assertion is not an effect, so a gloss would state
+      a conclusion the data cannot support),
+      and **this app's own `caffeinate` never appears** even with Keep Awake armed (§3d proves that
+      numerically; confirm the visible list agrees).
 - [ ] Selection marks (Presets, Keep Awake) render as a small solid **dot**, not the native checkmark
       (v1.10.0 presentational change) — sized to match the menu font/disclosure glyph.
 

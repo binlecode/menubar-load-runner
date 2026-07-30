@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.18.0"
+    static let version = "1.19.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -485,6 +485,17 @@ private enum Tuning {
     // Music and zoom.us don't end in `d` anyway. The type allowlist does the real work.
     static let assertionNoiseOwners: Set<String> = ["powerd", "WindowServer"]
 
+    // (3) Of the allowed types, the ones that hold the DISPLAY awake — the rest hold idle/system sleep.
+    // This split is what makes an *effect* inference possible at all, and it is the same fact that makes
+    // this app spawn `caffeinate -di` rather than `-i`: on modern macOS an idle-only assertion is
+    // unreliable, because once the display sleeps the system follows it down. So a holder with only an
+    // idle-type assertion is NOT evidence the Mac will stay awake, and the machine-state row says so
+    // instead of claiming a hold it can't support.
+    static let assertionDisplaySleepTypes: Set<String> = [
+        "PreventUserIdleDisplaySleep",
+        "NoDisplaySleepAssertion",
+    ]
+
     // Hysteresis. A renewal loop (`caffeinate -i -t 300` on repeat) GAPS between assertions, so a bare
     // per-tick read flickers the row in and out. Keep a holder listed this long after it stops appearing
     // — four 2s ticks, comfortably over a respawn gap and short enough that a finished job clears while
@@ -526,6 +537,14 @@ private enum Tuning {
     static let keepAwakeBarSageDark = NSColor(srgbRed: 0.576, green: 0.710, blue: 0.514, alpha: 1) // #93B583
     static let keepAwakeBarSageLight = NSColor(srgbRed: 0.392, green: 0.522, blue: 0.353, alpha: 1) // #64855A
     static let keepAwakeBarThickness: CGFloat = 2
+
+    // Opacity of the track line (and the label's tint) when the Mac is held awake by SOMEONE ELSE —
+    // a bare `caffeinate`, another utility, another user's session. Deliberately not the same solid line
+    // as our own hold: the glance has to answer "held awake?" AND "mine to turn off?", because Off can
+    // only release ours. Same-looking tints would push AwakeHold's invariant 1 into the visual layer,
+    // where it would be a lie the user can't see. Faint enough to read as secondary, opaque enough that
+    // it isn't mistaken for nothing.
+    static let keepAwakeBarForeignAlpha: CGFloat = 0.45
 
     // Keep Awake timed release. The preset windows offered in the Keep Awake submenu (seconds), plus
     // the bounds for a custom "__ hr __ min" entry. Biased toward multi-hour unattended runs — the
@@ -669,6 +688,27 @@ private enum MenuTitle {
         return "\(owner) — \(parts.joined(separator: ", "))"
     }
     static func otherAssertionsMore(_ count: Int) -> String { "…and \(count) more" }
+
+    // The machine-state row: whether THIS MAC is being held awake right now, by anyone. The distinction
+    // from every other keep-awake surface is that those report our own *intent* and this reports the
+    // machine, so it is the one row that answers a `caffeinate` typed in a terminal.
+    //
+    // Two rules of wording, both load-bearing:
+    //   - ALWAYS attributed ("this app" / the owner's name). Whether the thing you're looking at is
+    //     yours to turn off is the next question after "is it held", and the Off row above can only
+    //     release ours. An unattributed "held awake" would read as a promise this menu can't keep.
+    //   - never a claim beyond the data. `pmset` policy, clamshell, the 5% floor and a user-initiated
+    //     sleep are all invisible here, so the row says what is HOLDING sleep, never that the Mac
+    //     will not sleep.
+    static let machineAwakeNone = "Nothing holding sleep"
+    static let machineAwakeSelf = "this app"
+    // Idle held but the display is NOT: the honest answer is "may still sleep" — see
+    // Tuning.assertionDisplaySleepTypes for why an idle-only hold doesn't survive the display going down.
+    static let machineAwakePartial = "Idle sleep held, display is not — the Mac may still sleep"
+    static func machineAwakeRow(_ detail: String) -> String { "Mac held awake — \(detail)" }
+    static func machineAwakeOthers(_ count: Int) -> String {
+        count == 1 ? "and 1 other" : "and \(count) others"
+    }
     static func batteryLowReason(_ percent: Double) -> String {
         String(format: "battery low (%.0f%%)", percent)
     }
@@ -2288,9 +2328,25 @@ private final class SleepAssertionMonitor {
     struct Holder {
         let owner: String
         let types: [TypeCount]
+        // When this owner's hold ends, if it is timed — see deadline(from:) for the parse. `nil` means
+        // indefinite (or unknowable), NEVER "already over": an owner holding one timed and one untimed
+        // assertion is indefinite, so nil wins over any date.
+        let until: Date?
+        // Does this owner hold the DISPLAY awake, or only idle/system sleep? The distinction is the whole
+        // basis of the "may still sleep" reading (Tuning.assertionDisplaySleepTypes).
+        let displayHeld: Bool
     }
 
     private(set) var holders: [Holder] = []
+    // Machine-level roll-up over the filtered list. Kept here rather than computed by the caller because
+    // the type→category mapping is this class's business, not the menu's.
+    var displayHeld: Bool { holders.contains { $0.displayHeld } }
+    var idleHeld: Bool { holders.contains { holder in holder.types.contains { !Tuning.assertionDisplaySleepTypes.contains($0.type) } } }
+    // Deliberately NO machine-wide "everything releases by" roll-up. The obvious version — all holders
+    // timed, take the max — measured useless on a real machine: `bluetoothd`, `runningboardd` and
+    // `AddressBookSourceSync` hold untimed idle assertions routinely, so one nil made the whole roll-up
+    // nil and the clock time never rendered once (found by dogfooding 2026-07-30, not by review). The
+    // deadline that means something is the one belonging to the holder a row NAMES — see Holder.until.
     // How many assertions were dropped for being OURS this sample. Exists to make the exclusion
     // observable: "not listed" and "listed but there are none" print identically, so the only way to
     // assert the app skipped its own child is to have it say how many it skipped. Reported by the
@@ -2300,13 +2356,19 @@ private final class SleepAssertionMonitor {
     // Grouping key is owner+type, NEVER the pid or AssertionId: a renewal loop respawns caffeinate, so a
     // pid-keyed identity churns every cycle and the retention below could never see continuity.
     private struct Key: Hashable { let owner: String; let type: String }
-    private var lastSeen: [Key: (count: Int, at: TimeInterval)] = [:]
+    // `until` rides the retention window with the count: a renewal loop's newest deadline replaces the
+    // old one on every sample, and a holder retained across a gap keeps the last deadline it reported
+    // rather than reverting to "indefinite" mid-blink.
+    private var lastSeen: [Key: (count: Int, at: TimeInterval, until: Date?)] = [:]
 
     // `ignoringPIDs` drops this app's own contribution — our caffeinate is already reported by the
     // countdown row right above the section, and listing it again reads as a second, mysterious holder.
     // Another *user's* instance still shows up as `caffeinate`, which is correct.
     func sample(now: TimeInterval, ignoringPIDs: Set<pid_t>) {
         var seen: [Key: Int] = [:]
+        // Split rather than a `[Key: Date?]`, whose double optional reads as a puzzle at every use site.
+        var seenUntil: [Key: Date] = [:]
+        var seenIndefinite: Set<Key> = []
         excludedOwnCount = 0
         for entry in Self.currentAssertions() {
             // pid_t is Int32, so int32Value already is one. -1 can never be a real pid.
@@ -2319,10 +2381,20 @@ private final class SleepAssertionMonitor {
             // An unnamed owner is not actionable — a row reading "? — PreventSystemSleep" tells nobody
             // anything, and BundlePath can't stand in for a name (caffeinate reports powerd.bundle).
             guard !owner.isEmpty, !Tuning.assertionNoiseOwners.contains(owner) else { continue }
-            seen[Key(owner: owner, type: type), default: 0] += 1
+            let key = Key(owner: owner, type: type)
+            seen[key, default: 0] += 1
+            // One untimed assertion makes the whole key indefinite; among timed ones the LATEST wins,
+            // since the Mac stays held until the last of them releases.
+            if let until = Self.deadline(from: entry) {
+                seenUntil[key] = max(seenUntil[key] ?? until, until)
+            } else {
+                seenIndefinite.insert(key)
+            }
         }
 
-        for (key, count) in seen { lastSeen[key] = (count, now) }
+        for (key, count) in seen {
+            lastSeen[key] = (count, now, seenIndefinite.contains(key) ? nil : seenUntil[key])
+        }
         lastSeen = lastSeen.filter { now - $0.value.at <= Tuning.assertionRetentionSeconds }
         // Retention stays keyed on owner+type while DISPLAY groups by owner. Deliberate: the blink this
         // guards against is an owner vanishing across a renewal gap, and keying the window per owner
@@ -2336,9 +2408,34 @@ private final class SleepAssertionMonitor {
                 Holder(owner: owner,
                        types: entries
                            .map { TypeCount(type: $0.key.type, count: $0.value.count) }
-                           .sorted { $0.type < $1.type })
+                           .sorted { $0.type < $1.type },
+                       // nil beats a date, one level up from the per-key rule: an owner holding one timed
+                       // and one untimed assertion is holding indefinitely.
+                       until: entries.contains { $0.value.until == nil }
+                           ? nil
+                           : entries.compactMap { $0.value.until }.max(),
+                       displayHeld: entries.contains {
+                           Tuning.assertionDisplaySleepTypes.contains($0.key.type)
+                       })
             }
             .sorted { $0.owner < $1.owner }
+    }
+
+    // When a timed assertion releases, or nil if it is untimed. `AssertTimeoutTimeLeft` is NOT live — it
+    // is the remaining time as of `AssertTimeoutUpdateTime`, verified 2026-07-30: a 30-minute assertion
+    // 17 minutes old still reported 1800. Reading it as "time left from now" renders a countdown that
+    // never moves, which is the whole trap here. `AssertStartWhen` + `TimeoutSeconds` is the fallback,
+    // and an absent `TimeoutSeconds` means indefinite — absent is not zero.
+    private static func deadline(from entry: [String: Any]) -> Date? {
+        if let updated = entry["AssertTimeoutUpdateTime"] as? Date,
+           let left = (entry["AssertTimeoutTimeLeft"] as? NSNumber)?.doubleValue, left > 0 {
+            return updated.addingTimeInterval(left)
+        }
+        if let started = entry["AssertStartWhen"] as? Date,
+           let timeout = (entry["TimeoutSeconds"] as? NSNumber)?.doubleValue, timeout > 0 {
+            return started.addingTimeInterval(timeout)
+        }
+        return nil
     }
 
     private static func currentAssertions() -> [[String: Any]] {
@@ -2714,6 +2811,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var keepAwakeDurationItems: [NSMenuItem] = []
     private var keepAwakeCustomDurationItem: NSMenuItem!
     private var keepAwakeStatusItem: NSMenuItem!
+    private var machineAwakeItem: NSMenuItem!
+    // Last tint state pushed to the bar/label, so the 2s tick only re-drives them on a real change.
+    private var lastAwakeTintSignature = ""
     // "Other Assertions" — the read-only section listing other processes' sleep assertions. Rows are
     // pre-created (cap + the overflow line + the `none` line) and driven by isHidden/title, the
     // otherSourceRowItems pattern: refresh must never add or remove NSMenuItems.
@@ -3067,6 +3167,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Off disengages caffeinate; each color row engages it with that tint (selectKeepAwakeOption).
         keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: nil, keyEquivalent: "")
         let keepAwakeSubmenu = NSMenu(title: MenuTitle.keepAwake)
+
+        // The machine-state row, ABOVE the radio group: whether this Mac is held awake by anyone, ours or
+        // not. First because it is the question the submenu gets opened with, and separate from the group
+        // below because a foreign hold must never tick a row that only releases ours (see AwakeHold).
+        // Always visible — "Nothing holding sleep" is an answer, and a hidden row doesn't say the app
+        // looked. Never disabled-looking-empty: it carries text from the first tick.
+        machineAwakeItem = NSMenuItem(title: MenuTitle.machineAwakeNone, action: nil, keyEquivalent: "")
+        machineAwakeItem.isEnabled = false
+        keepAwakeSubmenu.addItem(machineAwakeItem)
+        keepAwakeSubmenu.addItem(NSMenuItem.separator())
+
         let offItem = NSMenuItem(title: MenuTitle.keepAwakeOff, action: #selector(selectKeepAwakeOption(_:)), keyEquivalent: "")
         offItem.target = self
         offItem.tag = Self.keepAwakeOffTag
@@ -3715,6 +3826,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Who else holds a sleep assertion. Sampled on the tick whether or not the menu is open, because
         // the hysteresis that keeps a renewal loop from blinking needs continuity — see the function.
         sampleOtherAssertions(now: now)
+        // A foreign hold appearing or clearing changes the track line and the label tint, and neither is
+        // behind the menu — so the bar has to be re-driven from the tick, not only from the toggle/resize
+        // events it used to be. Guarded on the tint signature (which excludes the countdown) so a steady
+        // state costs no CATransaction and no relayout every 2s.
+        let tintSignature = awakeHold.tintSignature
+        if tintSignature != lastAwakeTintSignature {
+            lastAwakeTintSignature = tintSignature
+            updateKeepAwakeBar()
+        }
+        logAwakeHoldIfRequested()
 
         refreshMenuMetrics()
         // Keep Awake's countdown is the one selection-state row that changes on its own, so it refreshes
@@ -3810,7 +3931,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // required — a menu puts the run loop in modal tracking, where a default-mode timer wouldn't fire.
     private func startKeepAwakeCountdownTicker() {
         stopKeepAwakeCountdownTicker()
-        guard keepAwakeDeadline != nil else { return }   // nothing to count down
+        // Our own window OR a foreign hold: the machine-state row renders our countdown too, so a running
+        // hold with no window of ours still has a row that changes (and a foreign hold can start or clear
+        // while the menu sits open). Nothing to count down at all → no ticker, as before.
+        guard keepAwakeDeadline != nil || awakeHold.isHeld || awakeHold.isPartial else { return }
         let ticker = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshKeepAwakeSelectionState() }
         }
@@ -4065,6 +4189,88 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // otherwise the active color's row is marked. All rows are always available (pure colors / off), so
     // no isEnabled dance is needed. Keyed on the toggle intent (isEnabled), not the transient running
     // state, so a condition-suspended caffeinate still shows its color as the chosen option.
+    // The machine's actual sleep-hold state, derived from our own child plus the assertion monitor's
+    // filtered list. This is the THIRD of three questions in this feature, and the only one that had no
+    // surface until now:
+    //   (a) intent      — did *I* arm Keep Awake?      sleepPreventer.isEnabled. Ours, controllable.
+    //   (b) observation — what assertions exist?       SleepAssertionMonitor. Read-only.
+    //   (c) effect      — is this Mac held awake?      THIS. An inference over (a) ∪ (b).
+    //
+    // Two invariants keep (c) honest, and they are the whole design:
+    //
+    // 1. (b) MUST NEVER DRIVE (a)'s CONTROLS. A foreign caffeinate must not tick a tint row or clear the
+    //    Off mark. If it did, clicking Off would fail to turn off what the menu appears to describe — a
+    //    control that lies. That is why this is a separate read-only row and not a smarter radio group.
+    // 2. Always attributed. Rendered through MenuTitle.machineAwakeRow, which names the holder, because
+    //    "is it mine to turn off" is the next question and Off can only release ours.
+    //
+    // Costs nothing: SleepAssertionMonitor already samples unconditionally on the 2s tick. That tick is
+    // the reason this is affordable, and this is the second reason it must stay unconditional (the first
+    // is in sampleOtherAssertions — menu-gated sampling reads `none` inside a renewal gap).
+    private struct AwakeHold {
+        let ownRunning: Bool
+        let ownRemaining: TimeInterval?    // nil = indefinite
+        let foreignOwners: [String]        // display-holders first, so the NAMED owner is the one holding
+        let foreignDisplayHeld: Bool
+        let foreignIdleHeld: Bool
+        // When the NAMED foreign holder releases, nil if it holds indefinitely. Scoped to that one owner
+        // on purpose: a machine-wide roll-up is nil in practice (see SleepAssertionMonitor), and the
+        // clock time is only meaningful next to the name it belongs to.
+        let foreignUntil: Date?
+
+        // Keyed on the DISPLAY, not on idle sleep: this app spawns `-di` precisely because an idle-only
+        // assertion doesn't survive the display going down (the system follows it), so idle-alone is not
+        // evidence the Mac stays awake. Our own child always holds both.
+        var isHeld: Bool { ownRunning || foreignDisplayHeld }
+        // Something holds idle sleep but nothing holds the display — the case the row must NOT report as
+        // held awake, because the Mac can still sleep.
+        var isPartial: Bool { !isHeld && foreignIdleHeld }
+
+        var rowText: String {
+            guard isHeld else { return isPartial ? MenuTitle.machineAwakePartial : MenuTitle.machineAwakeNone }
+            var detail: String
+            if ownRunning {
+                detail = MenuTitle.machineAwakeSelf
+                if let remaining = ownRemaining, let text = KeepAwakeDuration.countdown(remaining) {
+                    detail += " · \(text)"
+                }
+                if !foreignOwners.isEmpty {
+                    detail += ", \(MenuTitle.machineAwakeOthers(foreignOwners.count))"
+                }
+            } else {
+                detail = foreignOwners.first ?? ""
+                if foreignOwners.count > 1 {
+                    detail += " \(MenuTitle.machineAwakeOthers(foreignOwners.count - 1))"
+                }
+                if let until = foreignUntil {
+                    detail += " · until \(KeepAwakeDuration.clockTime(until))"
+                }
+            }
+            return MenuTitle.machineAwakeRow(detail)
+        }
+
+        // Change detection for the track line / label tint, which only care WHICH of the three tint
+        // states applies — deliberately excludes the countdown, or the bar would redraw every second.
+        var tintSignature: String { "\(isHeld)|\(ownRunning)|\(isPartial)|\(foreignOwners.count)" }
+    }
+
+    private var awakeHold: AwakeHold {
+        // Display-holders first, then alphabetical: when isHeld comes from a foreign hold, the owner the
+        // row names is one that is actually holding the display rather than whoever sorts first.
+        let ordered = assertionMonitor.holders.sorted {
+            ($0.displayHeld ? 0 : 1, $0.owner) < ($1.displayHeld ? 0 : 1, $1.owner)
+        }
+        let remaining = keepAwakeDeadline?.timeIntervalSinceNow
+        return AwakeHold(
+            ownRunning: sleepPreventer.isRunning,
+            ownRemaining: (remaining ?? 0) > 0 ? remaining : nil,
+            foreignOwners: ordered.map(\.owner),
+            foreignDisplayHeld: assertionMonitor.displayHeld,
+            foreignIdleHeld: assertionMonitor.idleHeld,
+            foreignUntil: ordered.first?.until
+        )
+    }
+
     private func refreshKeepAwakeSelectionState() {
         let enabled = sleepPreventer.isEnabled
         for item in keepAwakeOptionItems {
@@ -4130,7 +4336,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             keepAwakeMenuItem.title = MenuTitle.keepAwake
         }
 
+        refreshMachineAwakeRow()
         refreshOtherAssertionRows()
+    }
+
+    // Render the machine-state row. Monospaced digits and `title`-as-well-as-`attributedTitle` for the
+    // same two reasons as the countdown row above it: the text ticks while the menu is open so
+    // proportional digits would twitch, and accessibility reads only `title` — an attributed-only row is
+    // silent to VoiceOver. Anything scripting this menu must address it BY INDEX: this title ticks too.
+    private func refreshMachineAwakeRow() {
+        let text = awakeHold.rowText
+        machineAwakeItem.title = text
+        machineAwakeItem.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.monospacedDigitSystemFont(
+                ofSize: NSFont.menuFont(ofSize: 0).pointSize, weight: .regular)]
+        )
     }
 
     // Render the "Other Assertions" section from the monitor's already-filtered list. Addresses the
@@ -4187,6 +4408,23 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     // Debug/test hook: MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1. Mirrors the LOG_SLOTS hook convention.
     private let logAssertions = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS"] == "1"
+
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_LOG_AWAKE=1, sibling to LOG_ASSERTIONS and LOG_SLOTS and there
+    // for the same reason — a shell with no TCC grant can't read a menu, so the DERIVED state has to be
+    // assertable from stderr or it goes verified by eyeball only. Prints the row text verbatim as well as
+    // the flags, so qa.sh §3e can assert the rendering (attribution, "may still sleep", the countdown
+    // moving) and not merely the booleans behind it.
+    private let logAwake = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_AWAKE"] == "1"
+
+    private func logAwakeHoldIfRequested() {
+        guard logAwake else { return }
+        let hold = awakeHold
+        let state = hold.isHeld ? (hold.ownRunning ? (hold.foreignOwners.isEmpty ? "own" : "both") : "foreign")
+            : (hold.isPartial ? "partial" : "none")
+        fputs("AWAKE hold=\(state) own=\(hold.ownRunning ? 1 : 0)"
+              + " display=\(hold.foreignDisplayHeld ? 1 : 0) idle=\(hold.foreignIdleHeld ? 1 : 0)"
+              + " owners=\(hold.foreignOwners.count) row=\"\(hold.rowText)\"\n", stderr)
+    }
 
     // Whether a source's reader can produce a value on this machine. CPU/memory are always available
     // (core Mach/sysctl); gpu/network/disk defer to their monitor's probe. Availability is static, so
@@ -4382,15 +4620,15 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if abs(item.length - width) > 0.01 {
             item.length = width
         }
-        // While Keep Awake is actually running, the label wears the same tint as the bar under the
-        // animation (keyed on isRunning, exactly like updateKeepAwakeBar, so a battery/thermal suspend
-        // drops both together) — the two read as one indicator instead of two unrelated marks. Off, the
+        // While the Mac is held awake, the label wears the same tint as the bar under the animation —
+        // both through keepAwakeTintColor, so they cannot disagree: full tone for our own hold, faded for
+        // someone else's, nothing when sleep is unheld. A battery/thermal suspend drops our own tone (the
+        // hold reads on isRunning, not intent), and the two surfaces read as one indicator. Off, the
         // text goes back to inheriting the menu bar's own color, which is what tracks appearance and the
         // highlight when the dropdown is open; the tint has per-appearance tones for the same reason.
         // attributedTitle is the only way to color a status button's text, and it is invisible to
         // VoiceOver, hence the explicit accessibility label.
-        if sleepPreventer.isRunning {
-            let color = activeKeepAwakeColor.color(for: button.effectiveAppearance)
+        if let color = keepAwakeTintColor(for: awakeHold, appearance: button.effectiveAppearance) {
             button.attributedTitle = NSAttributedString(
                 string: text,
                 attributes: [.foregroundColor: color, .font: Self.labelFont]
@@ -5308,15 +5546,35 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // waiting for the next 2s tick (see updateValueLabel).
         updateValueLabel()
         guard let bar = keepAwakeBar, let host = animationView?.layer else { return }
-        bar.isHidden = !sleepPreventer.isRunning
+        // Keyed on the MACHINE being held, not just on our own child, so a bare `caffeinate` in a terminal
+        // lights the line too — the whole point of R16, and the half of it that works without opening the
+        // menu. A foreign-only hold draws the same line at reduced alpha (see keepAwakeBarForeignAlpha):
+        // held is held, but only our own is ours to turn off.
+        let hold = awakeHold
+        bar.isHidden = !hold.isHeld
         guard !bar.isHidden else { return }
         // No implicit position/size animation — the bar should snap, not slide, on resize.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let thickness = Tuning.keepAwakeBarThickness
         bar.frame = CGRect(x: 0, y: 0, width: host.bounds.width, height: thickness)  // bottom edge
-        bar.backgroundColor = activeKeepAwakeColor.color(for: statusItem.button?.effectiveAppearance).cgColor
+        bar.backgroundColor = keepAwakeTintColor(
+            for: hold, appearance: statusItem.button?.effectiveAppearance)?.cgColor
         CATransaction.commit()
+    }
+
+    // The tint the bar and the label wear, or nil when nothing holds sleep. Our own hold gets the full
+    // tone; a foreign-only hold gets it faded. One function so the two surfaces cannot disagree — they
+    // read as a single indicator, and a bar that says "held" beside a label that says "not" is worse than
+    // either alone.
+    // `appearance` is the CALLER's button, not a shared one: the tint has per-appearance tones, and while
+    // two adjacent status items will practically always resolve the same appearance, resolving each
+    // against its own is free and removes the assumption.
+    private func keepAwakeTintColor(for hold: AwakeHold, appearance: NSAppearance?) -> NSColor? {
+        guard hold.isHeld else { return nil }
+        let base = activeKeepAwakeColor.color(for: appearance)
+        guard !hold.ownRunning else { return base }
+        return base.withAlphaComponent(Tuning.keepAwakeBarForeignAlpha)
     }
 
     // Pause the game loop while the status item is fully occluded, resume when it

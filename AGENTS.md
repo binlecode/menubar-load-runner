@@ -573,10 +573,15 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     - **`Settings ▸`** — the home for menu-driven preferences. `Menu Bar Label` is reparented **whole**,
       not flattened into it: that parent row's title *is* the readout (`refreshLabelSelectionState` writes
       `Menu Bar Label: value` into it), and flattened, the string would have nowhere to live but the
-      `Settings` row itself, which can't say `Label: value` once a second setting exists. That second
-      setting is now here: **`Battery Threshold ▸`** (`batteryThresholdItems` over
+      `Settings` row itself, which can't say `Label: value` once a second setting exists. The second
+      setting is **`Battery Threshold ▸`** (`batteryThresholdItems` over
       `Tuning.batteryThresholdRows` + `Never` + `Custom…`, readout in the parent title via
-      `refreshBatteryThresholdSelectionState`, mutated through `setBatteryThreshold`). It governs Keep
+      `refreshBatteryThresholdSelectionState`, mutated through `setBatteryThreshold`). The third is
+      **"Start at Login"** — a simple on/off toggle (`startAtLoginMenuItem`, checked when the
+      LaunchAgent plist exists at `~/Library/LaunchAgents/ai.bera.menubarloadrunner.plist`) that
+      shells out to `scripts/install-login-item.sh` / `scripts/uninstall-login-item.sh` with the
+      current config, so enabling it bakes in the active preset, load source, label, and
+      Keep Awake state. Battery Threshold governs Keep
       Awake but lives here, not in that submenu, because it is a standing preference that outlives any
       single arm, whereas every *gesture* in `Keep Awake ▸` is an action (its two readout sections — the
       countdown/paused row and `Other Assertions` — report on the thing this submenu does, so they belong

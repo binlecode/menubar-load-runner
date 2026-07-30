@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
 
-Current version: **1.17.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.18.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -134,6 +134,8 @@ login (there is no `KeepAlive`). It shows up in **System Settings → General �
 the Background"** — not the top "Open at Login" list, which is only for `.app`-style login items.
 
 Uninstall is the exact inverse and leaves no residue (deregisters the agent, deletes the plist + log).
+
+You can also toggle it from the menu: **Settings ▸ "Start at Login"** — no terminal needed.
 
 ### Upgrading vs. reconfiguring the login item
 

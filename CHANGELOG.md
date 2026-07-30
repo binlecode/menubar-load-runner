@@ -29,6 +29,19 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-07-29
+
+Settings ▸ "Start at Login" menu toggle — enable or disable auto-start-at-login without leaving the app.
+
+### Added
+
+- **Settings ▸ "Start at Login" toggle** — a menu item with a selection mark that reads and writes
+  the LaunchAgent plist at `~/Library/LaunchAgents/ai.bera.menubarloadrunner.plist`. Checked when the
+  agent is installed, unchecked when it's not; toggling runs the existing `install-login-item.sh` or
+  `uninstall-login-item.sh` scripts with the current configuration, so enabling it bakes in the active
+  preset, load source, label format, battery threshold, and Keep Awake state. The checkmark updates
+  immediately on toggle and on every menu open — no restart or menu reopen needed.
+
 ## [1.17.1] - 2026-07-29
 
 One row per owner in the new Other Assertions section, and a QA check that stops crying wolf on a full menu bar.

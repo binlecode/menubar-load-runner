@@ -1,7 +1,7 @@
 # ROADMAP
 
 Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.17.1.
+of v1.18.0.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a

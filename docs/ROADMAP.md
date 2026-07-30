@@ -25,7 +25,6 @@ by **symbol, never by line number** — anchors rot every release, and a TODO fi
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
 | R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
 | R11 | **Die-temperature sensors.** Not API-blocked: the unprivileged SMC path the fan reader already uses covers temperature keys. **Catch:** that plumbing is private to `FanLoadMonitor` and must be extracted to a shared client (one `io_connect_t`, not two); key discovery is probe-a-candidate-list, since there is no `FNum`-equivalent for temperature. → `TODO-20260726-2059-r11-die-temperature-source.md` | P4 | — |
-| R15 | **`docs/cover.html` never got its `Other Assertions` paragraph.** The v1.17.0 headline feature — regrouped to one row per owner in v1.17.1 — is fully documented in `README.md`, but the cover, the project's only landing page, does not mention sleep assertions at all (verified 2026-07-29: zero matches for `assertion` in `docs/cover.html` **and** in the live `menubar-load-runner.pages.dev` HTML). This is R14's failure class one release later, which is the point of the Release-hygiene note below: `qa.sh` §2 checked the badge, the badge was *right* (v1.17.1 in-file and live), and nothing mechanical could see the gap. **The cover pass landed in v1.19.0** — `docs/cover.html` now carries an `Other Assertions` + machine-state paragraph in the Keep Awake section, and the mark section says a foreign hold tints at reduced opacity. **What remains is the deploy**, which is a human step (`publish-cover`, interactive Cloudflare login): the live `menubar-load-runner.pages.dev` still serves the v1.18.0 badge and no assertion prose. Close R15 once that is verified live. Don't add R13's category claim while in there — still unsettled, see Verification debt. | P2 | — |
 
 ## Candidate — design open, do not implement as specified
 
@@ -87,9 +86,11 @@ Treat the ordering as *reliable but not contractual*. Two leads if it recurs: st
 A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
 `CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
 git tag the in-app update check reads. A changed badge also means the cover wants a redeploy
-(`publish-cover`) — and **v1.19.0's is outstanding**: `docs/cover.html` carries the v1.19.0 badge and the
-new prose in-repo, but the live site has not been redeployed, so it still serves v1.18.0. That deploy is the
-one release step no check can see (see R15).
+(`publish-cover`) — **v1.19.0's is done**: verified live 2026-07-30 that `menubar-load-runner.pages.dev`
+serves the v1.19.0 badge, the `Other Assertions` + machine-state prose (4 matches for `assertion`, up from
+**zero**, which is what R15 was), and all five embedded GIFs at 200. That deploy is the one release step no
+check can see, so verify it by fetching the live page — not by trusting the badge, which was already right
+while the prose was missing.
 
 The badge only proves the *version* matched at deploy time, never that the prose did — and the prose
 has now drifted **twice in a row**. R14 was the first (the cover called `Battery Threshold` CLI-only

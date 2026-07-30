@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.17.1"
+    static let version = "1.18.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -2617,6 +2617,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var batteryThresholdItems: [NSMenuItem] = []
     private var batteryThresholdCustomItem: NSMenuItem!
     private static let batteryThresholdNeverTag = -1
+    private var startAtLoginMenuItem: NSMenuItem!
     private var presetMenuItems: [NSMenuItem] = []
     // In-app update check. `latestKnownVersion` is the newest release tag found on origin (nil until a
     // probe completes, or on any failure — fail-silent). `updateItem` is the passive "Update
@@ -3048,6 +3049,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         batteryThresholdMenuItem.submenu = batteryThresholdSubmenu
         settingsSubmenu.addItem(batteryThresholdMenuItem)
 
+        settingsSubmenu.addItem(NSMenuItem.separator())
+        startAtLoginMenuItem = NSMenuItem(
+            title: "Start at Login",
+            action: #selector(toggleStartAtLogin(_:)),
+            keyEquivalent: ""
+        )
+        startAtLoginMenuItem.target = self
+        useSelectionMark(startAtLoginMenuItem)
+        settingsSubmenu.addItem(startAtLoginMenuItem)
+
         settingsMenuItem.submenu = settingsSubmenu
         infoMenu.addItem(settingsMenuItem)
 
@@ -3165,6 +3176,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         infoMenu.addItem(NSMenuItem(title: MenuTitle.exit, action: #selector(exitApp), keyEquivalent: "q"))
         // Root items only — anything nested in a submenu sets its own target at construction.
         infoMenu.items.forEach { $0.target = self }
+        refreshStartAtLoginState()
         statusItem.menu = infoMenu
         // Both label slots share the animation's dropdown, so clicking the number opens the same menu.
         labelItemLeft.menu = infoMenu
@@ -3783,6 +3795,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshShowAllSourcesState()
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
+        refreshStartAtLoginState()
         startKeepAwakeCountdownTicker()
     }
 
@@ -4978,6 +4991,49 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         applyLabelMode()
         refreshLabelSelectionState()
         persistState()
+    }
+
+    private func isLoginItemEnabled() -> Bool {
+        let plistPath = NSString(string: "~/Library/LaunchAgents/\(Restarter.launchAgentLabel).plist")
+            .expandingTildeInPath
+        return FileManager.default.fileExists(atPath: plistPath)
+    }
+
+    private func refreshStartAtLoginState() {
+        startAtLoginMenuItem?.state = isLoginItemEnabled() ? .on : .off
+    }
+
+    @objc private func toggleStartAtLogin(_ sender: NSMenuItem) {
+        guard let repoDir = repoDirURL else { return }
+
+        if isLoginItemEnabled() {
+            runShellScript(repoDir.appendingPathComponent("scripts/uninstall-login-item.sh").path)
+        } else {
+            let configArgs = Restarter.appArguments(
+                presetOrPath: activePreset?.key ?? activeGifPath,
+                loadSourceKey: activeLoadSource.key,
+                labelArgument: labelMode.launchArgument,
+                batteryThresholdPercent: Int((keepAwakeBatteryThreshold * Tuning.percentScale).rounded()),
+                speedMultiplierOverride: config.speedMultiplierOverride,
+                showAllSources: showAllSources,
+                keepAwakeIndefinite: sleepPreventer.isEnabled && keepAwakeDeadline == nil
+            )
+            runShellScript(
+                repoDir.appendingPathComponent("scripts/install-login-item.sh").path,
+                arguments: configArgs
+            )
+        }
+
+        refreshStartAtLoginState()
+    }
+
+    private func runShellScript(_ path: String, arguments: [String] = []) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = [path] + arguments
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run(); proc.waitUntilExit() } catch { return }
     }
 
     private func switchToGif(to path: String, descriptor: PresetDescriptor?) {

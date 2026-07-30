@@ -19,10 +19,11 @@ Run everything from the repo root.
 >   `--launcher` = also run §6 (it stops running instances). `--help` lists them.
 > - `tests/install-smoke.sh` — install/uninstall round-trip in a `tmp/` sandbox (never touches your
 >   real `~/.local` / LaunchAgents).
-> - `tests/readers.swift`, `tests/scaler.swift`, `tests/label.swift` — the §5 probes as standalone
->   files. `label.swift` is the odd one: it measures real AppKit font metrics to prove the menu-bar
->   label's slot width is constant at every value, which is the one thing §7's eyes can't reliably
->   judge (sub-point drift) and no other tier observes at all.
+>   (Deleted 2026-07-30: `tests/readers.swift`, `scaler.swift`, `label.swift`, `semver.swift`,
+>   `restart.swift` — five probes that re-ported app logic and asserted against the copy. Reader ranges
+>   and label-width reservation are now §5, read back off the live status item; what lost coverage
+>   outright is listed in `ROADMAP.md` § Verification debt. Don't re-add a port — see `AGENTS.md`
+>   § Testing rules.)
 >
 > **Not part of any tier:** `tests/clamshell-sleep-check.sh` is a *diagnostic*, not a gate — it
 > measures host power-management behavior (does this Mac idle-sleep while docked; can Keep Awake hold
@@ -460,12 +461,14 @@ EOF
 swiftc tmp/rcheck.swift -o tmp/rcheck && ./tmp/rcheck; rm -f tmp/rcheck tmp/rcheck.swift
 ```
 
-### Adaptive scaler behavior (btop-style normalization)
+### Adaptive scaler behavior (btop-style normalization) — UNCOVERED
 
-The §5 reader check only covers a single two-sample delta; the **`ThroughputScaler`** (network / disk /
-swap-rate normalization) has distinctive behavior — seeding, hysteresis, asymmetric headroom, floor —
-that a point read can't exercise. This drives synthetic speed sequences through a faithful port of the
-scaler and asserts each property. Keep it in sync with `ThroughputScaler` + the `Tuning.scaler*`
+**No check as of 2026-07-30.** The port-based one was deleted with the other four. `ThroughputScaler`'s
+distinctive behavior — seeding, hysteresis, asymmetric headroom, floor — needs sustained synthetic
+network/disk load to move a real ceiling, which nothing here does yet; §5 observes only that the
+normalized readout stays in range. Tracked in `ROADMAP.md` § Verification debt. The old text follows for
+context on what a *functional* version would have to exercise — do not restore it as a port. Keep it in
+sync with `ThroughputScaler` + the `Tuning.scaler*`
 constants (window 5, rescale 5, headroom 1.3↑/3.0↓); a mismatch here means the reimplementation drifted.
 
 ```bash
@@ -689,7 +692,7 @@ persistence + `--keep-awake` v1.13.0):
       and turning the label on afterwards must come up on the chosen side. It is menu-only by design —
       no flag — so verify it survives a relaunch with no arguments (`labelSide` in the state file).
 - [ ] **Neither side jitters.** Mostly automated now — §3c asserts adjacency and constant slot width on
-      both sides, and `tests/label.swift` asserts the readings measure alike to a hundredth of a point,
+      both sides and §5 asserts the reserved width holds for every reader's shape (percent and rate),
       so the eyes-only residue is what neither can see: that the number is not *truncated* to an `…`,
       that a reservation isn't showing as obvious dead space (check `--load-source network`, the widest
       one), and that the digits read as columns rather than as a wobble.
@@ -746,7 +749,8 @@ git status --short   # confirm only intended files changed
 ```
 
 Ship when: build warning-clean · §2–6 all PASS (incl. §2 version surface, §4a/§4b error paths, §5
-reader ranges + adaptive-scaler behavior) · §7 checklist ticked · `git diff` reviewed.
+reader readouts + reserved width) · §7 checklist ticked · `git diff` reviewed. A §3c/§3e `NOTE` is not a
+failure — it means this machine couldn't answer that case; re-run somewhere quieter or accept it as debt.
 
 **Cutting a release (semver):** bump `AppInfo.version` in `MenuBarLoadRunner.swift`, move the
 `CHANGELOG.md` `[Unreleased]` items into a new dated version section, and tag the commit
@@ -763,16 +767,15 @@ reader ranges + adaptive-scaler behavior) · §7 checklist ticked · `git diff` 
 - **New persisted state** → give it an env override like `MENUBAR_LOAD_RUNNER_STATE_FILE` before
   writing any test for it, add a round-trip to §3a, and add a "real file untouched" line to §8. State
   that only a real user path can write is state QA will silently corrupt.
-- **New load source** → add a §3 run, a §5 reader check, and the source's availability-disable +
-  runtime-fallback to the §7 checklist. Percentage sources assert the value in [0,1] directly; rate
-  (counter-delta) sources copy the swap-rate/NET/DISK block in §5 as the template — difference a
-  cumulative counter over `systemUptime`, normalize through the adaptive scaler seed
-  (`max(rate*headroom, floor)`), and assert `load ∈ [0,1]` and `ceiling ≥ floor`. App-side steps
+- **New load source** → add a §3 run, one line to §5's `spec` loop (`key:TAG:%` or `key:TAG:rate` — it
+  asserts the live readout's shape, range, and reserved width against the real status item), and the
+  source's availability-disable + runtime-fallback to the §7 checklist. App-side steps
   (reader class + `isAvailable` probe, `LoadSource` case, the three speed-path helper branches,
   menu row, README/help) are summarized in `CLAUDE.md`'s load-source section.
-- **New normalization / scaling logic** → add a behavior check like the §5 adaptive-scaler block:
-  drive synthetic sequences through a faithful port and assert the distinctive properties (seeding,
-  hysteresis, floor, range). Note the drift risk — keep the port in sync with the real type + `Tuning`.
+- **New normalization / scaling logic** → drive it through the **real binary** and assert the readout it
+  produces (§5's shape/range/width block is the template). Do NOT re-port the type into a probe: that is
+  the pattern deleted 2026-07-30, and it fails by passing. If no functional path exists yet, say so in
+  `ROADMAP.md` § Verification debt rather than shipping a check that only tests a transcription.
 - **New availability-gated source** → make it honor `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE` (via
   `isSourceAvailable`) and add a `force-unavail …` fallback run to §3.
 - **New modal** → make sure it honors `suppressModalAlerts` (else §4 will hang) and add it to §7.

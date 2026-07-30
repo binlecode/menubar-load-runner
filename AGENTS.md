@@ -9,15 +9,46 @@ duplicate rules into the other name. Keep it lean and high-SNR; specialized or v
 ## What this is
 
 A single-file native macOS menu bar app (Swift + AppKit, no Xcode project/SwiftPM package) that renders an
-animated GIF in the status bar. Animation speed adapts automatically to system CPU load. There is no test suite
-and no build system beyond `swiftc`/`swift` invoked directly.
+animated GIF in the status bar. Animation speed adapts automatically to system CPU load. No build system
+beyond `swiftc`/`swift` invoked directly, and no unit-test framework.
+
+## Testing rules
+
+**Every test drives the real binary and asserts a real side effect.** `tests/qa.sh` is the harness; there
+is no unit-test tier and adding one is a regression, not an improvement.
+
+- **Never re-port app logic into a test.** Five probes (`readers`/`scaler`/`label`/`semver`/`restart`.swift)
+  did exactly that — each copied a type out of `MenuBarLoadRunner.swift` and asserted against the copy,
+  under a header saying "keep in sync with the real type". That gets the failure mode backwards: the copy
+  passes while the app is broken, and the check that was supposed to protect the behavior only ever
+  protected the transcription. **Deleted 2026-07-30.** A `private` type you can't reach from a test is a
+  signal to assert its *effect*, not to duplicate it.
+- **No mocks, no injection hooks for behavior.** Real `caffeinate`, real assertions
+  (`tests/hold-assertion.swift` holds one), real status item. The only sanctioned hooks make the real thing
+  *observable* or *bounded* — `MENUBAR_LOAD_RUNNER_LOG_*` (read state a shell can't otherwise see, since
+  `screencapture` needs Screen Recording and AppleScript needs Accessibility, and an agent has neither),
+  `EXIT_AFTER`, `STATE_FILE`, and `FORCE_BATTERY` (pins a reading that is otherwise unreachable on a
+  desktop). Adding a hook that *changes a decision* is mocking with extra steps.
+- **When the environment can't answer, report `NOTE`, never a false `PASS` or `FAIL`.** A machine's own
+  sleep assertions, menu-bar crowding and battery are not the test's to control. §3c and §3e both do this;
+  copy that shape rather than loosening the assertion until it passes.
+- **What has no functional check gets recorded as verification debt in `docs/ROADMAP.md`** — never left
+  looking covered. That table is the honest inventory; a deleted test that took real coverage with it must
+  appear there the same day.
 
 ## Documentation
 
-`docs/` holds SDLC documents — design specs, architecture write-ups, and TODO/issue-tracking
-files. This `CLAUDE.md` stays focused on build/run commands and architecture guidance for
-Claude Code; longer-form design and task tracking documents belong in `docs/` instead of the
-repo root.
+`docs/` holds SDLC documents. This `CLAUDE.md` stays focused on build/run commands and the architecture
+map; **rationale does not live here** — when a section starts arguing, move the argument to the internal
+`DESIGN-system.md` and leave behind only what an implementer must not break. The layout:
+
+| Path | What | Naming |
+|---|---|---|
+| `docs/ROADMAP.md` | the standing tracker (see below) | — |
+| `docs/RUNBOOK-<topic>.md` | operational procedures (QA/release, publishing) | no timestamp |
+| `docs/TODO-<YYYYMMDD-HHMM>-<slug>.md` | one item being actively worked | timestamped |
+| `docs/design-docs/` | **symlink into the private vault.** `DESIGN-system.md` is the canonical design record — invariants, rejected alternatives, probe facts, per-release verification. Also strategy + competitor research. Gitignored, **never committed**: the public repo carries only README / RUNBOOK / this file | — |
+| `docs/cover.html`, `docs/media/` | the landing page and its assets | — |
 
 `tmp/` is **scratch only, and gitignored** — treat everything in it as deletable at any moment. Nothing
 durable may live there: not the source of a tracked asset, not a test whose coverage exists nowhere else,
@@ -33,12 +64,10 @@ there as declined-with-a-reason or as a candidate whose design question is unset
 tracking altitude (what, priority, blocker, status); it is deliberately not a design-rationale
 document, and a `TODO-*.md` is for actively working one item, not for holding the backlog.
 
-TODO files are named `TODO-<YYYYMMDD-HHMM>-<slug>.md` (e.g.
-`docs/TODO-20260706-2010-swift-impl-review-findings.md`) — the timestamp is when the file was
-created, so filenames sort chronologically and make ordering/timing explicit without needing
-a separate changelog. When a TODO closes, its durable outcome moves into the design/roadmap record and
-the file is deleted (see the git history for the pattern). Other `docs/` files (roadmap, runbooks)
-don't need the timestamp prefix, e.g. `docs/RUNBOOK-qa-release.md`.
+A TODO's timestamp is when the file was created, so filenames sort chronologically without a separate
+changelog. When a TODO closes, its durable outcome moves into the internal `DESIGN-system.md` (and its ROADMAP
+row is retired) and **the file is deleted** — see the git history for the pattern. That design doc is where
+an implementer looks *before* changing a subsystem; a TODO is scaffolding and should not outlive the work.
 
 ## Commands
 
@@ -116,6 +145,17 @@ Run from the repository root:
   swiftc -O tests/hold-assertion.swift -o tmp/mblr-assert-probe && tmp/mblr-assert-probe 6 &
   MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 ./tmp/mblr-check 2>&1 | grep ASSERTIONS
   # ASSERTIONS n=2 [caffeinate x3 PreventUserIdleSystemSleep] [mblr-assert-probe x1 PreventUserIdleSystemSleep]
+  ```
+  It takes `--display` and `--timeout <secs>` for the two axes the machine-state row reads.
+- `MENUBAR_LOAD_RUNNER_LOG_AWAKE=1` prints the **derived** machine sleep-hold state each 2s tick plus the
+  rendered row text verbatim, so `tests/qa.sh` §3e asserts the rendering, not just the booleans. Same
+  no-TCC-grant reason as the two hooks above. Grepping trap: macOS separates a clock time from `AM`/`PM`
+  with **U+202F** (`e2 80 af`) and the label pads with **U+2007** (`e2 80 87`) — ASCII-space patterns match
+  nothing, and `/bin/bash` here is 3.2, so use `$'\xe2\x80\xaf'`, not `printf '\u202f'`.
+  ```bash
+  caffeinate -di -t 120 &                       # a foreign hold — the case that used to read Off
+  MENUBAR_LOAD_RUNNER_LOG_AWAKE=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 ./tmp/mblr-check 2>&1 | grep AWAKE
+  # AWAKE hold=foreign own=0 display=1 idle=1 owners=1 row="Mac held awake — caffeinate · until 12:05 PM"
   ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
@@ -382,9 +422,11 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     directly (not a sleep trigger). Battery is an event-driven IOKit Power Sources run-loop source
     (`import IOKit.ps`), torn down in `applicationWillTerminate` alongside an explicit caffeinate kill.
     The indicator is a **sibling `CALayer`** (`keepAwakeBar`) on `animationView.layer` on TOP of the frame
-    contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change), keyed on
-    `isRunning` not `isEnabled`. It must NEVER be composited into `renderedFrames` (that would re-rasterize
-    every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
+    contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change, plus the
+    2s tick when the machine's hold changes). Keyed on `awakeHold.isHeld`, **not** `isEnabled` and not our
+    own `isRunning` alone — a foreign hold lights it at `Tuning.keepAwakeBarForeignAlpha`; both it and the
+    label resolve through `keepAwakeTintColor(for:appearance:)` so they can't disagree. It must NEVER be
+    composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
     `KeepAwakeColor` case — Dusty Teal (default), Sand, Graphite, Mauve, Sage — each a dark/light tone
     chosen per menu-bar appearance. The enum drives the rows, so adding a case needs no menu edit; it does
@@ -457,6 +499,17 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       `none` is a **row**, not an empty section, and the `…and N more` overflow row is required — a cap
       must never be silent. The `kIOPMAssertionType*` constants are `CFSTR` macros and don't import into
       Swift, so the type strings are literals.
+  - **Is this Mac held awake? — the derived state** (`AwakeHold` / `awakeHold`, rendered by
+    `refreshMachineAwakeRow` into `machineAwakeItem`, the **first row** of `Keep Awake ▸`). Reports whether
+    the *machine* is held awake by anyone, ours or not — the case where a bare `caffeinate -di` in a
+    terminal used to leave every keep-awake surface reading `Off`. Two invariants you must not break:
+    a foreign hold **never** drives the Off/tint group or the bar's own-hold tone (`Off` can only release
+    ours), and the row is **always attributed** and never claims the Mac won't sleep. Held is keyed on the
+    **display**, not idle sleep (`Tuning.assertionDisplaySleepTypes`) — idle-alone reads "may still sleep".
+    Two IOKit facts an implementer will otherwise re-derive: `AssertionTrueType` splits display- from
+    idle-sleep holds, and a timed foreign hold exposes a deadline — but `AssertTimeoutTimeLeft` is stale as
+    of `AssertTimeoutUpdateTime`, **not** live, so reading it as time-from-now makes the deadline slide
+    forward every tick. Full rationale: internal `DESIGN-system.md` §22.11 (vault, not in this repo).
   - **Keep Awake at launch and across launches** (`applyLaunchKeepAwakeState`, run from
     `applicationDidFinishLaunching` before the first `refreshKeepAwakeSelectionState`). Precedence:
     `--keep-awake` / `MENUBAR_LOAD_RUNNER_KEEP_AWAKE` (parsed by `KeepAwakeDuration.parse` into a
@@ -547,15 +600,18 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       halves are required: monospaced digits make `111` and `888` measure alike, and the figure space makes
       the pad measure like a digit (a normal space is 3.6pt against a digit's 8.1pt, so `%3.0f` padding
       still moves). Result: every reading of a shape measures identically, so the reservation from
-      `labelWidthTemplate` holds exactly and the text fills it with no dead space. `tests/label.swift`
-      asserts this with real font metrics — the only tier that can see sub-point drift. Overflow past a
-      ceiling formats wider and `max()` widens the slot for that tick rather than truncating.
+      `labelWidthTemplate` holds exactly and the text fills it with no dead space. `qa.sh` §5 asserts it
+      per shape off the **live** status item (one distinct slot width across many distinct readings);
+      §3c asserts the icon next to it never moves. Overflow past a ceiling formats wider and `max()`
+      widens the slot for that tick rather than truncating.
     - **VoiceOver gets the depadded string.** Coloring a status button's text needs `attributedTitle`,
       which is invisible to VoiceOver, hence the explicit `setAccessibilityLabel` — and it is handed the
       reading with U+2007 stripped (lossless: all padding is leading-within-a-field).
-    - **It wears the Keep Awake tint while keep-awake is running**, keyed on `sleepPreventer.isRunning`
-      exactly like `updateKeepAwakeBar()` — which calls `updateValueLabel()` so a toggle/suspend recolors
-      at once instead of up to 2s later. The plain `title =` assignment in the not-running branch resets
+    - **It wears the Keep Awake tint while the Mac is held awake** — through
+      `keepAwakeTintColor(for:appearance:)`, the same function `updateKeepAwakeBar()` uses, so the two can
+      never disagree (full tone for our own hold, `keepAwakeBarForeignAlpha` for someone else's). The bar
+      calls `updateValueLabel()`, so a toggle/suspend/foreign-hold change recolors at once instead of up to
+      2s later. The plain `title =` assignment in the not-held branch resets
       the color back to the default catalog color — that default is what tracks appearance and dropdown
       highlighting, so don't "fix" it into an explicit `.labelColor`.
 

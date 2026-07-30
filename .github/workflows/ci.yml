@@ -1,9 +1,12 @@
 # CI — runs the tiered QA harness (tests/qa.sh) on a real macOS runner.
 #
 # Coverage boundary (kept 1:1 with tests/qa.sh tiers and the README "Testing & CI" section):
-#   core  (REQUIRED)     §1 build warning-clean · §2 CLI/version · §5 readers + scaler.
-#                        Pure logic/CLI, no GUI — deterministic on any runner. Red = merge blocked.
-#   gui   (best-effort)  §3 launch lifecycle · §4 error paths. Boot NSApplication + NSStatusItem,
+#   core  (REQUIRED)     §1 build warning-clean · §2 CLI/version. No GUI — deterministic on any
+#                        runner. Red = merge blocked. Deliberately thin: every behavioral check drives
+#                        the real binary, which needs a status item, so it lives in the gui tier. The
+#                        `.swift` probes that used to sit here asserted against re-ported copies of the
+#                        app's logic and were deleted (see AGENTS.md § Testing rules).
+#   gui   (best-effort)  §3 launch lifecycle · §5 reader readouts · §4 error paths. Boot NSApplication + NSStatusItem,
 #                        so they need a WindowServer session. Hosted runners are not guaranteed one,
 #                        so this job is informational (continue-on-error) — it never blocks merge.
 #   NOT in CI (manual)   §6 launcher/singleton (disruptive: pkill) and §7 interactive menu
@@ -26,7 +29,7 @@ permissions:
 
 jobs:
   core:
-    name: core (build + CLI + readers/scaler — required)
+    name: core (build + CLI — required)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

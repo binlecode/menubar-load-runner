@@ -3,13 +3,16 @@
 # Run from the repo root:  tests/qa.sh
 #
 # Coverage tiers (the boundary CI is built around — see README "Testing & CI"):
-#   core      §1 build (warning-clean) · §2 CLI parse + version · §5 readers + adaptive scaler + semver.
-#             Pure logic / CLI — never boots the GUI, so it is ALWAYS safe on any macOS (incl.
-#             a headless CI runner). This is the required gate.
+#   core      §1 build (warning-clean) · §2 CLI parse + version. Never boots the GUI, so it is ALWAYS
+#             safe on any macOS (incl. a headless CI runner). This is the required gate — and it is
+#             deliberately THIN: every behavioral check here drives the real binary, and the real binary
+#             needs a status item. The five `.swift` probes that used to pad this tier asserted against
+#             re-ported copies of the app's logic and were deleted (see §5).
 #   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3b settings persistence ·
-#             §3c label slot geometry · §3d other sleep assertions ·
-#             §4 error paths. These boot NSApplication + create an NSStatusItem, so they need an active
-#             WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on hosted runners.
+#             §3c label slot geometry · §3d other sleep assertions · §3e machine sleep-hold state ·
+#             §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
+#             they need an active WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on
+#             hosted runners.
 #   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
 #             so it STOPS any running instance (incl. a login-item one). Opt-in only.
 #   §7        interactive menu spot-check — always manual, never scripted.
@@ -25,8 +28,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-RUN_NONGUI=1   # §2, §5
-RUN_GUI=1      # §3, §4
+RUN_NONGUI=1   # §2
+RUN_GUI=1      # §3, §4, §5
 RUN_LAUNCHER=0 # §6
 for arg in "$@"; do
   case "$arg" in
@@ -430,6 +433,107 @@ fi
 rm -f "$PROBE" "$AS"
 echo "  other sleep assertions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
+# --- §3e Machine sleep-hold state [gui] ------------------------------------
+# R16: whether the app reports that THIS MAC is held awake, by anyone — not just by its own child. The
+# whole point is the case the app used to read `Off` through: a bare `caffeinate` in a terminal. Asserted
+# through MENUBAR_LOAD_RUNNER_LOG_AWAKE=1, which prints the derived state AND the row text verbatim, so
+# the rendering (attribution, "may still sleep", the clock time) is covered here and not by eyeball.
+#
+# Two things are environment-sensitive and report NOTE rather than a false FAIL, the §3c precedent: this
+# machine's own holders are not ours to control, so "nothing holds sleep" and "only idle is held" can
+# both be unreachable while an unrelated process holds a display assertion.
+section "§3e machine sleep-hold state [gui — needs WindowServer]"
+pass=0; fail=0
+PROBE=./tmp/mblr-assert-probe
+AW="$PWD/tmp/qa-awake-state.json"
+mk(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
+awake(){ rm -f "$AW"
+  MENUBAR_LOAD_RUNNER_LOG_AWAKE=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$AW" \
+    MENUBAR_LOAD_RUNNER_EXIT_AFTER="$1" $BIN "${@:2}" 2>&1 | grep '^AWAKE'; }
+if ! swiftc -O tests/hold-assertion.swift -o "$PROBE" 2>&1; then
+  mk "assertion fixture builds" 0 "swiftc failed"
+else
+  # 1. A foreign DISPLAY holder reads as held awake. Environment-independent: whatever else this machine
+  # is doing, our fixture holds a display assertion, so held-by-someone-else is the only right answer.
+  "$PROBE" 7 --display --timeout 90 & probe_pid=$!
+  out=$(awake 6)
+  last=$(echo "$out" | tail -1)
+  mk "a foreign display hold reads as held awake" \
+     "$(echo "$last" | grep -q 'hold=foreign .*display=1' && echo 1 || echo 0)" "got: $last"
+  # 2. Attribution and the release time. Both are about the owner the row NAMES, and the row names one
+  # holder — display-holders first, then alphabetical. So these two cases only mean something when our
+  # fixture is the one named: a browser playing video holds a display assertion too and sorts first
+  # (seen live: `Mac held awake — Brave Browser and 3 others`), which is the row being CORRECT about a
+  # machine we don't control. NOTE rather than a false FAIL, the §3c precedent.
+  if ! echo "$last" | grep -q 'row="Mac held awake — mblr-assert-probe'; then
+    echo "  NOTE [attribution + release time unverifiable: another display holder on this machine sorts"\
+         "ahead of the fixture, so the row names it instead — correct behavior, wrong conditions here]"
+    echo "       last: $last"
+  else
+    mk "the row names the holder it is reporting" 1 ""
+    mk "a timed foreign hold reports when it releases" \
+       "$(echo "$last" | grep -q 'row=.*· until ' && echo 1 || echo 0)" "got: $last"
+    # That clock time must be STABLE across ticks — the guard on the stale-AssertTimeoutTimeLeft trap:
+    # TimeLeft is the remainder as of AssertTimeoutUpdateTime, NOT from now, so reading it as time-from-now
+    # slides the deadline forward 2s every tick and the hold never appears to end.
+    # Match the digits only, NOT the AM/PM: macOS separates them with U+202F NARROW NO-BREAK SPACE
+    # (verified by hexdump — `e2 80 af`, not 0x20), so a pattern with a plain space matches nothing and
+    # this case fails for a reason that has nothing to do with the app. Anything else scripting these rows
+    # wants to know the same thing.
+    untils=$(echo "$out" | grep -o 'until [0-9:]*' | sort -u | wc -l | tr -d ' ')
+    ticks=$(echo "$out" | grep -c 'until ')
+    mk "the release time does not slide forward each tick ($ticks ticks, $untils distinct)" \
+       "$([ "${ticks:-0}" -ge 2 ] && [ "${untils:-9}" = 1 ] && echo 1 || echo 0)" "raw:\n$out"
+  fi
+  wait $probe_pid 2>/dev/null
+
+  # 3. It clears when the holder goes away — the retention window bounds this, same as §3d case 4.
+  out=$(awake 5)
+  mk "the holder clears from the row once it is gone" \
+     "$(echo "$out" | tail -1 | grep -q 'mblr-assert-probe' && echo 0 || echo 1)" \
+     "got: $(echo "$out" | tail -1)"
+
+  # 4. Idle-only is NOT held awake. The honest reading, and the reason the display/idle split exists: an
+  # idle assertion doesn't survive the display sleeping, because the system follows it down — the same
+  # fact that makes this app spawn `-di`. Unreachable if anything else on this machine holds the display.
+  "$PROBE" 7 --timeout 90 & probe_pid=$!
+  out=$(awake 6)
+  wait $probe_pid 2>/dev/null
+  if echo "$out" | tail -1 | grep -q 'display=1'; then
+    echo "  NOTE [idle-only reading unverifiable: something else on this machine holds a display" \
+         "assertion, so the Mac genuinely IS held awake and 'may still sleep' cannot be the answer]"
+    echo "       last: $(echo "$out" | tail -1)"
+  else
+    mk "an idle-only hold says the Mac may still sleep, not that it is held" \
+       "$(echo "$out" | tail -1 | grep -q 'hold=partial .*row="Idle sleep held' && echo 1 || echo 0)" \
+       "got: $(echo "$out" | tail -1)"
+  fi
+
+  # 5. Our OWN window: attributed to this app, with the countdown, and it must DECREMENT — a frozen
+  # countdown is the failure this row shares with the one above it.
+  out=$(awake 7 --keep-awake 30m)
+  mk "our own hold is attributed to this app" \
+     "$(echo "$out" | tail -1 | grep -qE 'hold=(own|both) .*row="Mac held awake — this app · ' && echo 1 || echo 0)" \
+     "got: $(echo "$out" | tail -1)"
+  counts=$(echo "$out" | grep -o 'this app · [0-9:]*' | sort -u | wc -l | tr -d ' ')
+  mk "its countdown decrements across ticks ($counts distinct readings)" \
+     "$([ "${counts:-0}" -ge 2 ] && echo 1 || echo 0)" "raw:\n$out"
+
+  # 6. Nothing holding — the row is an answer, not an empty state. Reachable only on a quiet machine.
+  out=$(awake 5)
+  if echo "$out" | tail -1 | grep -qE 'display=1|idle=1'; then
+    echo "  NOTE [the unheld reading is unverifiable on this machine: an unrelated process holds a" \
+         "sleep assertion throughout, which is signal, not noise]"
+    echo "       last: $(echo "$out" | tail -1)"
+  else
+    mk "with nothing holding sleep the row says so" \
+       "$(echo "$out" | tail -1 | grep -q 'hold=none .*row="Nothing holding sleep"' && echo 1 || echo 0)" \
+       "got: $(echo "$out" | tail -1)"
+  fi
+fi
+rm -f "$PROBE" "$AW"
+echo "  machine sleep-hold state: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
 # --- §4 Error paths [gui] --------------------------------------------------
 section "§4 error paths (fast, no modal) [gui — needs WindowServer]"
 err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
@@ -445,20 +549,57 @@ else
 skip "§3 launch lifecycle + §4 error paths [gui]" "GUI tier not selected (--core); needs a WindowServer session"
 fi
 
-# --- §5 Readers + scaler [core] --------------------------------------------
-if [ "$RUN_NONGUI" = 1 ]; then
-section "§5 reader correctness [core]"
-swiftc tests/readers.swift -o tmp/readers 2>&1 && ./tmp/readers || total_fail=$((total_fail+1)); rm -f tmp/readers
-section "§5 adaptive scaler [core]"
-swiftc tests/scaler.swift -o tmp/scaler 2>&1 && ./tmp/scaler || total_fail=$((total_fail+1)); rm -f tmp/scaler
-section "§5 menu-bar label width [core]"
-swiftc tests/label.swift -o tmp/label 2>&1 && ./tmp/label || total_fail=$((total_fail+1)); rm -f tmp/label
-section "§5 semver + update-tag parse [core]"
-swiftc tests/semver.swift -o tmp/semver 2>&1 && ./tmp/semver || total_fail=$((total_fail+1)); rm -f tmp/semver
-section "§5 restart-after-update [core]"
-swiftc tests/restart.swift -o tmp/restart 2>&1 && ./tmp/restart || total_fail=$((total_fail+1)); rm -f tmp/restart
+# --- §5 Reader readouts [gui] ----------------------------------------------
+# What each reader actually PUTS ON THE BAR, read back off the live status item via LOG_SLOTS. This
+# replaced five standalone `.swift` probes (readers/scaler/label/semver/restart) that each re-ported the
+# app's logic into a copy and asserted against the copy — every one of them carried "keep in sync with the
+# real type; a mismatch = the port drifted", which is the failure mode backwards: the port passes while
+# the app is broken. Deleted 2026-07-30. What no longer has a check at all is recorded as verification
+# debt in docs/ROADMAP.md rather than left to look covered.
+#
+# Two invariants per source, both only observable against the real item:
+#   - the readout has that source's SHAPE and a value in range (the reader ran and produced sense),
+#   - the reserved slot width does NOT move as the value changes — the no-jitter promise. §3c asserts this
+#     for CPU (a percent); the rate-shaped sources (NET/DISK) have their own wider templates, and a
+#     template that doesn't fit its own readings is invisible to a percent-only check.
+if [ "$RUN_GUI" = 1 ]; then
+section "§5 reader readouts on the live item [gui — needs WindowServer]"
+pass=0; fail=0
+RO="$PWD/tmp/qa-readout-state.json"
+rk(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
+# `warming up` is legitimate for a counter-delta source on its first tick, so each shape allows the
+# placeholder; what must never appear is a different source's shape or an out-of-range number.
+for spec in "cpu:CPU:%" "memory:MEM:%" "gpu:GPU:%" "network:NET:rate" "disk:DSK:rate" "fan:FAN:%" "battery:BAT:%"; do
+  src=${spec%%:*}; rest=${spec#*:}; tag=${rest%%:*}; shape=${rest##*:}
+  out=$(MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$RO" \
+        MENUBAR_LOAD_RUNNER_EXIT_AFTER=9 $BIN --label value --load-source "$src" 2>&1 | grep '^SLOTS')
+  rm -f "$RO"
+  # A source this machine lacks falls back to CPU and says so on stderr — not a failure (§3 covers it).
+  if [ -z "$out" ] || ! echo "$out" | grep -q "label=\"$tag"; then
+    echo "  NOTE [$src unavailable on this machine — reader disabled, launch fell back to cpu]"
+    continue
+  fi
+  # Normalize U+2007 FIGURE SPACE to a plain space before matching: the app pads every number with it
+  # (it is exactly a digit wide, which is what makes the reserved width hold), so a pattern written with
+  # ASCII spaces matches nothing against the real readout. Same class of trap as the U+202F in §3e.
+  labels=$(echo "$out" | sed -E 's/.*label="([^"]*)".*/\1/' | sed $'s/\xe2\x80\x87/ /g' | grep -v '…' | sort -u)
+  case "$shape" in
+    %)    bad=$(echo "$labels" | grep -vE "^$tag +[0-9]{1,3}%$") ;;
+    # The arrow/letter is followed by its own padding ("NET ↓  0.1 ↑  0.0"), and alternation beats a
+    # bracket expression here — a multibyte char inside [] is not portable in POSIX ERE.
+    rate) bad=$(echo "$labels" | grep -vE "^$tag +(↓|R) *[0-9.]+ +(↑|W) *[0-9.]+$") ;;
+  esac
+  rk "$src readout has $tag's shape and an in-range value" \
+     "$([ -z "$bad" ] && [ -n "$labels" ] && echo 1 || echo 0)" "unexpected: $(echo "$bad" | head -2)"
+  # Widths across every tick of this run: one distinct value, or the slot is tracking its text.
+  widths=$(echo "$out" | sed -E 's/.*(left|right)\[x=[0-9.]+ w=([0-9.]+)\].*/\2/' | sort -u | wc -l | tr -d ' ')
+  readings=$(echo "$labels" | wc -l | tr -d ' ')
+  rk "$src slot width is reserved, not auto-sized ($readings distinct readings)" \
+     "$([ "${widths:-9}" = 1 ] && echo 1 || echo 0)" "widths seen: $(echo "$out" | sed -E 's/.*w=([0-9.]+)\].*/\1/' | sort -u | tr '\n' ' ')"
+done
+echo "  reader readouts: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 else
-skip "§5 readers + adaptive scaler [core]" "core tier not selected (--gui)"
+skip "§5 reader readouts [gui]" "GUI tier not selected (--core); needs a WindowServer session"
 fi
 
 # --- §6 Launcher wrapper [launcher] (opt-in; disruptive) -------------------

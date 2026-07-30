@@ -105,7 +105,7 @@ helpers". Concretely:
       without an error.
 - [ ] Both sources active simultaneously (Other Sources expanded) share one SMC connection.
 - [ ] `MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 ./tmp/mblr-check --load-source temperature` exits 0.
-- [ ] A reader case in `tests/readers.swift` (§5 of `tests/qa.sh`).
+- [ ] A `spec` line in `tests/qa.sh` §5 (`temp:TMP:%`) — it asserts the live readout, not a port.
 
 ## Docs to touch
 

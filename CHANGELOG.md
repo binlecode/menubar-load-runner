@@ -19,7 +19,8 @@ MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATC
   `MENUBAR_LOAD_RUNNER_LOG_FILE`, `MENUBAR_LOAD_RUNNER_BIN_NAME`, and the debug/QA hooks
   `MENUBAR_LOAD_RUNNER_EXIT_AFTER`, `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE`,
   `MENUBAR_LOAD_RUNNER_FORCE_BATTERY`, `MENUBAR_LOAD_RUNNER_STATE_FILE`,
-  `MENUBAR_LOAD_RUNNER_LOG_SLOTS`, and `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS`.
+  `MENUBAR_LOAD_RUNNER_LOG_SLOTS`, `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS`, and
+  `MENUBAR_LOAD_RUNNER_LOG_AWAKE`.
 - **Built-in preset keywords** and the `gifs/presets.json` manifest schema.
 - **Observable behavior** — the status menu structure, the default preset, and the load-adaptive
   speed contract.
@@ -28,6 +29,41 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+## [1.19.0] - 2026-07-30
+
+Keep Awake now reports whether **the Mac** is being held awake — by anything, not just by this app.
+
+### Added
+
+- **`Keep Awake ▸` opens with the machine's actual state.** A new read-only first row answers the
+  question the menu previously got wrong: start `caffeinate -di -t 30m` in a terminal, or leave another
+  utility holding sleep, and every Keep Awake surface here read `Off` while the Mac stayed up. It now
+  reads `Mac held awake — this app · 29:24` when the hold is ours, `Mac held awake — caffeinate · until
+  8:18 PM` when it is someone else's (naming the holder, and its release time when it has one),
+  `Idle sleep held, display is not — the Mac may still sleep` when what is held will not actually keep
+  the Mac up, or `Nothing holding sleep`. Complements the existing `Other Assertions` section, which
+  lists every holder and type; this row is the one-line verdict above it.
+- **The track line and menu-bar label tint follow the machine, not just this app** — so a hold you did
+  not start is visible without opening the menu. A foreign hold draws them **faded** rather than solid,
+  because only this app's own hold is one its `Off` row can release.
+- **`MENUBAR_LOAD_RUNNER_LOG_AWAKE=1`** — debug/QA hook printing the derived sleep-hold state and the
+  rendered row text each 2s tick, alongside the existing `LOG_SLOTS` / `LOG_ASSERTIONS` hooks.
+
+### Changed
+
+- Sleep-assertion readings now distinguish **display** holds from **idle/system** holds, which is what
+  makes the "may still sleep" reading possible: an idle-only assertion does not survive the display
+  going down, since the system follows it — the same reason this app spawns `caffeinate -di`.
+- A foreign hold's `Off`/tint rows are never ticked on its behalf. Turning Keep Awake off can only
+  release this app's own `caffeinate`, so the radio group continues to state *this app's* intent only.
+- **Tests are now functional end-to-end only.** Five standalone probes (`tests/readers.swift`,
+  `scaler.swift`, `label.swift`, `semver.swift`, `restart.swift`) were removed: each re-ported a private
+  type out of `MenuBarLoadRunner.swift` and asserted against the copy, so they passed while the app
+  itself could be broken. Reader value ranges and the label's reserved-width guarantee are now asserted
+  against the **live status item** (`tests/qa.sh` §5), and the machine sleep-hold state has its own
+  section (§3e). What lost coverage outright is recorded in `docs/ROADMAP.md` § Verification debt rather
+  than left looking covered. No user-facing behavior change.
 
 ## [1.18.0] - 2026-07-29
 

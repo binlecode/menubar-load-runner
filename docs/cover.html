@@ -776,10 +776,12 @@
         <p>The line is a <b>sibling layer over the artwork</b>, never painted into it. Toggling it
           re-rasterizes nothing; it spans the item's <b>full width</b>, sits flush on the bottom edge, and
           snaps rather than slides when the slot resizes. The creature keeps running underneath, untouched.</p>
-        <p class="tight">Both marks key on whether <b>caffeinate is actually running</b> — not on the menu
-          checkmark. So the moment a low battery or a thermal condition suspends it, the line and the label's
-          color drop <i>together</i>, while the toggle stays on. An indicator that showed your intent instead
-          of the state would be lying at exactly the moment it mattered.</p>
+        <p class="tight">Both marks key on whether <b>the Mac is actually being held awake</b> — not on the
+          menu checkmark. So the moment a low battery or a thermal condition suspends it, the line and the
+          label's color drop <i>together</i>, while the toggle stays on. An indicator that showed your intent
+          instead of the state would be lying at exactly the moment it mattered. A hold <i>someone else</i>
+          started shows up here too, at <b>reduced opacity</b> — held is held, but only this app's own hold
+          is one it can release, and one tint for both would blur that.</p>
         <p class="readout-note">Every tint is a <b>fixed hue in two tones</b>, one per menu-bar appearance —
           never your system accent, which could collide with the artwork or vanish into the bar. Flip the
           bar below to see both tones (and why each preset ships white <i>and</i> black).</p>
@@ -879,6 +881,17 @@
           <li>The <span class="mono">Keep&nbsp;Awake</span> submenu is <b>one radio group</b> — Off plus the
             five tints — so <b>picking a color is the on gesture</b>. Whichever you pick becomes
             <a href="#mark">the mark under the icon and on the label</a>.</li>
+          <li><b>And it tells you when something <i>else</i> is holding your Mac awake.</b> The submenu's
+            first row answers the real question — <span class="mono">Mac held awake — caffeinate · until
+            8:18&nbsp;PM</span>, naming the holder, or <span class="mono">Nothing holding sleep</span> — and
+            below it, <span class="mono">Other&nbsp;Assertions</span> lists every other process holding one,
+            as <span class="mono">owner — AssertionType</span>, read from IOKit's public power-management
+            API. So <i>“the app says Off, so why won't my Mac sleep?”</i> has an answer in the menu instead
+            of in <span class="mono">pmset -g assertions</span>. A hold you didn't start tints the track line
+            too — <b>faded</b>, not solid, because only this app's own hold is one its <span class="mono">Off</span>
+            row can release. It reports the <b>observation, never a conclusion</b>: an assertion isn't proof
+            the Mac can't sleep, so it names the holder and the raw type and stops there. Read-only —
+            there's no button here to kill anyone else's process.</li>
         </ul>
       </div>
       <!-- Stage + its controls in one column: the toggle, the window and the conditions all act on the
@@ -988,7 +1001,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.18.0</span>
+        <span class="badge">v1.19.0</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

@@ -499,6 +499,21 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       `none` is a **row**, not an empty section, and the `…and N more` overflow row is required — a cap
       must never be silent. The `kIOPMAssertionType*` constants are `CFSTR` macros and don't import into
       Swift, so the type strings are literals.
+  - **The submenu is grouped by SUBJECT, in two sections (v1.19.1)** — the one layout rule to preserve
+    when adding a row. Section 1, **This Mac**, is read-only and unheaded: the machine-hold row, then
+    `Other Assertions` and its rows, which sit there as that row's *evidence*. Section 2, **This App**
+    (`MenuTitle.keepAwakeThisApp`, a disabled header), is everything that acts on our own hold: the
+    Off/tint group, `Duration`, then the countdown/paused row. A new row goes in the section matching its
+    subject; nothing may straddle. This exists because the machine row and a ticked `Off` have *different
+    subjects*, and with the assertion list previously at the bottom the two read as a contradiction —
+    the v1.19.0 layout let a separator carry that distinction alone, and it could not. The header is
+    also what makes the "`Off` can only release ours" invariant legible in the UI instead of only in this
+    file. The countdown row's separator is **stored** (`keepAwakeStatusSeparatorItem`) and hidden with the
+    row via `setKeepAwakeStatusRowVisible` — that row is now the submenu's last, and AppKit trims a
+    *leading* separator, not a trailing one. Rejected here and worth not re-proposing: merging the
+    assertion rows into the machine row (breaks `none`-is-a-row, and drops the "other"-scoping that our
+    own excluded child depends on), and dropping the tint/`Duration` separator (two adjacent radio groups
+    with only a disabled header between them is the same under-signalled boundary).
   - **Is this Mac held awake? — the derived state** (`AwakeHold` / `awakeHold`, rendered by
     `refreshMachineAwakeRow` into `machineAwakeItem`, the **first row** of `Keep Awake ▸`). Reports whether
     the *machine* is held awake by anyone, ours or not — the case where a bare `caffeinate -di` in a

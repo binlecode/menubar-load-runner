@@ -30,6 +30,36 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-07-30
+
+A maintenance release: `Keep Awake ▸` is regrouped so its two subjects stop arguing with each other.
+
+### Changed
+
+- **`Keep Awake ▸` is now grouped by subject, in two sections.** v1.19.0 added a row reporting whether
+  the *Mac* is held awake, but left the read-only machine rows split across the submenu with this app's
+  controls wedged between them. Opened while a terminal `caffeinate` held the Mac, it read
+  `Mac held awake — caffeinate` at the top and a ticked **Off** three rows below — two true statements
+  about two different subjects, stacked so they looked like a contradiction. The machine's rows are now
+  together and first (the hold row, then `Other Assertions` and its list, which sit there as that row's
+  evidence), and everything that acts on this app's own hold follows a new disabled **This App** header.
+  A ticked `Off` under that header can no longer be misread as a claim about the Mac.
+- **`Other Assertions` moved from the bottom of the submenu to directly beneath the machine-hold row.**
+  Same rows, same raw assertion types, same `none` row and overflow cap — only the position changed.
+
+### Fixed
+
+- **No stray separator under an idle Keep Awake.** The countdown/paused row is now the submenu's last
+  row, and the rule above it is hidden along with it. Left as-is it would have drawn a separator under
+  the final item with nothing beneath it whenever no window was armed — AppKit trims a *leading*
+  separator, not a trailing one.
+
+### Notes
+
+- No CLI, environment-variable, preset, or behavioral change: nothing arms, releases, or pauses
+  differently, and no state file field moved. `Off` still releases only this app's hold — the invariant
+  the new header exists to make visible.
+
 ## [1.19.0] - 2026-07-30
 
 Keep Awake now reports whether **the Mac** is being held awake — by anything, not just by this app.

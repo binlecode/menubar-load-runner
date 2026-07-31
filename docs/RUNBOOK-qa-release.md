@@ -616,7 +616,16 @@ nesting, titles — so a moved or vanished row is obvious. What it can't prove i
 **Keep Awake** (v1.8.0/v1.9.0; menu merged + palette expanded in v1.11.0; timed release v1.12.0;
 persistence + `--keep-awake` v1.13.0):
 
-- [ ] **Keep Awake ▸** is a single submenu holding one radio group: **Off** plus five colors
+- [ ] **Two sections, in this order** (v1.19.1). **This Mac** first and unheaded — the machine-hold row
+      (`Mac held awake — caffeinate · until 12:05 PM` / `Nothing holding sleep`) followed immediately by
+      the `Other Assertions` header and its indented rows. Then a separator, then a disabled **This App**
+      header and everything clickable: Off + the five tints, `Duration`, and the countdown/paused row
+      last. The point of the split is that a ticked **Off** sits under `This App` and can no longer be
+      misread as a claim about the Mac — check that reading specifically, with a foreign
+      `caffeinate -di -t 120` running: the top row says the Mac is held, `Off` stays ticked below, and the
+      two no longer look like a contradiction. **No dangling separator**: with nothing armed the
+      countdown row hides, and the rule above it must hide too (it is the submenu's last row).
+- [ ] **Keep Awake ▸** holds one radio group under `This App`: **Off** plus five colors
       (**Dusty Teal** (default) / **Sand** / **Graphite** / **Mauve** / **Sage**). There is no separate
       on/off checkbox or Keep Awake Color submenu anymore.
 - [ ] Picking a color engages Keep Awake with that tint: a thin tinted track line appears along the
@@ -649,7 +658,8 @@ persistence + `--keep-awake` v1.13.0):
       condition clears. Hard to force by hand — spot-check the color/track behavior and trust the code path.
       If you do force it (a test build with a raised `Tuning.batteryLowThresholdDefault`), the resume must
       respawn with the **remaining** time, not the original window, and the **Off** mark must not move.
-- [ ] **Other Assertions** (v1.17.0): the last section of the submenu — a disabled `Other Assertions`
+- [ ] **Other Assertions** (v1.17.0; moved directly under the machine row in v1.19.1, where it reads as
+      that row's evidence): a disabled `Other Assertions`
       header, then one indented row per *other* process holding a sleep assertion — `owner — Type, Type ×N`
       (`caffeinate — PreventUserIdleDisplaySleep, PreventUserIdleSystemSleep ×3`), or a single `none` row.
       One row per **owner**, not per assertion: a process holding several types lists them all on its row.

@@ -878,17 +878,22 @@
             own</b> when the time is up, so a Mac left working overnight goes to sleep without you.
             The menu shows a real countdown — <span class="mono">29:24 left (until 8:18&nbsp;PM)</span>, ticking
             once a second — not the length you picked.</li>
-          <li>The <span class="mono">Keep&nbsp;Awake</span> submenu is <b>one radio group</b> — Off plus the
-            five tints — so <b>picking a color is the on gesture</b>. Whichever you pick becomes
+          <li>Under <span class="mono">This&nbsp;App</span> the submenu is <b>one radio group</b> — Off plus
+            the five tints — so <b>picking a color is the on gesture</b>. Whichever you pick becomes
             <a href="#mark">the mark under the icon and on the label</a>.</li>
           <li><b>And it tells you when something <i>else</i> is holding your Mac awake.</b> The submenu's
             first row answers the real question — <span class="mono">Mac held awake — caffeinate · until
             8:18&nbsp;PM</span>, naming the holder, or <span class="mono">Nothing holding sleep</span> — and
-            below it, <span class="mono">Other&nbsp;Assertions</span> lists every other process holding one,
-            as <span class="mono">owner — AssertionType</span>, read from IOKit's public power-management
-            API. So <i>“the app says Off, so why won't my Mac sleep?”</i> has an answer in the menu instead
-            of in <span class="mono">pmset -g assertions</span>. A hold you didn't start tints the track line
-            too — <b>faded</b>, not solid, because only this app's own hold is one its <span class="mono">Off</span>
+            directly below it, <span class="mono">Other&nbsp;Assertions</span> lists every other process
+            holding one, as <span class="mono">owner — AssertionType</span>, read from IOKit's public
+            power-management API. So <i>“the app says Off, so why won't my Mac sleep?”</i> has an answer in
+            the menu instead of in <span class="mono">pmset -g assertions</span>. Those two rows are the
+            whole top section, and everything you can <i>click</i> sits below a
+            <span class="mono">This&nbsp;App</span> heading — because they answer different questions, and a
+            ticked <span class="mono">Off</span> is a fact about this app, never a promise about your Mac.
+            A hold you didn't start tints the track line
+            too — <b>faded</b>, not solid, because only this app's own hold is one that
+            <span class="mono">Off</span>
             row can release. It reports the <b>observation, never a conclusion</b>: an assertion isn't proof
             the Mac can't sleep, so it names the holder and the raw type and stops there. Read-only —
             there's no button here to kill anyone else's process.</li>
@@ -1001,7 +1006,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.19.0</span>
+        <span class="badge">v1.19.1</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>

@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.19.0"
+    static let version = "1.19.1"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -647,6 +647,14 @@ private enum MenuTitle {
 
     // Self-throttle line.
     static let slowingAnimation = "Slowing animation"
+
+    // The submenu's second section header. The submenu answers two different questions — is this MAC
+    // held awake (by anyone), and what is THIS APP set to do — and every control below this row acts on
+    // the second only. Naming that scope is what keeps a ticked `Off` from reading as "the Mac is not
+    // held awake" while the machine row above says it is: the two rows have different subjects, and
+    // before this header the only thing separating them was a separator line. The first section needs
+    // no header — the machine row IS its headline.
+    static let keepAwakeThisApp = "This App"
 
     // Keep Awake timed release. `keepAwake` above is the submenu's own title; these are the duration
     // group's rows and the two places the remaining time is rendered (the parent row, so the window is
@@ -2811,6 +2819,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var keepAwakeDurationItems: [NSMenuItem] = []
     private var keepAwakeCustomDurationItem: NSMenuItem!
     private var keepAwakeStatusItem: NSMenuItem!
+    // The status row's own separator, hidden with it — it is the submenu's last row, and a trailing
+    // separator left behind by a hidden row draws as a rule under nothing.
+    private var keepAwakeStatusSeparatorItem: NSMenuItem!
     private var machineAwakeItem: NSMenuItem!
     // Last tint state pushed to the bar/label, so the 2s tick only re-drives them on a real change.
     private var lastAwakeTintSignature = ""
@@ -3168,15 +3179,53 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         keepAwakeMenuItem = NSMenuItem(title: MenuTitle.keepAwake, action: nil, keyEquivalent: "")
         let keepAwakeSubmenu = NSMenu(title: MenuTitle.keepAwake)
 
-        // The machine-state row, ABOVE the radio group: whether this Mac is held awake by anyone, ours or
-        // not. First because it is the question the submenu gets opened with, and separate from the group
-        // below because a foreign hold must never tick a row that only releases ours (see AwakeHold).
-        // Always visible — "Nothing holding sleep" is an answer, and a hidden row doesn't say the app
-        // looked. Never disabled-looking-empty: it carries text from the first tick.
+        // ── Section 1: THIS MAC ─────────────────────────────────────────────────────────────────────
+        // Read-only, and first, because "is my Mac being kept awake" is the question the submenu gets
+        // opened with. Both rows in it report the machine; nothing here is clickable.
+        //
+        // The machine-state row: whether this Mac is held awake by anyone, ours or not. Separate from the
+        // controls below because a foreign hold must never tick a row that only releases ours (see
+        // AwakeHold). Always visible — "Nothing holding sleep" is an answer, and a hidden row doesn't say
+        // the app looked. Never disabled-looking-empty: it carries text from the first tick.
         machineAwakeItem = NSMenuItem(title: MenuTitle.machineAwakeNone, action: nil, keyEquivalent: "")
         machineAwakeItem.isEnabled = false
         keepAwakeSubmenu.addItem(machineAwakeItem)
+
+        // "Other Assertions": which OTHER processes hold a sleep assertion, and of which type. Directly
+        // under the machine row because it is that row's evidence — the row names who holds sleep, these
+        // rows show the raw assertions that conclusion was drawn from, so a user can diff them against
+        // `pmset -g assertions`. Until v1.19.1 this sat at the BOTTOM, below the controls, which split
+        // the machine's story across the submenu with this app's radio groups wedged in between; that
+        // sandwich is what made a ticked `Off` under a "Mac held awake" row read as a contradiction.
+        // Still not the root menu — that is the scarce surface (Settings ▸ and Presets ▸ exist to keep it
+        // short) and someone wondering about sleep opens this submenu. Still not a nested submenu — that
+        // would be two deep, and tests/menu-dump.applescript descends one level, the same verification
+        // gap already recorded against the Battery Threshold rows.
+        let assertionsHeaderItem = NSMenuItem(title: MenuTitle.otherAssertions, action: nil, keyEquivalent: "")
+        assertionsHeaderItem.isEnabled = false
+        keepAwakeSubmenu.addItem(assertionsHeaderItem)
+        // `assertionRowCap` list rows; row 0 doubles as the `none` line when the list is empty.
+        for _ in 0..<Tuning.assertionRowCap {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.indentationLevel = 1
+            item.isHidden = true
+            keepAwakeSubmenu.addItem(item)
+            otherAssertionRowItems.append(item)
+        }
+        otherAssertionsMoreItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        otherAssertionsMoreItem.isEnabled = false
+        otherAssertionsMoreItem.indentationLevel = 1
+        otherAssertionsMoreItem.isHidden = true
+        keepAwakeSubmenu.addItem(otherAssertionsMoreItem)
+
+        // ── Section 2: THIS APP ─────────────────────────────────────────────────────────────────────
+        // Everything below acts on this app's own hold and nothing else. The header states that scope
+        // rather than leaving it to be inferred from a separator — see MenuTitle.keepAwakeThisApp.
         keepAwakeSubmenu.addItem(NSMenuItem.separator())
+        let thisAppHeaderItem = NSMenuItem(title: MenuTitle.keepAwakeThisApp, action: nil, keyEquivalent: "")
+        thisAppHeaderItem.isEnabled = false
+        keepAwakeSubmenu.addItem(thisAppHeaderItem)
 
         let offItem = NSMenuItem(title: MenuTitle.keepAwakeOff, action: #selector(selectKeepAwakeOption(_:)), keyEquivalent: "")
         offItem.target = self
@@ -3218,36 +3267,20 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
         // Live sub-state of Keep Awake, in one row with two modes: the countdown for an armed window,
         // or why keep-awake is paused. Hidden only when there is nothing to say (running, indefinite).
+        // It closes the This App section rather than opening it: the controls answer "what is it set
+        // to", this answers "what is it doing right now", and the doing follows from the setting.
+        //
+        // Its separator is STORED and hidden in lockstep with the row (refreshKeepAwakeSelectionState).
+        // Since v1.19.1 this is the last row of the submenu, so a separator left behind by a hidden row
+        // renders as a rule under the final item with nothing after it — AppKit trims a leading
+        // separator, not a trailing one.
         keepAwakeStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         keepAwakeStatusItem.isEnabled = false
         keepAwakeStatusItem.isHidden = true
-        keepAwakeSubmenu.addItem(NSMenuItem.separator())
+        keepAwakeStatusSeparatorItem = NSMenuItem.separator()
+        keepAwakeStatusSeparatorItem.isHidden = true
+        keepAwakeSubmenu.addItem(keepAwakeStatusSeparatorItem)
         keepAwakeSubmenu.addItem(keepAwakeStatusItem)
-
-        // "Other Assertions": which OTHER processes hold a sleep assertion, and of which type. Inline
-        // here rather than anywhere else, for three reasons. Not the root menu — it is the scarce surface
-        // (Settings ▸ and Presets ▸ exist to keep it short) and someone wondering about sleep opens this
-        // submenu. Not a nested submenu — that would be two deep, and tests/menu-dump.applescript
-        // descends one level, the same verification gap already recorded against the Battery Threshold
-        // rows. Not the parent row — its title already composes a countdown with (paused).
-        keepAwakeSubmenu.addItem(NSMenuItem.separator())
-        let assertionsHeaderItem = NSMenuItem(title: MenuTitle.otherAssertions, action: nil, keyEquivalent: "")
-        assertionsHeaderItem.isEnabled = false
-        keepAwakeSubmenu.addItem(assertionsHeaderItem)
-        // `assertionRowCap` list rows; row 0 doubles as the `none` line when the list is empty.
-        for _ in 0..<Tuning.assertionRowCap {
-            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            item.indentationLevel = 1
-            item.isHidden = true
-            keepAwakeSubmenu.addItem(item)
-            otherAssertionRowItems.append(item)
-        }
-        otherAssertionsMoreItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        otherAssertionsMoreItem.isEnabled = false
-        otherAssertionsMoreItem.indentationLevel = 1
-        otherAssertionsMoreItem.isHidden = true
-        keepAwakeSubmenu.addItem(otherAssertionsMoreItem)
 
         keepAwakeMenuItem.submenu = keepAwakeSubmenu
         infoMenu.addItem(keepAwakeMenuItem)
@@ -4313,7 +4346,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             // previous countdown render would keep winning for display.
             keepAwakeStatusItem.attributedTitle = nil
             keepAwakeStatusItem.title = MenuTitle.keepAwakePausedRow(suspension.reasonText)
-            keepAwakeStatusItem.isHidden = false
+            setKeepAwakeStatusRowVisible(true)
             keepAwakeMenuItem.title = countdown.map { MenuTitle.keepAwakePausedWithWindow($0.text) }
                 ?? MenuTitle.keepAwakePausedBare
         } else if let countdown {
@@ -4329,15 +4362,22 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 attributes: [.font: NSFont.monospacedDigitSystemFont(
                     ofSize: NSFont.menuFont(ofSize: 0).pointSize, weight: .regular)]
             )
-            keepAwakeStatusItem.isHidden = false
+            setKeepAwakeStatusRowVisible(true)
             keepAwakeMenuItem.title = MenuTitle.keepAwakeRemaining(countdown.text)
         } else {
-            keepAwakeStatusItem.isHidden = true
+            setKeepAwakeStatusRowVisible(false)
             keepAwakeMenuItem.title = MenuTitle.keepAwake
         }
 
         refreshMachineAwakeRow()
         refreshOtherAssertionRows()
+    }
+
+    // The status row and the separator above it are one unit: the row is the submenu's last, so leaving
+    // the separator behind when the row hides draws a rule under the final item with nothing below it.
+    private func setKeepAwakeStatusRowVisible(_ visible: Bool) {
+        keepAwakeStatusItem.isHidden = !visible
+        keepAwakeStatusSeparatorItem.isHidden = !visible
     }
 
     // Render the machine-state row. Monospaced digits and `title`-as-well-as-`attributedTitle` for the

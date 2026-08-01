@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.19.3"
+    static let version = "1.19.4"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -1738,29 +1738,24 @@ private final class GPULoadMonitor {
     }
 }
 
-// Fan speed as a 0…1 *thermal/cooling* load — a lagging signal (fans trail actual work by seconds and
-// ramp only under sustained thermal load), so this reads "how hard is cooling working," not
-// instantaneous compute. Ported from actop's SMCReader: opens
-// AppleSMCKeysEndpoint unprivileged and read-only (never writes fan-control keys F{n}Tg/F{n}Md,
-// which need root), discovers per-fan actual/max RPM keys (F{n}Ac / F{n}Mx, SMC type "flt ", 4-byte
-// little-endian float) via the FNum fan count. Fanless Macs (MacBook Air, most M-series laptops)
-// report FNum == 0 → isAvailable false → the source disables and launch falls back to CPU. Bounded
-// per-machine, so it maps through as a percentage (average across fans of actual/max) — NOT via
-// ThroughputScaler (that's only for unbounded byte/sec rates). actual/max (rather than the
-// min-anchored (actual-min)/(max-min)) is deliberate: idle RPM ≈ min sits well above 0, so the
-// animation keeps some visible motion even when the fans are barely spinning. `nil`, never a
-// fabricated 0, on any read failure. This is the only reader using the *undocumented* 80-byte
-// SMCKeyData struct layout (the stable, reverse-engineered layout every fan tool uses); we guard on
-// its computed stride == 80 and disable the source if a future toolchain lays it out differently.
+// The shared, read-only client for the SMC (System Management Controller) — every SMC-backed load
+// source reads keys through this one instance, and therefore through one `io_connect_t`. That
+// sharing is the point: the file has no IOServiceClose and no deinit anywhere, so the connection is
+// process-lifetime by design, which is fine for one and sloppy for two. Ported from actop's
+// SMCReader: opens AppleSMCKeysEndpoint unprivileged and read-only, and only ever *reads* keys —
+// never the root-only fan-control keys F{n}Tg/F{n}Md. This is the only place using the
+// *undocumented* 80-byte SMCKeyData struct layout (the stable, reverse-engineered layout every SMC
+// tool uses); the computed `stride == 80` guard in `ensureOpen()` is the availability gate for
+// **every** SMC source, so a future toolchain that lays the struct out differently disables them all
+// rather than corrupting memory in any of them. Reads return `nil` — never a fabricated 0 — on any
+// failure, and callers are expected to keep that distinction.
 @MainActor
-private final class FanLoadMonitor {
-    // One fan's current readout: actual RPM and its 0…1 utilization (actual/max).
-    struct FanReading { let rpm: Double; let utilization: Double }
-    // Average utilization across fans — drives the animation. Per-fan readings (one menu line
-    // per fan) are in `perFan`.
-    private(set) var currentUtilization: Double = 0
-    private(set) var perFan: [FanReading] = []
-    private(set) var hasSample = false
+private final class SMCClient {
+    static let shared = SMCClient()
+    private init() {}
+
+    // A discovered SMC key with its cached size/type, so reads skip the key-info round trip.
+    struct KeyInfo { let key: UInt32; let size: UInt32; let type: UInt32 }
 
     // --- SMC KeyData struct (natural C alignment; total stride must be 80 to match the kernel) ---
     private typealias SMCBytes = (
@@ -1795,45 +1790,17 @@ private final class FanLoadMonitor {
     private static let cmdReadBytes: UInt8 = 5
     private static let typeFLT = fourCharCode("flt ")
 
-    // A discovered SMC key with its cached size/type, so reads skip the key-info round trip.
-    private struct KeyInfo { let key: UInt32; let size: UInt32; let type: UInt32 }
-    // One fan's discovered keys: actual RPM (always present) and max RPM (may be absent).
-    private struct FanKeys { let ac: KeyInfo; let mx: KeyInfo? }
-
     private var connection: io_connect_t = 0
-    private var fanKeys: [FanKeys] = []
     private var availabilityChecked = false
     private var available = false
 
+    // True once the struct layout checks out and AppleSMCKeysEndpoint is open. Cached — a process
+    // either has a usable SMC endpoint for its whole life or it never will.
     var isAvailable: Bool { ensureOpen() }
 
-    func sampleUsage() -> Double? {
-        guard ensureOpen() else { hasSample = false; return nil }
-        var readings: [FanReading] = []
-        for fan in fanKeys {
-            guard let acVal = readFloat(fan.ac) else { continue }
-            let current = Double(acVal)
-            guard let mxKey = fan.mx, let mxVal = readFloat(mxKey), Double(mxVal) > 0 else { continue }
-            // actual/max, not (actual-min)/(max-min): idle RPM sits well above 0, so this keeps
-            // visible motion when the fans are barely spinning (a redline fan still reads ~1). A
-            // genuinely stopped fan reads 0 → the speed path floors it at the preset's min speed,
-            // so the animation still crawls rather than freezing.
-            let clamped = min(max(current / Double(mxVal), 0), 1)
-            readings.append(FanReading(rpm: current, utilization: clamped))
-        }
-        guard !readings.isEmpty else { hasSample = false; return nil }
-        perFan = readings
-        // Average across fans, not the max of any one — a single fan spinning up shouldn't
-        // dominate the animation speed while the rest of the system is quiet.
-        let averageFraction = readings.map(\.utilization).reduce(0, +) / Double(readings.count)
-        currentUtilization = averageFraction
-        hasSample = true
-        return averageFraction
-    }
-
-    // Lazily open the SMC connection and discover fan keys; cache the result. Guard the struct
-    // layout up front — if the toolchain ever lays SMCKeyData out at != 80 bytes the kernel call
-    // would corrupt memory, so we disable the source instead.
+    // Lazily open the SMC connection; cache the result. Guard the struct layout up front — if the
+    // toolchain ever lays SMCKeyData out at != 80 bytes the kernel call would corrupt memory, so we
+    // disable every SMC-backed source instead.
     private func ensureOpen() -> Bool {
         if availabilityChecked { return available }
         availabilityChecked = true
@@ -1842,9 +1809,8 @@ private final class FanLoadMonitor {
             return false
         }
         connection = conn
-        fanKeys = discoverFanKeys()
-        available = !fanKeys.isEmpty
-        return available
+        available = true
+        return true
     }
 
     private func openSMC() -> io_connect_t? {
@@ -1873,28 +1839,7 @@ private final class FanLoadMonitor {
         return nil
     }
 
-    // Read FNum (fan count), then probe F{n}Ac / F{n}Mx for each fan. A fan with no readable
-    // actual-RPM key is skipped; a missing max key is kept as nil (that fan is then ignored in
-    // sampleUsage, which needs a max to normalize).
-    private func discoverFanKeys() -> [FanKeys] {
-        guard let fnum = readKeyInfo(Self.fourCharCode("FNum")),
-              let raw = readBytes(key: fnum.key, size: fnum.size, type: fnum.type),
-              let count = raw.first else { return [] }
-        var result: [FanKeys] = []
-        for i in 0..<Int(count) {
-            guard let ac = discoverFloatKey("F\(i)Ac") else { continue }
-            result.append(FanKeys(ac: ac, mx: discoverFloatKey("F\(i)Mx")))
-        }
-        return result
-    }
-
-    private func discoverFloatKey(_ keyStr: String) -> KeyInfo? {
-        let key = Self.fourCharCode(keyStr)
-        guard let info = readKeyInfo(key), info.type == Self.typeFLT, info.size == 4 else { return nil }
-        return KeyInfo(key: key, size: info.size, type: info.type)
-    }
-
-    private func readKeyInfo(_ key: UInt32) -> (key: UInt32, size: UInt32, type: UInt32)? {
+    func readKeyInfo(_ key: UInt32) -> (key: UInt32, size: UInt32, type: UInt32)? {
         var input = SMCKeyData()
         input.key = key
         input.data8 = Self.cmdReadKeyInfo
@@ -1902,7 +1847,7 @@ private final class FanLoadMonitor {
         return (key, out.keyInfo.dataSize, out.keyInfo.dataType)
     }
 
-    private func readBytes(key: UInt32, size: UInt32, type: UInt32) -> [UInt8]? {
+    func readBytes(key: UInt32, size: UInt32, type: UInt32) -> [UInt8]? {
         var input = SMCKeyData()
         input.key = key
         input.data8 = Self.cmdReadBytes
@@ -1913,7 +1858,15 @@ private final class FanLoadMonitor {
         return withUnsafeBytes(of: out.bytes) { Array($0.prefix(n)) }
     }
 
-    private func readFloat(_ ki: KeyInfo) -> Float? {
+    // A "flt " key's discovered handle, or nil if the key is absent or isn't a 4-byte float on this
+    // machine — the shape every SMC sensor family (fan RPM, and any later reader) probes for.
+    func floatKey(_ keyStr: String) -> KeyInfo? {
+        let key = Self.fourCharCode(keyStr)
+        guard let info = readKeyInfo(key), info.type == Self.typeFLT, info.size == 4 else { return nil }
+        return KeyInfo(key: key, size: info.size, type: info.type)
+    }
+
+    func readFloat(_ ki: KeyInfo) -> Float? {
         guard let raw = readBytes(key: ki.key, size: ki.size, type: ki.type), raw.count >= 4 else { return nil }
         // SMC "flt " values are little-endian; both Apple architectures are LE, so a raw copy of
         // the first 4 bytes reproduces Python's struct.unpack("<f", …).
@@ -1922,8 +1875,10 @@ private final class FanLoadMonitor {
         return value
     }
 
+    // Opens on first use, so a reader that skips `isAvailable` still can't call the kernel through a
+    // dead connection (`ensureOpen` is cached and idempotent, so this costs nothing per read).
     private func smcCall(_ input: inout SMCKeyData) -> SMCKeyData? {
-        guard connection != 0 else { return nil }
+        guard ensureOpen() else { return nil }
         var output = SMCKeyData()
         var outputSize = MemoryLayout<SMCKeyData>.stride
         let kr = IOConnectCallStructMethod(
@@ -1937,9 +1892,93 @@ private final class FanLoadMonitor {
 
     // 4-char SMC key → big-endian UInt32 (first char in the high byte), matching the kernel's
     // packing (Python's struct.unpack(">I", key)).
-    private static func fourCharCode(_ s: String) -> UInt32 {
+    static func fourCharCode(_ s: String) -> UInt32 {
         var result: UInt32 = 0
         for byte in s.utf8.prefix(4) { result = (result << 8) | UInt32(byte) }
+        return result
+    }
+}
+
+// Fan speed as a 0…1 *thermal/cooling* load — a lagging signal (fans trail actual work by seconds and
+// ramp only under sustained thermal load), so this reads "how hard is cooling working," not
+// instantaneous compute. Reads through the shared `SMCClient`, discovering per-fan actual/max RPM
+// keys (F{n}Ac / F{n}Mx, SMC type "flt ", 4-byte little-endian float) via the FNum fan count.
+// Fanless Macs (MacBook Air, most M-series laptops) report FNum == 0 → isAvailable false → the
+// source disables and launch falls back to CPU. Bounded per-machine, so it maps through as a
+// percentage (average across fans of actual/max) — NOT via ThroughputScaler (that's only for
+// unbounded byte/sec rates). actual/max (rather than the min-anchored (actual-min)/(max-min)) is
+// deliberate: idle RPM ≈ min sits well above 0, so the animation keeps some visible motion even when
+// the fans are barely spinning. `nil`, never a fabricated 0, on any read failure.
+@MainActor
+private final class FanLoadMonitor {
+    // One fan's current readout: actual RPM and its 0…1 utilization (actual/max).
+    struct FanReading { let rpm: Double; let utilization: Double }
+    // Average utilization across fans — drives the animation. Per-fan readings (one menu line
+    // per fan) are in `perFan`.
+    private(set) var currentUtilization: Double = 0
+    private(set) var perFan: [FanReading] = []
+    private(set) var hasSample = false
+
+    // One fan's discovered keys: actual RPM (always present) and max RPM (may be absent).
+    private struct FanKeys { let ac: SMCClient.KeyInfo; let mx: SMCClient.KeyInfo? }
+
+    private let smc = SMCClient.shared
+    private var fanKeys: [FanKeys] = []
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool { ensureDiscovered() }
+
+    func sampleUsage() -> Double? {
+        guard ensureDiscovered() else { hasSample = false; return nil }
+        var readings: [FanReading] = []
+        for fan in fanKeys {
+            guard let acVal = smc.readFloat(fan.ac) else { continue }
+            let current = Double(acVal)
+            guard let mxKey = fan.mx, let mxVal = smc.readFloat(mxKey), Double(mxVal) > 0 else { continue }
+            // actual/max, not (actual-min)/(max-min): idle RPM sits well above 0, so this keeps
+            // visible motion when the fans are barely spinning (a redline fan still reads ~1). A
+            // genuinely stopped fan reads 0 → the speed path floors it at the preset's min speed,
+            // so the animation still crawls rather than freezing.
+            let clamped = min(max(current / Double(mxVal), 0), 1)
+            readings.append(FanReading(rpm: current, utilization: clamped))
+        }
+        guard !readings.isEmpty else { hasSample = false; return nil }
+        perFan = readings
+        // Average across fans, not the max of any one — a single fan spinning up shouldn't
+        // dominate the animation speed while the rest of the system is quiet.
+        let averageFraction = readings.map(\.utilization).reduce(0, +) / Double(readings.count)
+        currentUtilization = averageFraction
+        hasSample = true
+        return averageFraction
+    }
+
+    // Discover this machine's fan keys once; cache the result. The struct-layout guard that gates
+    // every SMC source lives in SMCClient, so `isAvailable` failing there disables this one too.
+    private func ensureDiscovered() -> Bool {
+        if availabilityChecked { return available }
+        availabilityChecked = true
+        guard smc.isAvailable else {
+            available = false
+            return false
+        }
+        fanKeys = discoverFanKeys()
+        available = !fanKeys.isEmpty
+        return available
+    }
+
+    // Read FNum (fan count), then probe F{n}Ac / F{n}Mx for each fan. A fan with no readable
+    // actual-RPM key is skipped; a missing max key is kept as nil (that fan is then ignored in
+    // sampleUsage, which needs a max to normalize).
+    private func discoverFanKeys() -> [FanKeys] {
+        guard let fnum = smc.readKeyInfo(SMCClient.fourCharCode("FNum")),
+              let raw = smc.readBytes(key: fnum.key, size: fnum.size, type: fnum.type),
+              let count = raw.first else { return [] }
+        var result: [FanKeys] = []
+        for i in 0..<Int(count) {
+            guard let ac = smc.floatKey("F\(i)Ac") else { continue }
+            result.append(FanKeys(ac: ac, mx: smc.floatKey("F\(i)Mx")))
+        }
         return result
     }
 }

@@ -64,9 +64,12 @@ A maintenance release: a paused Keep Awake no longer looks identical to an off o
 - Cut as a PATCH on the judgment that this corrects a misleading indicator rather than adding a
   feature. Read strictly against the public-API definition above, the new tone and the two `LOG_AWAKE`
   fields are additive observable behavior and would argue for a MINOR.
-- The tone is asserted by `tests/qa.sh` §3e via `tint=`, but whether the dim actually *reads* against
-  its two neighbours on a real menu bar is eyes-only — `docs/RUNBOOK-qa-release.md` §3.1 carries that
-  check, and `docs/ROADMAP.md` R7 tracks it as the item's one remaining open question.
+- The paused opacity was **tuned against both menu-bar appearances before release**, not guessed. The
+  light bar is the harder case — its tint is darker than its background, so the same alpha buys less
+  separation — and the first value read as nearly nothing there. The shipped value clears both.
+- One honest gap: `tests/qa.sh` §3e asserts the tone via `tint=`, but that case only runs on a machine
+  where nothing else holds the display, since a foreign hold correctly outranks our pause. On a busy
+  machine it reports `NOTE`. `docs/ROADMAP.md` § Verification debt tracks it.
 
 ## [1.19.1] - 2026-07-30
 

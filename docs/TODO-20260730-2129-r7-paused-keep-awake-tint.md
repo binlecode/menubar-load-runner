@@ -1,6 +1,20 @@
 # R7 — A paused Keep Awake must not look like an off one
 
-**Priority** P3 · **Blocked by** nothing · **Status** designed, not started
+**Priority** P3 · **Blocked by** nothing · **Status** **code complete 2026-07-30; one eyes-only check left**
+
+Built, verified and documented: §2's third tone, §3's five catches, §4's hook, and §6's docs (AGENTS.md,
+ROADMAP, README, RUNBOOK §3b/§7, DESIGN-system §22.5 incl. the rejected HUD). The only open item is §5's
+last box — **perceptibility** — which is a person's job, not a script's. Do that, then delete this file and
+retire the ROADMAP row. Two notes on how it was built, both departures worth knowing:
+
+- **The paused state is a second PARAMETER, not a field on `AwakeHold`** (`keepAwakeTintColor(for:paused:)`,
+  flag from `keepAwakeArmedNotHolding`, tick guard composed at the call site). §2 said "give the function a
+  third tone" without saying how it learns about the pause; `AwakeHold` knows nothing about intent and also
+  feeds the This Mac row, so putting it there would have mixed the subject v1.19.1 just separated.
+- **Catch 1 is real but defensive, not load-bearing.** Every path that mutates `isEnabled` also calls
+  `updateSleepPrevention()`, which repaints synchronously — so no tick-only path today can strand the old
+  tone. The paused term is in the signature anyway, because the guard must track everything the tone reads;
+  the "will silently half-ship" framing overstated today's call graph.
 
 Replaces `TODO-20260726-2058-r7-keep-awake-notifications.md` (deleted). That plan was an in-app HUD
 panel signalling four events. **Rescoped 2026-07-30 to one persistent state change on the track line.**
@@ -87,13 +101,24 @@ it this ships as verification debt; with it, only perceptibility does.
 
 ## 5. Acceptance criteria
 
-- [ ] `FORCE_BATTERY=15:battery` + `--keep-awake 30m` → paused tone, no `caffeinate` child.
-- [ ] `FORCE_BATTERY=15:ac` → full tone, child present.
+- [x] `FORCE_BATTERY=15:battery` + `--keep-awake 30m` → paused tone, no `caffeinate` child. *(verified live
+      2026-07-30: `armed=1 paused=1 tint=paused`, twice, on a quiet machine; qa.sh §3e case 7. That case
+      NOTEs while another process holds the display — Brave did, later the same session — which is the
+      foreign tone correctly outranking the pause, not a failure.)*
+- [x] `FORCE_BATTERY=15:ac` → full tone, child present. *(qa.sh §3e case 5, folded into the existing
+      attribution assertion.)*
 - [ ] Arming from the menu below the threshold (override honoured) → **full** tone, not paused.
-- [ ] A foreign hold while ours is paused → **foreign** tone, not paused.
-- [ ] `Off` → hidden. Nothing armed and nothing holding → hidden.
-- [ ] The pause edge repaints on the **2s tick alone**, with no menu interaction (catch 1).
-- [ ] The label and the bar always agree.
+      **Not scriptable** — only a menu click sets the override, so this is a RUNBOOK §3b step, not a qa.sh
+      case. §4's claim that the hook left *only* perceptibility eyes-only was wrong about this one.
+- [x] A foreign hold while ours is paused → **foreign** tone, not paused. *(qa.sh §3e case 7, second half,
+      against `tests/hold-assertion.swift --display`; asserts `paused=1 tint=foreign` — both halves, so it
+      can't pass by our pause having silently cleared.)*
+- [x] `Off` → hidden. Nothing armed and nothing holding → hidden. *(qa.sh §3e case 6, folded in.)*
+- [x] The pause edge repaints on the **2s tick alone**, with no menu interaction (catch 1). *(The verified
+      runs above never open a menu, and `tint=` is read off the same function the surfaces call. See the
+      status note above on why the signature term is defensive rather than load-bearing.)*
+- [x] The label and the bar always agree. *(Structural: one function, two call sites, `updateKeepAwakeBar`
+      calls `updateValueLabel` — unchanged from v1.19.0.)*
 - [ ] **Perceptibility — the one eyes-only criterion, and the real risk.** The paused tone must be
       distinguishable from both the lit and the dark states on a 2pt line, in light and dark menu bars.
       If it is not, the feature is a no-op that tests green. Tune the alpha against a real menu bar

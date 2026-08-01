@@ -30,6 +30,44 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.19.2] - 2026-07-31
+
+A maintenance release: a paused Keep Awake no longer looks identical to an off one.
+
+### Fixed
+
+- **A suspended Keep Awake went dark, exactly like `Off`.** A low battery or a hot machine kills the
+  `caffeinate` child while your intent stands — and until now the track line under the icon simply
+  vanished when that happened, so a window that released itself overnight was indistinguishable from
+  one you never switched on. With no menu-bar label on (the default), that 2pt line is the only ambient
+  indicator there is. It now **stays, dimmed further**: armed, but not currently holding. The menu
+  already said `(paused)` and gave the reason; you had to open it to find out.
+- The adjacent menu-bar label follows the same tone, as it already did for the other two — the line and
+  the label are one indicator and are resolved through one function, so they cannot disagree.
+
+### Changed
+
+- **The track line's rule is now "brightness tracks the strength of the hold", not "lit means held".**
+  Three tones, in precedence order: solid when this app is holding the Mac awake, faded when something
+  else is, faintest when this app is armed but suspended. A hold by anyone still **outranks** our own
+  pause, because the Mac genuinely is held and that surface reports the machine first. Nothing arms,
+  releases, or pauses differently, and `Off` still releases only this app's hold.
+- **`MENUBAR_LOAD_RUNNER_LOG_AWAKE=1` now also reports `paused=` and `tint=`** — the tone the line and
+  the label actually wear, named by the same function that renders them. Additive: the existing
+  `hold=` / `own=` / `display=` / `idle=` / `owners=` / `row=` fields are unchanged and in the same
+  order, so an existing grep still matches.
+
+### Notes
+
+- A window **elapsing** stays dark, deliberately: expiry clears your intent, so there is nothing armed
+  left to report. Only a condition-suspend shows the new tone.
+- Cut as a PATCH on the judgment that this corrects a misleading indicator rather than adding a
+  feature. Read strictly against the public-API definition above, the new tone and the two `LOG_AWAKE`
+  fields are additive observable behavior and would argue for a MINOR.
+- The tone is asserted by `tests/qa.sh` §3e via `tint=`, but whether the dim actually *reads* against
+  its two neighbours on a real menu bar is eyes-only — `docs/RUNBOOK-qa-release.md` §3.1 carries that
+  check, and `docs/ROADMAP.md` R7 tracks it as the item's one remaining open question.
+
 ## [1.19.1] - 2026-07-30
 
 A maintenance release: `Keep Awake ▸` is regrouped so its two subjects stop arguing with each other.

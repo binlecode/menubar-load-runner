@@ -155,7 +155,8 @@ Run from the repository root:
   ```bash
   caffeinate -di -t 120 &                       # a foreign hold — the case that used to read Off
   MENUBAR_LOAD_RUNNER_LOG_AWAKE=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 ./tmp/mblr-check 2>&1 | grep AWAKE
-  # AWAKE hold=foreign own=0 display=1 idle=1 owners=1 row="Mac held awake — caffeinate · until 12:05 PM"
+  # AWAKE hold=foreign own=0 display=1 idle=1 owners=1 paused=0 tint=foreign row="Mac held awake — caffeinate · until 12:05 PM"
+  # `tint` is the tone the line and the label actually wear, named by keepAwakeTint itself (R7).
   ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
@@ -423,15 +424,23 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     (`import IOKit.ps`), torn down in `applicationWillTerminate` alongside an explicit caffeinate kill.
     The indicator is a **sibling `CALayer`** (`keepAwakeBar`) on `animationView.layer` on TOP of the frame
     contents — a bottom track line, updated by `updateKeepAwakeBar()` (toggle/resize/color change, plus the
-    2s tick when the machine's hold changes). Keyed on `awakeHold.isHeld`, **not** `isEnabled` and not our
-    own `isRunning` alone — a foreign hold lights it at `Tuning.keepAwakeBarForeignAlpha`; both it and the
-    label resolve through `keepAwakeTintColor(for:appearance:)` so they can't disagree. It must NEVER be
-    composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
+    2s tick when the machine's hold or our own pause changes). The rule is **brightness tracks the strength
+    of the hold**, NOT *lit means held* — `keepAwakeTint(for:paused:)` holds the precedence: ours running →
+    full; the Mac held by anyone → `Tuning.keepAwakeBarForeignAlpha` (**outranks** our pause); armed and
+    nothing holding → `keepAwakeBarPausedAlpha` (R7); else hidden. Bar and label both resolve through
+    `keepAwakeTintColor(for:paused:appearance:)` so they can't disagree. Three things not to break:
+    `keepAwakeArmedNotHolding` is the **spawn outcome** (`isEnabled && !isRunning`), never a re-derivation of
+    `effectiveKeepAwakeSuspension` — that is what makes an honored battery override read as running; expiry
+    stays dark because the termination handler clears `isEnabled`; and the tick's redraw guard is
+    `"\(awakeHold.tintSignature)|\(keepAwakeArmedNotHolding)"`, composed at the call site because
+    `AwakeHold`'s subject is the machine. `LOG_AWAKE` prints `tint=` off `keepAwakeTint` itself, so qa.sh §3e
+    asserts the rendered tone; perceptibility stays eyes-only (RUNBOOK §3.1). Rationale: `DESIGN-system.md`
+    §22.5. It must NEVER be composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
     `KeepAwakeColor` case — Dusty Teal (default), Sand, Graphite, Mauve, Sage — each a dark/light tone
     chosen per menu-bar appearance. The enum drives the rows, so adding a case needs no menu edit; it does
     need the user-facing lists updated in lockstep (`README.md`, `docs/cover.html`,
-    `docs/RUNBOOK-qa-release.md` §Keep Awake), which name the tints deliberately.
+    `docs/RUNBOOK-qa-release.md` §3.2), which name the tints deliberately.
     Off disengages caffeinate; a color row engages it *and* sets that tint (`selectKeepAwakeOption`,
     `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). The tint is menu-only (no CLI/env)
     but persisted. A **second, independent radio group** in the same submenu is the **timed release** (`Duration`):
@@ -622,11 +631,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     - **VoiceOver gets the depadded string.** Coloring a status button's text needs `attributedTitle`,
       which is invisible to VoiceOver, hence the explicit `setAccessibilityLabel` — and it is handed the
       reading with U+2007 stripped (lossless: all padding is leading-within-a-field).
-    - **It wears the Keep Awake tint while the Mac is held awake** — through
-      `keepAwakeTintColor(for:appearance:)`, the same function `updateKeepAwakeBar()` uses, so the two can
-      never disagree (full tone for our own hold, `keepAwakeBarForeignAlpha` for someone else's). The bar
+    - **It wears the Keep Awake tint whenever the bar does** — through
+      `keepAwakeTintColor(for:paused:appearance:)`, the same function `updateKeepAwakeBar()` uses, so the two
+      can never disagree (full tone for our own hold, `keepAwakeBarForeignAlpha` for someone else's,
+      `keepAwakeBarPausedAlpha` while ours is armed but suspended). Don't special-case one surface: the pair
+      reads as a single indicator. The bar
       calls `updateValueLabel()`, so a toggle/suspend/foreign-hold change recolors at once instead of up to
-      2s later. The plain `title =` assignment in the not-held branch resets
+      2s later. The plain `title =` assignment in the untinted branch resets
       the color back to the default catalog color — that default is what tracks appearance and dropdown
       highlighting, so don't "fix" it into an explicit `.labelColor`.
 

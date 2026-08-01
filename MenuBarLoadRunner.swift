@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.19.1"
+    static let version = "1.19.2"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -545,6 +545,13 @@ private enum Tuning {
     // where it would be a lie the user can't see. Faint enough to read as secondary, opaque enough that
     // it isn't mistaken for nothing.
     static let keepAwakeBarForeignAlpha: CGFloat = 0.45
+
+    // Opacity when Keep Awake is ARMED but nothing of ours is holding — a suspended child (R7). Fainter
+    // than the foreign tone, which is what makes brightness monotonic in how much hold there is; see
+    // keepAwakeTint for the full precedence. Deliberately the user's own tint dimmed, never an
+    // amber/warning colour: alarm is the wrong register for this app (the same discipline that keeps the
+    // machine row from claiming the Mac won't sleep), and a sixth colour would collide with the palette.
+    static let keepAwakeBarPausedAlpha: CGFloat = 0.22
 
     // Keep Awake timed release. The preset windows offered in the Keep Awake submenu (seconds), plus
     // the bounds for a custom "__ hr __ min" entry. Biased toward multi-hour unattended runs — the
@@ -3863,7 +3870,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // behind the menu — so the bar has to be re-driven from the tick, not only from the toggle/resize
         // events it used to be. Guarded on the tint signature (which excludes the countdown) so a steady
         // state costs no CATransaction and no relayout every 2s.
-        let tintSignature = awakeHold.tintSignature
+        // Our own pause is composed on HERE rather than inside AwakeHold, whose subject is the machine (it
+        // also feeds the This Mac row). Both halves are required: the guard has to track everything the
+        // tone reads, or a pause edge can leave the previous tone showing.
+        let tintSignature = "\(awakeHold.tintSignature)|\(keepAwakeArmedNotHolding)"
         if tintSignature != lastAwakeTintSignature {
             lastAwakeTintSignature = tintSignature
             updateKeepAwakeBar()
@@ -4282,8 +4292,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return MenuTitle.machineAwakeRow(detail)
         }
 
-        // Change detection for the track line / label tint, which only care WHICH of the three tint
-        // states applies — deliberately excludes the countdown, or the bar would redraw every second.
+        // Change detection for the track line / label tint, which only care WHICH tone applies —
+        // deliberately excludes the countdown, or the bar would redraw every second. The MACHINE half only:
+        // the caller composes our own armed-but-suspended state onto it, since that isn't a machine fact
+        // (see sampleSystemLoad).
         var tintSignature: String { "\(isHeld)|\(ownRunning)|\(isPartial)|\(foreignOwners.count)" }
     }
 
@@ -4461,9 +4473,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let hold = awakeHold
         let state = hold.isHeld ? (hold.ownRunning ? (hold.foreignOwners.isEmpty ? "own" : "both") : "foreign")
             : (hold.isPartial ? "partial" : "none")
+        // The RENDERED tone, off the same function both surfaces resolve through — so `tint=paused` asserts
+        // what the line and the label actually wear, which no shell could otherwise see at 22% alpha.
+        let paused = keepAwakeArmedNotHolding
+        let tint = keepAwakeTint(for: hold, paused: paused)?.rawValue ?? "none"
         fputs("AWAKE hold=\(state) own=\(hold.ownRunning ? 1 : 0)"
               + " display=\(hold.foreignDisplayHeld ? 1 : 0) idle=\(hold.foreignIdleHeld ? 1 : 0)"
-              + " owners=\(hold.foreignOwners.count) row=\"\(hold.rowText)\"\n", stderr)
+              + " owners=\(hold.foreignOwners.count) paused=\(paused ? 1 : 0)"
+              + " tint=\(tint) row=\"\(hold.rowText)\"\n", stderr)
     }
 
     // Whether a source's reader can produce a value on this machine. CPU/memory are always available
@@ -4660,15 +4677,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if abs(item.length - width) > 0.01 {
             item.length = width
         }
-        // While the Mac is held awake, the label wears the same tint as the bar under the animation —
-        // both through keepAwakeTintColor, so they cannot disagree: full tone for our own hold, faded for
-        // someone else's, nothing when sleep is unheld. A battery/thermal suspend drops our own tone (the
-        // hold reads on isRunning, not intent), and the two surfaces read as one indicator. Off, the
-        // text goes back to inheriting the menu bar's own color, which is what tracks appearance and the
-        // highlight when the dropdown is open; the tint has per-appearance tones for the same reason.
+        // The label wears the same tint as the bar under the animation — both through keepAwakeTintColor,
+        // so they cannot disagree: full tone for our own hold, faded for someone else's, faintest while
+        // ours is armed but suspended, nothing when nothing is held and nothing is armed. The two surfaces
+        // read as one indicator, so don't special-case either. Untinted, the text goes back to inheriting
+        // the menu bar's own color, which is what tracks appearance and the highlight when the dropdown is
+        // open; the tint has per-appearance tones for the same reason.
         // attributedTitle is the only way to color a status button's text, and it is invisible to
         // VoiceOver, hence the explicit accessibility label.
-        if let color = keepAwakeTintColor(for: awakeHold, appearance: button.effectiveAppearance) {
+        if let color = keepAwakeTintColor(
+            for: awakeHold, paused: keepAwakeArmedNotHolding, appearance: button.effectiveAppearance) {
             button.attributedTitle = NSAttributedString(
                 string: text,
                 attributes: [.foregroundColor: color, .font: Self.labelFont]
@@ -5578,20 +5596,19 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         keepAwakeBar = bar
     }
 
-    // Called on toggle, on suspend/resume via conditions, and whenever the item resizes
-    // (applySizing). Uses isRunning (not isEnabled), so the bar vanishes while a battery/thermal
-    // condition has caffeinate suspended and reappears when it resumes — it tracks the ACTUAL state.
+    // Called on toggle, on suspend/resume via conditions, and whenever the item resizes (applySizing).
+    // Shows the line whenever there is anything to say — the Mac is held by anyone, or our own hold is
+    // armed but suspended — and distinguishes the three by tone, never by presence alone.
     private func updateKeepAwakeBar() {
         // The adjacent label wears the same tint on the same condition, so it recolors here rather than
         // waiting for the next 2s tick (see updateValueLabel).
         updateValueLabel()
         guard let bar = keepAwakeBar, let host = animationView?.layer else { return }
-        // Keyed on the MACHINE being held, not just on our own child, so a bare `caffeinate` in a terminal
-        // lights the line too — the whole point of R16, and the half of it that works without opening the
-        // menu. A foreign-only hold draws the same line at reduced alpha (see keepAwakeBarForeignAlpha):
-        // held is held, but only our own is ours to turn off.
+        // Not keyed on our own child alone: a bare `caffeinate` in a terminal lights the line too (R16), and
+        // so does an armed-but-suspended hold of ours (R7). keepAwakeTint holds the precedence.
         let hold = awakeHold
-        bar.isHidden = !hold.isHeld
+        let paused = keepAwakeArmedNotHolding
+        bar.isHidden = !hold.isHeld && !paused
         guard !bar.isHidden else { return }
         // No implicit position/size animation — the bar should snap, not slide, on resize.
         CATransaction.begin()
@@ -5599,22 +5616,66 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         let thickness = Tuning.keepAwakeBarThickness
         bar.frame = CGRect(x: 0, y: 0, width: host.bounds.width, height: thickness)  // bottom edge
         bar.backgroundColor = keepAwakeTintColor(
-            for: hold, appearance: statusItem.button?.effectiveAppearance)?.cgColor
+            for: hold, paused: paused, appearance: statusItem.button?.effectiveAppearance)?.cgColor
         CATransaction.commit()
     }
 
-    // The tint the bar and the label wear, or nil when nothing holds sleep. Our own hold gets the full
-    // tone; a foreign-only hold gets it faded. One function so the two surfaces cannot disagree — they
-    // read as a single indicator, and a bar that says "held" beside a label that says "not" is worse than
-    // either alone.
+    // The tint the bar and the label wear, or nil when nothing is held and nothing is armed. Three tones,
+    // ordered here as an explicit precedence rather than left to branch order:
+    //
+    //   ours running        → the full tone
+    //   the Mac is held     → keepAwakeBarForeignAlpha; a foreign hold OUTRANKS our own pause, because the
+    //                         Mac genuinely is held and this surface reports the machine first
+    //   armed, not holding  → keepAwakeBarPausedAlpha; the R7 state, which used to be indistinguishable
+    //                         from Off (see keepAwakeArmedNotHolding)
+    //   otherwise           → nil, and the bar hides
+    //
+    // Brightness is monotonic in how much hold there is; the rule is NOT "lit means held". One function so
+    // the two surfaces cannot disagree — they read as a single indicator, and a bar that says "held" beside
+    // a label that says "not" is worse than either alone.
     // `appearance` is the CALLER's button, not a shared one: the tint has per-appearance tones, and while
     // two adjacent status items will practically always resolve the same appearance, resolving each
     // against its own is free and removes the assumption.
-    private func keepAwakeTintColor(for hold: AwakeHold, appearance: NSAppearance?) -> NSColor? {
-        guard hold.isHeld else { return nil }
-        let base = activeKeepAwakeColor.color(for: appearance)
-        guard !hold.ownRunning else { return base }
-        return base.withAlphaComponent(Tuning.keepAwakeBarForeignAlpha)
+    private func keepAwakeTintColor(
+        for hold: AwakeHold, paused: Bool, appearance: NSAppearance?
+    ) -> NSColor? {
+        guard let tint = keepAwakeTint(for: hold, paused: paused) else { return nil }
+        return activeKeepAwakeColor.color(for: appearance).withAlphaComponent(tint.alpha)
+    }
+
+    // Which tone applies. Split out from the colour so the LOG_AWAKE hook can NAME the rendered tone
+    // without a second copy of this precedence — and without reading an alpha back out of an NSColor and
+    // comparing floats, which is how that assertion would rot the first time a tone's value changed.
+    private enum KeepAwakeTint: String {
+        case own, foreign, paused
+
+        var alpha: CGFloat {
+            switch self {
+            case .own: return 1
+            case .foreign: return Tuning.keepAwakeBarForeignAlpha
+            case .paused: return Tuning.keepAwakeBarPausedAlpha
+            }
+        }
+    }
+
+    private func keepAwakeTint(for hold: AwakeHold, paused: Bool) -> KeepAwakeTint? {
+        if hold.ownRunning { return .own }
+        if hold.isHeld { return .foreign }
+        return paused ? .paused : nil
+    }
+
+    // Switched on, yet nothing of ours is holding — a suspended child. The R7 state, ambiently identical to
+    // Off before this.
+    //
+    // Derived from the spawn OUTCOME, not by re-deriving effectiveKeepAwakeSuspension: the spawn decision
+    // already read that (see updateSleepPrevention), so following the outcome is what makes an honored
+    // battery override render as running instead of contradicting the gesture that set it — with no second
+    // copy of the precedence to keep in step. It also covers a spawn that failed outright.
+    //
+    // A window ELAPSING is not this state: the termination handler clears isEnabled, so expiry goes dark
+    // like Off. Deliberate, and scoped out of R7.
+    private var keepAwakeArmedNotHolding: Bool {
+        sleepPreventer.isEnabled && !sleepPreventer.isRunning
     }
 
     // Pause the game loop while the status item is fully occluded, resume when it

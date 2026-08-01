@@ -1,5 +1,5 @@
 #!/bin/bash
-# QA harness for MenuBar Load Runner — the executable form of docs/RUNBOOK-qa-release.md §1–6.
+# QA harness for MenuBar Load Runner — the release gate. docs/RUNBOOK-qa-release.md §1 maps each
 # Run from the repo root:  tests/qa.sh
 #
 # Coverage tiers (the boundary CI is built around — see README "Testing & CI"):
@@ -10,12 +10,12 @@
 #             re-ported copies of the app's logic and were deleted (see §5).
 #   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3b settings persistence ·
 #             §3c label slot geometry · §3d other sleep assertions · §3e machine sleep-hold state ·
-#             §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
+#             §3f Keep Awake launch arming · §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
 #             they need an active WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on
 #             hosted runners.
 #   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
 #             so it STOPS any running instance (incl. a login-item one). Opt-in only.
-#   §7        interactive menu spot-check — always manual, never scripted.
+#   manual    the menu walk + the eyes-only checks — RUNBOOK §3, never scripted.
 #
 # Usage:
 #   tests/qa.sh                 core + gui              (local default — unchanged behavior)
@@ -71,7 +71,7 @@ $BIN --no-update-check --help >/dev/null 2>&1;      chk "--no-update-check accep
 # --keep-awake parse forms. Only the shapes that can be asserted WITHOUT booting the GUI live here:
 # a missing value is fatal (rc=1), and a valid value followed by --help short-circuits to usage. A
 # *bad* value is deliberately non-fatal (it warns and launches with keep-awake off), so that case is
-# covered by the launch tiers, not here — see RUNBOOK §3a.
+# covered by §3f, not here.
 $BIN --keep-awake >/dev/null 2>&1;                  chk "--keep-awake no value" 1 $?
 $BIN --keep-awake off --help >/dev/null 2>&1;       chk "--keep-awake off accepted" 0 $?
 $BIN --keep-awake 3s --help >/dev/null 2>&1;        chk "--keep-awake seconds form" 0 $?
@@ -107,7 +107,7 @@ section "§3 launch lifecycle [gui — needs WindowServer]"
 pass=0; fail=0
 # STATE_FILE is redirected for every launch: the app persists Keep Awake intent on termination, so
 # without this each of these 21 runs writes the developer's real state file and would clobber an armed
-# window. RUNBOOK §3a already required this of its own block; §3 never did.
+# window. §3f requires this of its own runs; §3 never did.
 run(){ desc="$1"; allow="$2"; shift 2
   err=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-lifecycle-state.json" \
         MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" 2>&1 >/dev/null); rc=$?
@@ -221,8 +221,11 @@ echo "  slot geometry: passes=$pass fails=$fail"; total_fail=$((total_fail+fail)
 # the power-source read, so this needs no real battery and works on a desktop or on AC.
 #
 # Two things this deliberately does NOT test: the override (only a menu click sets it, and menus are
-# not scriptable here — see RUNBOOK §7), and thermal (no way to force a thermal state). `--keep-awake`
+# not scriptable here — see RUNBOOK §3.2), and thermal (no way to force a thermal state). `--keep-awake`
 # is used precisely BECAUSE it is not an override gesture, so these assert the raw conditions.
+#
+# What these do NOT cover is how the pause LOOKS: the tone the track line and the label wear is asserted
+# in §3e, which already has the LOG_AWAKE plumbing and the display-holder fixture that case needs.
 section "§3a Keep Awake battery conditions [gui — needs WindowServer]"
 pass=0; fail=0
 ka(){ desc="$1"; force="$2"; expect="$3"; shift 3  # expect: run | paused; rest = extra app args
@@ -281,12 +284,71 @@ unset MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD
 rm -f ./tmp/qa-ka-state.json
 echo "  keep-awake conditions: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
+# --- §3f Keep Awake launch arming + persistence [gui] ----------------------
+# --keep-awake arms without a click, so the whole window contract is scriptable: what -t the child gets,
+# which saved states come back, and which must not. Ported out of RUNBOOK §3a 2026-07-31, where these
+# lived as copy-paste prose and so were only ever run when someone remembered to paste them.
+# FORCE_BATTERY pins a healthy charge on AC: without it a tester below 20% sees every case fail, because
+# the battery condition is correctly releasing the child (that is §3a's subject, not this one).
+section "§3f Keep Awake launch arming [gui — needs WindowServer]"
+pass=0; fail=0
+ST="$PWD/tmp/qa-arm-state.json"; ERR=./tmp/qa-arm-err.txt
+ck(){ if [ "$2" = EMPTY ]; then [ -z "$3" ] && r=0 || r=1; else case "$3" in *"$2"*) r=0;; *) r=1;; esac; fi
+  [ $r = 0 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] want [$2] got [${3:-<empty>}]"; fail=$((fail+1)); }; }
+# Launch, capture the caffeinate child bound to THIS app (by -w pid, never by name), wait for its exit.
+arm(){ MENUBAR_LOAD_RUNNER_STATE_FILE="$ST" MENUBAR_LOAD_RUNNER_FORCE_BATTERY=100:ac \
+         MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN --no-update-check "$@" >/dev/null 2>"$ERR" & app=$!
+       sleep 1.2; CHILD=$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true); wait $app; }
+
+rm -f "$ST"; arm --keep-awake 1m;     ck "1m arms -t 60"          "-t 60"   "$CHILD"
+rm -f "$ST"; arm --keep-awake 1h30m;  ck "1h30m arms -t 5400"     "-t 5400" "$CHILD"
+rm -f "$ST"; arm --keep-awake 99h;    ck "clamped to 24h"         "-t 86400" "$CHILD"
+rm -f "$ST"; arm --keep-awake on;     ck "on = no -t"             "-di -w"  "$CHILD"
+rm -f "$ST"; arm --keep-awake off;    ck "off = no child"         EMPTY     "$CHILD"
+rm -f "$ST"; arm;                     ck "absent = no child"      EMPTY     "$CHILD"
+rm -f "$ST"; arm --keep-awake banana; ck "bad value = no child"   EMPTY     "$CHILD"
+                                      ck "bad value warns" "Unrecognized --keep-awake" "$(cat "$ERR")"
+rm -f "$ST"; MENUBAR_LOAD_RUNNER_KEEP_AWAKE=45m arm; ck "env arms" "-t 2700" "$CHILD"
+rm -f "$ST"; MENUBAR_LOAD_RUNNER_KEEP_AWAKE=45m arm --keep-awake 10m; ck "flag beats env" "-t 600" "$CHILD"
+# Round trip: the REMAINDER resumes, never a fresh 1800 (a length would extend the window every relaunch).
+rm -f "$ST"; arm --keep-awake 30m;    ck "arming writes state" '"enabled" : true' "$(cat "$ST")"
+arm; secs=$(echo "$CHILD" | sed -n 's/.*-t \([0-9]*\).*/\1/p')
+[ -n "$secs" ] && [ "$secs" -gt 1700 ] && [ "$secs" -lt 1800 ] \
+  && { echo "  PASS [resumes remainder (-t $secs, not 1800)]"; pass=$((pass+1)); } \
+  || { echo "  FAIL [resumes remainder] got '${secs:-none}', want 1700<x<1800"; fail=$((fail+1)); }
+arm --keep-awake off;                 ck "explicit off suppresses saved window" EMPTY "$CHILD"
+arm --keep-awake 5m;                  ck "flag beats saved window" "-t 300" "$CHILD"
+# Saved states that must NOT come back.
+printf '{"version":1,"keepAwake":{"enabled":true,"deadline":"2020-01-01T00:00:00Z","tint":2}}' > "$ST"
+arm; ck "elapsed window not restored"   EMPTY "$CHILD"
+printf '{"version":1,"keepAwake":{"enabled":true,"tint":1}}' > "$ST"
+arm; ck "saved indefinite not restored" EMPTY "$CHILD"   # by design: no stopping condition
+printf 'x' > "$ST"
+arm; ck "corrupt file: no child"        EMPTY "$CHILD"
+     ck "corrupt file: silent" EMPTY "$(grep -v MENUBAR_LOAD_RUNNER_EXIT_AFTER "$ERR")"
+# Natural expiry must mark the window SPENT, or it would resume forever.
+rm -f "$ST"
+MENUBAR_LOAD_RUNNER_STATE_FILE="$ST" MENUBAR_LOAD_RUNNER_EXIT_AFTER=7 $BIN --no-update-check \
+  --keep-awake 3s >/dev/null 2>&1 & app=$!; sleep 4
+ck "window released itself" EMPTY "$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true)"
+wait $app; ck "expiry persisted enabled:false" '"enabled" : false' "$(cat "$ST")"
+arm; ck "spent window not resumed" EMPTY "$CHILD"
+# An unwritable state location must not cost the user the feature.
+mkdir -p tmp/qa-ro && chmod 500 tmp/qa-ro
+MENUBAR_LOAD_RUNNER_STATE_FILE="$PWD/tmp/qa-ro/s.json" MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 $BIN \
+  --no-update-check --keep-awake 5m >/dev/null 2>&1 & app=$!; sleep 1.2
+ck "read-only state dir still arms" "-t 300" "$(ps -o args= -ax | grep '[c]affeinate' | grep -- "-w $app" || true)"
+wait $app; ck "read-only state dir exits 0" 0 "$?"
+chmod 700 tmp/qa-ro; rm -rf tmp/qa-ro
+rm -f "$ST" "$ERR"
+echo "  keep-awake arming: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
 # --- §3b Settings persistence [gui] ----------------------------------------
 # The label mode is the first value in state.json's `settings` block, so these cover the whole contract:
 # a mode survives a relaunch, an explicit flag still wins, and a bad block degrades to defaults instead
 # of breaking startup. Each case asserts the mode the app REWRITES on termination — a failed restore
 # shows up as "off" being written back, which is observable, whereas the absence of the menu-bar slot is
-# not (menus aren't scriptable here — RUNBOOK §7).
+# not (menus aren't scriptable here — RUNBOOK §3.2).
 section "§3b settings persistence [gui — needs WindowServer]"
 pass=0; fail=0
 SF="$PWD/tmp/qa-settings-state.json"
@@ -370,7 +432,7 @@ echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fai
 # MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1, which prints the FILTERED, post-hysteresis list each tick — the
 # LOG_SLOTS trick, and for the same reason: it needs no TCC grant, while the rows themselves are only
 # reachable via menu-dump (Accessibility) or a screenshot (Screen Recording). What the rows LOOK like
-# stays a §7 click-step; what the app decided is asserted here.
+# stays a RUNBOOK §3.2 click-step; what the app decided is asserted here.
 #
 # tests/hold-assertion.swift is the fixture: it holds a real assertion under a unique process name, so
 # detection and the retention window don't depend on whether this machine happens to have a stray
@@ -458,8 +520,10 @@ else
   "$PROBE" 7 --display --timeout 90 & probe_pid=$!
   out=$(awake 6)
   last=$(echo "$out" | tail -1)
-  mk "a foreign display hold reads as held awake" \
-     "$(echo "$last" | grep -q 'hold=foreign .*display=1' && echo 1 || echo 0)" "got: $last"
+  # `tint=foreign` rides along here rather than in a case of its own: the tone is what the track line and
+  # the label actually wear, and this is already the run that produces a foreign hold.
+  mk "a foreign display hold reads as held awake, in the foreign tone" \
+     "$(echo "$last" | grep -q 'hold=foreign .*display=1 .*tint=foreign' && echo 1 || echo 0)" "got: $last"
   # 2. Attribution and the release time. Both are about the owner the row NAMES, and the row names one
   # holder — display-holders first, then alphabetical. So these two cases only mean something when our
   # fixture is the one named: a browser playing video holds a display assertion too and sorts first
@@ -512,8 +576,8 @@ else
   # 5. Our OWN window: attributed to this app, with the countdown, and it must DECREMENT — a frozen
   # countdown is the failure this row shares with the one above it.
   out=$(awake 7 --keep-awake 30m)
-  mk "our own hold is attributed to this app" \
-     "$(echo "$out" | tail -1 | grep -qE 'hold=(own|both) .*row="Mac held awake — this app · ' && echo 1 || echo 0)" \
+  mk "our own hold is attributed to this app, in the full tone" \
+     "$(echo "$out" | tail -1 | grep -qE 'hold=(own|both) .*tint=own row="Mac held awake — this app · ' && echo 1 || echo 0)" \
      "got: $(echo "$out" | tail -1)"
   counts=$(echo "$out" | grep -o 'this app · [0-9:]*' | sort -u | wc -l | tr -d ' ')
   mk "its countdown decrements across ticks ($counts distinct readings)" \
@@ -526,10 +590,34 @@ else
          "sleep assertion throughout, which is signal, not noise]"
     echo "       last: $(echo "$out" | tail -1)"
   else
-    mk "with nothing holding sleep the row says so" \
-       "$(echo "$out" | tail -1 | grep -q 'hold=none .*row="Nothing holding sleep"' && echo 1 || echo 0)" \
+    mk "with nothing holding sleep the row says so, and wears no tone" \
+       "$(echo "$out" | tail -1 | grep -q 'hold=none .*tint=none row="Nothing holding sleep"' && echo 1 || echo 0)" \
        "got: $(echo "$out" | tail -1)"
   fi
+
+  # 7. R7 — a PAUSED hold. Cases 1, 5 and 6 above cover the foreign, full and no-tone readings for free;
+  # this is the one with no picture of its own, because a suspend kills the child and so used to render
+  # exactly like Off — and with the label off by default that 2pt line is a default user's only ambient
+  # indicator. Assigned with export/unset, not as a prefix: a prefix on a shell *function* leaks into
+  # every case after it (see §3a).
+  export MENUBAR_LOAD_RUNNER_FORCE_BATTERY=15:battery
+  last=$(awake 5 --keep-awake 30m | tail -1)
+  if echo "$last" | grep -q 'tint=foreign'; then
+    echo "  NOTE [the paused tone is unverifiable here: another process holds the display, so the Mac IS"\
+         "held and the foreign tone correctly outranks our pause — see the next case]"
+    echo "       last: $last"
+  else
+    mk "an armed-but-suspended hold shows the paused tone, not nothing" \
+       "$(echo "$last" | grep -q 'paused=1 tint=paused' && echo 1 || echo 0)" "got: $last"
+  fi
+  # That precedence, asserted rather than assumed: with the fixture holding the display, the same paused
+  # hold reads foreign, because this surface reports the machine before it reports us.
+  "$PROBE" 7 --display --timeout 90 & probe_pid=$!
+  last=$(awake 5 --keep-awake 30m | tail -1)
+  wait $probe_pid 2>/dev/null
+  unset MENUBAR_LOAD_RUNNER_FORCE_BATTERY
+  mk "a foreign display hold outranks our pause" \
+     "$(echo "$last" | grep -q 'paused=1 tint=foreign' && echo 1 || echo 0)" "got: $last"
 fi
 rm -f "$PROBE" "$AW"
 echo "  machine sleep-hold state: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
@@ -631,5 +719,5 @@ fi
 # --- Cleanup + verdict -----------------------------------------------------
 rm -f "$BIN" ./tmp/qa-lifecycle-state.json ./tmp/qa-ka-state.json ./tmp/qa-settings-state.json
 printf '\n'
-if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (§7 interactive spot-check still manual)"; exit 0
+if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (RUNBOOK §3 manual checks still to do)"; exit 0
 else echo "QA: $total_fail FAILING section(s)"; exit 1; fi

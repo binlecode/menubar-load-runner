@@ -469,6 +469,10 @@
     background:var(--teal-bar); box-shadow:0 0 6px var(--teal-glow);
     opacity:0; transition:opacity .3s, background .25s, box-shadow .25s}
   .awake-line.on{opacity:1}
+  /* Armed, but a condition has released the hold — the R7 tone. Dim rather than absent, or the demo
+     reproduces the very bug the app fixed: suspended looking exactly like Off. The glow is dropped
+     with it (set inline by JS), since a glowing faint line reads as lit, not paused. */
+  .awake-line.paused{opacity:.3}
   /* the line's tint is set inline by JS from the selected swatch (5 colors) */
 
   /* The tint picker itself lives in §mark (.swatch-row / .swatch) — that section owns the
@@ -776,12 +780,15 @@
         <p>The line is a <b>sibling layer over the artwork</b>, never painted into it. Toggling it
           re-rasterizes nothing; it spans the item's <b>full width</b>, sits flush on the bottom edge, and
           snaps rather than slides when the slot resizes. The creature keeps running underneath, untouched.</p>
-        <p class="tight">Both marks key on whether <b>the Mac is actually being held awake</b> — not on the
-          menu checkmark. So the moment a low battery or a thermal condition suspends it, the line and the
-          label's color drop <i>together</i>, while the toggle stays on. An indicator that showed your intent
-          instead of the state would be lying at exactly the moment it mattered. A hold <i>someone else</i>
-          started shows up here too, at <b>reduced opacity</b> — held is held, but only this app's own hold
-          is one it can release, and one tint for both would blur that.</p>
+        <p class="tight">Both marks key on <b>what is actually holding the Mac</b>, never on the menu
+          checkmark — and brightness tracks <i>how much of a hold there is</i>, rather than simply meaning
+          “held”. Three tones, always in step with each other: <b>solid</b> while this app is holding the
+          Mac awake; <b>reduced</b> when the hold is someone else's, because held is held but only this
+          app's own is one it can release, and a single tint for both would blur that; and <b>fainter
+          still</b> when the toggle is on but a low battery or a hot machine has let the hold go for now.
+          That last one used to go fully dark — identical to Off — so a window that released itself at 3am
+          looked all morning like one you never switched on. An indicator that can't tell <i>suspended</i>
+          from <i>off</i> is lying at exactly the moment it matters.</p>
         <p class="readout-note">Every tint is a <b>fixed hue in two tones</b>, one per menu-bar appearance —
           never your system accent, which could collide with the artwork or vanish into the bar. Flip the
           bar below to see both tones (and why each preset ships white <i>and</i> black).</p>
@@ -1006,7 +1013,7 @@
     <div class="foot">
       <div class="badges">
         <a class="badge badge-link" href="https://github.com/binlecode/menubar-load-runner">github.com/binlecode/menubar-load-runner&nbsp;↗</a>
-        <span class="badge">v1.19.1</span>
+        <span class="badge">v1.19.2</span>
         <span class="badge">MIT · open source</span>
         <span class="badge">Swift · AppKit</span>
         <span class="badge">macOS 14+ · display link</span>
@@ -1120,8 +1127,12 @@
     var cause=firstActive();
     var running=enabled && !cause;
     awToggle.setAttribute('aria-checked',enabled?'true':'false');
-    if(awLine){ awLine.classList.toggle('on',running); var b=BAR[color]||BAR.teal;
-      awLine.style.background=b.c; awLine.style.boxShadow='0 0 6px '+b.g; }
+    // Three tones, mirroring keepAwakeTint in the app: solid while holding, faint while armed but
+    // suspended, hidden when off. The faint one is the whole point — see .awake-line.paused.
+    if(awLine){ var b=BAR[color]||BAR.teal;
+      awLine.classList.toggle('on',running);
+      awLine.classList.toggle('paused',enabled && !running);
+      awLine.style.background=b.c; awLine.style.boxShadow=running?('0 0 6px '+b.g):'none'; }
     if(!enabled){
       awState.textContent='off · caffeinate not running';
       if(awCaption) awCaption.textContent='toggle it — the track line is the “ground it runs on”';
@@ -1132,7 +1143,7 @@
         : '● holding the Mac awake';
     } else {
       awState.textContent='paused · '+reasons[cause]+' · re-engages when clear';
-      if(awCaption) awCaption.textContent='auto-disengaged — toggle still on, but suspended';
+      if(awCaption) awCaption.textContent='auto-disengaged — the line dims, it doesn’t vanish';
     }
     // The countdown shows whenever a window is armed — including while a condition has it suspended,
     // since the deadline is wall-clock and a resume respawns with only the time that's left.

@@ -1,4 +1,4 @@
--- Dump the status-item menu's structure — every root row, plus one level of submenu — so RUNBOOK §7's
+-- Dump the status-item menu's structure — every root row, plus one level of submenu — so RUNBOOK §3.2's
 -- menu walk can be diffed instead of eyeballed. Read-only: it opens the menu, reads titles, and closes
 -- it again.
 --
@@ -6,7 +6,7 @@
 --   osascript tests/menu-dump.applescript <pid>
 --
 -- Requires Accessibility permission for the calling terminal (System Settings → Privacy & Security →
--- Accessibility), which is why this is a §7 aid and not part of `tests/qa.sh` — the core tier must stay
+-- Accessibility), which is why this is a RUNBOOK §3.2 aid and not part of `tests/qa.sh` — the core tier must stay
 -- runnable headless and unprivileged.
 --
 -- THREE THINGS THAT WILL BITE YOU, all found the hard way:
@@ -39,15 +39,17 @@ on run argv
 			set out to ""
 			set rootMenu to menu 1 of menu bar item 1 of menu bar 1
 			repeat with i from 1 to (count of menu items of rootMenu)
-				set rowItem to menu item i of rootMenu
-				set rowTitle to title of rowItem
+				set rowTitle to title of menu item i of rootMenu
 				-- A separator, or a view-based row (the Other Sources disclosure header), has no title.
 				if rowTitle is missing value or rowTitle is "" then set rowTitle to "· (separator or view row)"
 				set out to out & "  " & i & ". " & rowTitle & linefeed
-				if (count of menus of rowItem) > 0 then
-					set subMenu to menu 1 of rowItem
-					repeat with j from 1 to (count of menu items of subMenu)
-						set subTitle to title of (menu item j of subMenu)
+				-- Re-address by INDEX on every access; never hold a row in a variable. System Events re-resolves
+				-- a stored specifier BY TITLE, and the Keep Awake parent row's title carries a 1s countdown while
+				-- a window is armed — so it changed between the lookup and the submenu fetch and the dump died with
+				-- -1728, making the armed menu the one state this tool could not read. (Found 2026-07-31.)
+				if (count of menus of menu item i of rootMenu) > 0 then
+					repeat with j from 1 to (count of menu items of menu 1 of menu item i of rootMenu)
+						set subTitle to title of (menu item j of menu 1 of menu item i of rootMenu)
 						if subTitle is missing value or subTitle is "" then set subTitle to "·"
 						set out to out & "        " & i & "." & j & " " & subTitle & linefeed
 					end repeat

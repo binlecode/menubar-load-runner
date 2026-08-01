@@ -551,7 +551,15 @@ private enum Tuning {
     // keepAwakeTint for the full precedence. Deliberately the user's own tint dimmed, never an
     // amber/warning colour: alarm is the wrong register for this app (the same discipline that keeps the
     // machine row from claiming the Mac won't sleep), and a sixth colour would collide with the palette.
-    static let keepAwakeBarPausedAlpha: CGFloat = 0.22
+    //
+    // 0.30, not the 0.22 first tried, and the difference was settled by measurement rather than taste.
+    // Composite the tone over a real menu-bar background (`bg×(1−α) + tint×α`) and the LIGHT bar is the
+    // weak case every time: its tint is *darker* than its background, so the same alpha buys far less
+    // separation than on dark. 0.22 measured 1.46:1 against a dark bar but only 1.29:1 against a light
+    // one — near enough to the unlit bar to reinstate the very bug this constant exists to fix. 0.30
+    // gives 1.68:1 / 1.42:1 while staying clearly under the foreign tone's 2.17:1 / 1.71:1, so the
+    // ordering still reads. Re-tune against both appearances or not at all; RUNBOOK §3.1 has the method.
+    static let keepAwakeBarPausedAlpha: CGFloat = 0.30
 
     // Keep Awake timed release. The preset windows offered in the Keep Awake submenu (seconds), plus
     // the bounds for a custom "__ hr __ min" entry. Biased toward multi-hour unattended runs — the

@@ -1,18 +1,21 @@
 # R7 — A paused Keep Awake must not look like an off one
 
-**Priority** P3 · **Blocked by** a quiet machine · **Status** **shipped in v1.19.2; two checks still open**
+**Priority** P3 · **Blocked by** a quiet machine · **Status** **shipped in v1.19.2; perceptibility settled, one check open**
 
 Built, verified and documented: §2's third tone, §3's five catches, §4's hook, and §6's docs (AGENTS.md,
-ROADMAP, README, RUNBOOK §3b/§7, DESIGN-system §22.5 incl. the rejected HUD). **Two** open items, not one,
-and they want the same conditions:
+ROADMAP, README, RUNBOOK §3.1/§3.2, DESIGN-system §22.5 incl. the rejected HUD). **One** open item left:
 
-- §5's last box — **perceptibility**, a person's job, not a script's.
+- ~~§5's last box — **perceptibility**~~. **Done.** Measured, not eyeballed: composite the tone over a
+  real bar and read the contrast. The light bar is the weak case (its tint is darker than its
+  background), where the original `0.22` gave only 1.29:1 — near enough to unlit to reinstate the bug.
+  Retuned to **`0.30`** (1.68:1 dark / 1.42:1 light), still well under foreign. Confirmed by eye on the
+  rendered comparison before shipping. Method now in RUNBOOK §3.1.
 - **§3e's `tint=paused` has never fired.** A foreign display hold correctly outranks our pause, so the
   case NOTEs out wherever anything holds the display (a browser video wake lock suffices). Only the
-  precedence half, `paused=1 tint=foreign`, is confirmed. Shipped in v1.19.2 with neither settled.
+  precedence half, `paused=1 tint=foreign`, is confirmed. Shipped in v1.19.2 with this one outstanding.
 
-Both need a machine with no display-sleep holder — `pmset -g assertions | grep -i display` names it. Do
-them together, then delete this file and retire the ROADMAP row. Two notes on how it was built, both
+It needs a machine with no display-sleep holder — `pmset -g assertions | grep -i display` names it. Run
+§3e there, then delete this file and retire the ROADMAP row. Two notes on how it was built, both
 departures worth knowing:
 
 - **The paused state is a second PARAMETER, not a field on `AwakeHold`** (`keepAwakeTintColor(for:paused:)`,

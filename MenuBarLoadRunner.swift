@@ -552,14 +552,23 @@ private enum Tuning {
     // amber/warning colour: alarm is the wrong register for this app (the same discipline that keeps the
     // machine row from claiming the Mac won't sleep), and a sixth colour would collide with the palette.
     //
-    // 0.30, not the 0.22 first tried, and the difference was settled by measurement rather than taste.
-    // Composite the tone over a real menu-bar background (`bg×(1−α) + tint×α`) and the LIGHT bar is the
-    // weak case every time: its tint is *darker* than its background, so the same alpha buys far less
-    // separation than on dark. 0.22 measured 1.46:1 against a dark bar but only 1.29:1 against a light
-    // one — near enough to the unlit bar to reinstate the very bug this constant exists to fix. 0.30
-    // gives 1.68:1 / 1.42:1 while staying clearly under the foreign tone's 2.17:1 / 1.71:1, so the
-    // ordering still reads. Re-tune against both appearances or not at all; RUNBOOK §3.1 has the method.
-    static let keepAwakeBarPausedAlpha: CGFloat = 0.30
+    // 0.22, chosen ON THE BAR BY EYE, and the number a composited-contrast measurement disagreed with —
+    // recorded because the disagreement is the interesting part, not because it is unresolved.
+    //
+    // The measurement: composite the tone over a real menu-bar background (`bg×(1−α) + tint×α`) and read
+    // the ratio against the unlit bar. The LIGHT bar is the weak case every time, since its tint is
+    // *darker* than its background, so the same alpha buys less separation than on dark. 0.22 gives
+    // 1.46:1 dark / 1.29:1 light; 0.30 gives 1.68:1 / 1.42:1. On that basis 0.30 shipped in the (never
+    // pushed) v1.19.2.
+    //
+    // **Overruled by the owner's eyes, 2026-08-01, deliberately.** The acceptance criterion was always
+    // whether the paused tone reads as distinct from both holding and Off — a contrast ratio is a *proxy*
+    // for that, and one calibrated for text legibility rather than a 2pt decorative line. When the proxy
+    // and a direct look at the real bar disagree, the look wins; 0.22 is what was preferred there.
+    // So: use the measurement to compare candidates cheaply (RUNBOOK §3.1 has the method — it works
+    // without waiting for a machine quiet enough to render the paused state at all), then decide by
+    // looking, in a light *and* a dark bar. Never re-tune on the ratio alone, and never on one appearance.
+    static let keepAwakeBarPausedAlpha: CGFloat = 0.22
 
     // Keep Awake timed release. The preset windows offered in the Keep Awake submenu (seconds), plus
     // the bounds for a custom "__ hr __ min" entry. Biased toward multi-hour unattended runs — the

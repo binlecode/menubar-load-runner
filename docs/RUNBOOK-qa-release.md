@@ -104,12 +104,15 @@ off: `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_
     - **Holding and paused cannot be shown side by side.** The holding instance's own `caffeinate` holds
       the display for the whole machine, so a paused instance next to it renders *foreign*. Compare them
       in sequence, one at a time. Paused vs `Off` — the pair the feature exists for — is safe together.
-    - **Measure, don't squint.** `screencapture -x -R<x>,<y>,<w>,<h>` a strip of the bar (coordinates from
-      `LOG_SLOTS`, which reports screen coords), then read the line's pixels and composite the tone
-      yourself: `bg×(1−α) + tint×α`. That turns "looks a bit faint" into a contrast ratio, and lets you
-      evaluate a candidate alpha without waiting for a machine quiet enough to render it. **Expect the
-      light bar to be the weak case** — its tint is darker than its background rather than lighter, so
-      every tone lands at a lower contrast than its dark-bar twin.
+    - **Measure to compare candidates; decide by looking.** `screencapture -x -R<x>,<y>,<w>,<h>` a strip
+      of the bar (coordinates from `LOG_SLOTS`, which reports screen coords), then read the line's pixels
+      and composite the tone yourself: `bg×(1−α) + tint×α`. That turns "looks a bit faint" into a contrast
+      ratio and lets you evaluate a candidate alpha without waiting for a machine quiet enough to render
+      the paused state at all. **Expect the light bar to be the weak case** — its tint is darker than its
+      background rather than lighter, so every tone lands at a lower contrast than its dark-bar twin.
+      But the ratio is a **proxy** (and a text-legibility one, on a 2pt line): where it and a direct look
+      disagree, the look decides. It did — the shipped `0.22` is the eyes' answer over the ratio's `0.30`,
+      and the light bar's 1.29:1 is an accepted reading, not an open defect. `DESIGN-system.md` §22.5.
 - [ ] The countdown **keeps ticking while paused** — the window is a wall-clock deadline and elapses
       whether or not the child is holding, so a pause must not freeze it (`29:55 → 29:44 → 29:34` on a
       paused instance). Same with the override active.

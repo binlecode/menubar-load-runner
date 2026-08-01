@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.19.2"
+    static let version = "1.19.3"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -558,8 +558,7 @@ private enum Tuning {
     // The measurement: composite the tone over a real menu-bar background (`bg×(1−α) + tint×α`) and read
     // the ratio against the unlit bar. The LIGHT bar is the weak case every time, since its tint is
     // *darker* than its background, so the same alpha buys less separation than on dark. 0.22 gives
-    // 1.46:1 dark / 1.29:1 light; 0.30 gives 1.68:1 / 1.42:1. On that basis 0.30 shipped in the (never
-    // pushed) v1.19.2.
+    // 1.46:1 dark / 1.29:1 light; 0.30 gives 1.68:1 / 1.42:1. On that basis 0.30 shipped in v1.19.2.
     //
     // **Overruled by the owner's eyes, 2026-08-01, deliberately.** The acceptance criterion was always
     // whether the paused tone reads as distinct from both holding and Off — a contrast ratio is a *proxy*

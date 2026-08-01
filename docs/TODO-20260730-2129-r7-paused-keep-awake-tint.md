@@ -1,11 +1,19 @@
 # R7 — A paused Keep Awake must not look like an off one
 
-**Priority** P3 · **Blocked by** nothing · **Status** **code complete 2026-07-30; one eyes-only check left**
+**Priority** P3 · **Blocked by** a quiet machine · **Status** **shipped in v1.19.2; two checks still open**
 
 Built, verified and documented: §2's third tone, §3's five catches, §4's hook, and §6's docs (AGENTS.md,
-ROADMAP, README, RUNBOOK §3b/§7, DESIGN-system §22.5 incl. the rejected HUD). The only open item is §5's
-last box — **perceptibility** — which is a person's job, not a script's. Do that, then delete this file and
-retire the ROADMAP row. Two notes on how it was built, both departures worth knowing:
+ROADMAP, README, RUNBOOK §3b/§7, DESIGN-system §22.5 incl. the rejected HUD). **Two** open items, not one,
+and they want the same conditions:
+
+- §5's last box — **perceptibility**, a person's job, not a script's.
+- **§3e's `tint=paused` has never fired.** A foreign display hold correctly outranks our pause, so the
+  case NOTEs out wherever anything holds the display (a browser video wake lock suffices). Only the
+  precedence half, `paused=1 tint=foreign`, is confirmed. Shipped in v1.19.2 with neither settled.
+
+Both need a machine with no display-sleep holder — `pmset -g assertions | grep -i display` names it. Do
+them together, then delete this file and retire the ROADMAP row. Two notes on how it was built, both
+departures worth knowing:
 
 - **The paused state is a second PARAMETER, not a field on `AwakeHold`** (`keepAwakeTintColor(for:paused:)`,
   flag from `keepAwakeArmedNotHolding`, tick guard composed at the call site). §2 said "give the function a

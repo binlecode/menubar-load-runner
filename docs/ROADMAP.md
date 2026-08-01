@@ -1,7 +1,7 @@
 # ROADMAP
 
 Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.19.2.
+of v1.19.3.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
@@ -95,6 +95,6 @@ Three rules with a track record, each learned from a shipped miss:
   offers no update, while `git pull --ff-only` would have delivered it. The only resolution is a
   version bump across the five surfaces. Never re-cut a published tag in place.
 
-**Outstanding:** the paused-alpha `0.22` fix sits on `main` one commit after the published `v1.19.2`
-tag, so no installed copy can be offered it — needs a version bump. v1.19.2's cover changes (prose +
-demo) are cut but unpublished — needs a `publish-cover` redeploy.
+**Outstanding:** the cover is unpublished two releases running — v1.19.2's prose + demo changes, and now
+v1.19.3's badge. Needs a `publish-cover` redeploy. (The stranded paused-alpha `0.22` fix shipped in
+v1.19.3, which is what that release was for.)

@@ -30,6 +30,32 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.19.3] - 2026-08-01
+
+A one-constant release, cut because the fix could not reach you any other way.
+
+### Changed
+
+- **The paused Keep Awake tone is lighter — `0.22`, down from the `0.30` v1.19.2 shipped.** Same
+  meaning, same precedence, same three tones; only the faintest one moved. v1.19.2 picked its value by
+  compositing each candidate over a real menu-bar background and reading the contrast ratio against an
+  unlit bar. Looked at on the bar itself, in both appearances, the lighter tone was the better one — so
+  the measurement lost to the eyes it was standing in for. A contrast ratio is a proxy for "does this
+  read as armed-but-not-holding", and one calibrated for text legibility at that, not for a 2pt
+  decorative line. The method is still worth keeping to compare candidates cheaply, since it does not
+  need a machine quiet enough to render the paused state at all; it just does not get the last word.
+  v1.19.2's note that the value was "tuned against both appearances before release" was true and still
+  produced the wrong answer.
+
+### Notes
+
+- **Why a release for one constant.** The fix landed on `main` one commit after `v1.19.2` was tagged and
+  pushed. `UpdateChecker` compares the newest remote tag against `AppInfo.version`, found them equal,
+  and so offered no update — while `git pull --ff-only`, the thing that actually applies one, would have
+  delivered it. The tag gates the prompt and the branch carries the code, so a behavioral change
+  committed after its tag is not a stale tag but an undeliverable fix, and a version bump is the only
+  thing that clears it. `docs/ROADMAP.md` § Release hygiene carries the rule.
+
 ## [1.19.2] - 2026-07-31
 
 A maintenance release: a paused Keep Awake no longer looks identical to an off one.

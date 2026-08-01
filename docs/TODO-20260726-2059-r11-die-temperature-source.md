@@ -10,22 +10,39 @@ other reader.
 
 Resolve every symbol by name, not by line — the anchors this file used to carry rotted twice.
 
-## Step 0 — Probe first; the premise is unverified
+## Step 0 — DONE 2026-08-01. Premise confirmed, and the spec below changed because of it
 
-"Not API-blocked, the SMC path already covers temperature keys" is reasonable but **has never been
-tested on this machine**. Unlike fans there is no `FNum`-equivalent count key, and the Apple Silicon
-key set is not the Intel one (`TC0P`/`TC0D`/`TC0E` are Intel; M-series uses `Tp01`…`Tp0D` for P-core
-clusters, `Tg0x` for GPU, and the set varies by chip). So discovery is **probe-a-candidate-list**.
+Probed on this machine (Apple Silicon). **R11 is viable**: temperature keys read at the same
+unprivileged SMC tier as fan RPM, no entitlement, no root. Four findings, the third of which
+invalidates what this file used to specify:
 
-Write a throwaway probe in `tmp/` that opens the connection and walks a candidate list, keeping keys
-that both:
+1. **Discovery is enumeration, not a candidate list.** This file used to say there is no
+   `FNum`-equivalent for temperature — true for temperature *specifically*, but the SMC publishes a
+   general one: `#KEY` returns the total key count, and command **`8` (read-by-index)** walks the real
+   table. This machine publishes **3385 keys**, of which **336** are `T`-prefixed, type `"flt "`, and
+   read inside 0…125 °C. Enumerate; don't guess a per-chip list you can't distinguish "absent" from
+   "didn't think of it".
+2. **Everything is `"flt "` here**, so `SMCClient.floatKey` covers it as-is. `sp78` (signed 8.8 fixed
+   point) is the Intel encoding — support it only if an Intel Mac ever matters.
+3. **`max` across the raw key set is WRONG, and would have shipped a broken reader.** The five hottest
+   keys (`Tf06`/`Tf16`/`Tf26`/`Tf36`/`Tf46`, reading 94–107 °C) are **frozen constants** — they did not
+   move by even 0.5 °C across a 12s all-core load that moved 245 other sensors. They are limits or
+   trip points, not readings. A naive max would pin the animation at `Tf26 = 106.73 °C` forever,
+   *regardless of load* — and it would look plausible, because 107 °C is a believable die temperature.
+   So: **max over a curated family, never over everything.** `Tp**` is the family to use — all 100
+   `Tp**` keys moved under load, none were static.
+4. **A static-vs-moving diff is the only way to tell these apart.** A single sample cannot: the
+   constants sit in the plausible range and are the *hottest* things on the machine. Any future
+   candidate key earns its place by moving under load, not by reading a sane number once.
 
-1. return type `"flt "` with `dataSize == 4` from `readKeyInfo` — i.e. `SMCClient.floatKey` returns
-   non-nil, and
-2. read a plausible value on the first sample — `0 < °C < 125`. A present-but-garbage key is common.
+Live families worth the menu, from that run: `Tp**` (P-core clusters, 55–74 °C under load — the
+driver), `Te**`/`Tex*` (efficiency cores, 42–57 °C), `TCM*`/`TCDX` (fabric/interconnect). Ignore
+`Tf**` entirely, and note `TVMX`/`TVMx`/`TVmS`/`TVms`/`TVxx` all read exactly 56.00 (thresholds), and
+`Ta0*` sit at 8.60 (not a die reading).
 
-The probe either hands Step 1 a concrete key list, or shows the item is unavailable on this hardware
-and should be re-scoped. It is the cheap half — do it first.
+The probe was `tmp/smc-temp-probe.swift` — scratch, so treat it as gone. Everything durable it found
+is above; regenerating it is `#KEY` + cmd 8 + the 80-byte `SMCKeyData` layout (mind the three trailing
+pad bytes in `SMCKeyInfoData`, or every read fails `kIOReturnBadArgument`).
 
 ## Step 1 — `ThermalLoadMonitor`
 
@@ -40,10 +57,13 @@ static let thermalCeilingCelsius: Double = 100   // at/above → max
 mapped as `clamp((c - floor) / (ceiling - floor), 0, 1)`. Document it in the class comment as a
 deliberate approximation, in the voice `MemoryLoadMonitor`'s composite uses.
 
-**Max across sensors, not average** — the hottest die is what throttling responds to, and averaging a
-P-core cluster against an idle GPU hides the event worth visualising. This **inverts the fan
-precedent**, which averages deliberately, so write the reason into the class comment or the next reader
-will "fix" it to match. Keep per-sensor readings for the menu, as `perFan` does.
+**Max across a CURATED sensor family, not average, and not max over every key** — the hottest die is
+what throttling responds to, and averaging a P-core cluster against an idle GPU hides the event worth
+visualising. This **inverts the fan precedent**, which averages deliberately, so write the reason into
+the class comment or the next reader will "fix" it to match. Keep per-sensor readings for the menu, as
+`perFan` does. Curated is the load-bearing word — see Step 0 #3: the raw maximum is a frozen 106.73 °C
+constant. Drive on `Tp**`, and gate any key you add on the moving-under-load test, not on a plausible
+single reading.
 
 No plausible key → `isAvailable == false` → disabled menu row and a launch fallback to `.cpu`, exactly
 like fan on a fanless Mac. Expect this on VMs.

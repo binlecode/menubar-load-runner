@@ -95,6 +95,8 @@ Three rules with a track record, each learned from a shipped miss:
   offers no update, while `git pull --ff-only` would have delivered it. The only resolution is a
   version bump across the five surfaces. Never re-cut a published tag in place.
 
-**Outstanding:** the cover is unpublished two releases running — v1.19.2's prose + demo changes, and now
-v1.19.3's badge. Needs a `publish-cover` redeploy. (The stranded paused-alpha `0.22` fix shipped in
-v1.19.3, which is what that release was for.)
+**Cover published and verified 2026-08-01** — the live page serves the v1.19.3 badge and all five GIFs
+at 200. Note what the check found: this file had recorded v1.19.2's cover prose + demo as *unpublished*
+for two releases, and they were live the whole time — the deploy happened and the tracker never heard.
+So the drift runs both ways, and only fetching the live page settles it; a diff of the built bundle
+against `curl`'s copy of the live one is the cheap form (it came back as a single changed badge line).

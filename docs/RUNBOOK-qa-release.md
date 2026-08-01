@@ -71,7 +71,7 @@ screencapture -x -R0,0,80,20 tmp/tcc-probe.png && echo "screen recording OK"    
 With those, the §3.2 menu walk and the pixel measurement in §3.1 are both available — no eyeballing and
 no second person required.
 
-Four things that have bitten:
+Four things that bite:
 
 - `--foreground` / `--no-detach` / `--extra` are **launcher-only**. Passed to the raw binary they read as
   a GIF path → decode failure → modal box.
@@ -96,7 +96,7 @@ off: `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_
       dimmer than when holding. Compare holding / paused / `Off` in a light *and* dark menu bar. qa.sh §3e
       proves which tone was chosen; only looking proves it reads. If it doesn't, retune
       `Tuning.keepAwakeBarPausedAlpha` — otherwise the feature is a no-op that tests green.
-      **Three things make this harder than it sounds, and all three have wasted a session:**
+      **Three things make this harder than it sounds:**
     - **Anything holding the display masks the paused tone entirely** — correctly, since a foreign hold
       outranks our pause. A browser playing media is enough, and it *re-acquires silently* after you
       pause the video, so check at the moment of observation, not before:
@@ -223,8 +223,8 @@ and calls a healthy child a leak.
 Ship when `tests/qa.sh` says ALL PASS, §3 is ticked, no NOTE covers what this release changed, and the
 diff is reviewed.
 
-**Cutting it, in this order.** Steps 2, 3 and 6 are each here because each was skipped once and cost a
-release:
+**Cutting it, in this order.** Steps 2, 3 and 6 are the ones that look skippable and are not — each
+fails silently, and none of them is caught by anything upstream:
 
 1. Bump `AppInfo.version`; move `CHANGELOG.md`'s `[Unreleased]` items into a dated section.
    MAJOR/MINOR/PATCH follow the public-API definition at the top of `CHANGELOG.md` (CLI flags, env vars,

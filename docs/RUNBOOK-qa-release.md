@@ -59,6 +59,18 @@ Known gaps live in `ROADMAP.md` § Verification debt — check it rather than as
 | `MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1` | the filtered other-holders list, plus `own=N` |
 | `MENUBAR_LOAD_RUNNER_LOG_AWAKE=1` | derived sleep-hold state, the rendered row text, and `tint=` (which tone the line/label wear) |
 
+**Test a TCC grant, never assume it.** Several checks here are labelled "needs Accessibility" or "needs
+Screen Recording", and it is easy to read that as *you can't*. Whether the grant exists is one command
+each, and a terminal that has been used for this work before usually has both:
+
+```bash
+osascript -e 'tell application "System Events" to return name of first application process'  # Accessibility
+screencapture -x -R0,0,80,20 tmp/tcc-probe.png && echo "screen recording OK"                 # Screen Recording
+```
+
+With those, the §3.2 menu walk and the pixel measurement in §3.1 are both available — no eyeballing and
+no second person required.
+
 Four things that have bitten:
 
 - `--foreground` / `--no-detach` / `--extra` are **launcher-only**. Passed to the raw binary they read as
@@ -82,8 +94,22 @@ off: `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_
       `paused — battery low (15%)`, no child. At `4:battery` → `paused — battery critical (4%)`.
 - [ ] **Look at the menu bar, not the menu:** in that paused run the line is still there and visibly
       dimmer than when holding. Compare holding / paused / `Off` in a light *and* dark menu bar. qa.sh §3e
-      proves which tone was chosen; only your eyes prove it reads. If it doesn't, retune
+      proves which tone was chosen; only looking proves it reads. If it doesn't, retune
       `Tuning.keepAwakeBarPausedAlpha` — otherwise the feature is a no-op that tests green.
+      **Three things make this harder than it sounds, and all three have wasted a session:**
+    - **Anything holding the display masks the paused tone entirely** — correctly, since a foreign hold
+      outranks our pause. A browser playing media is enough, and it *re-acquires silently* after you
+      pause the video, so check at the moment of observation, not before:
+      `pmset -g assertions | sed -n '/Listed by owning process/,$p' | grep -i displaysleep`
+    - **Holding and paused cannot be shown side by side.** The holding instance's own `caffeinate` holds
+      the display for the whole machine, so a paused instance next to it renders *foreign*. Compare them
+      in sequence, one at a time. Paused vs `Off` — the pair the feature exists for — is safe together.
+    - **Measure, don't squint.** `screencapture -x -R<x>,<y>,<w>,<h>` a strip of the bar (coordinates from
+      `LOG_SLOTS`, which reports screen coords), then read the line's pixels and composite the tone
+      yourself: `bg×(1−α) + tint×α`. That turns "looks a bit faint" into a contrast ratio, and lets you
+      evaluate a candidate alpha without waiting for a machine quiet enough to render it. **Expect the
+      light bar to be the weak case** — its tint is darker than its background rather than lighter, so
+      every tone lands at a lower contrast than its dark-bar twin.
 - [ ] The countdown **keeps ticking while paused** — the window is a wall-clock deadline and elapses
       whether or not the child is holding, so a pause must not freeze it (`29:55 → 29:44 → 29:34` on a
       paused instance). Same with the override active.
@@ -204,6 +230,8 @@ release:
    MAJOR/MINOR/PATCH follow the public-API definition at the top of `CHANGELOG.md` (CLI flags, env vars,
    preset keywords + `presets.json` schema, observable behavior).
 2. **Give `docs/cover.html` the release's prose, not just its badge**, then redeploy (`publish-cover`).
+   The deploy is described as needing an interactive Cloudflare login, but the OAuth token persists
+   between publishes — check with `npx wrangler whoami` before assuming a human has to sign in.
    qa.sh §2 greps the badge and nothing else, so a cover describing the *previous* release passes every
    check while the current badge reads as proof it is current. This is the surface that drifts most —
    `ROADMAP.md` § Release hygiene keeps the tally.

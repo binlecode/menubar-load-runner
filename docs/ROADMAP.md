@@ -1,7 +1,7 @@
 # ROADMAP
 
 Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.19.3.
+of v1.19.4.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
@@ -96,8 +96,14 @@ Three rules with a track record, each learned from a shipped miss:
   offers no update, while `git pull --ff-only` would have delivered it. The only resolution is a
   version bump across the five surfaces. Never re-cut a published tag in place.
 
-**Cover published and verified 2026-08-01** — the live page serves the v1.19.3 badge and all five GIFs
-at 200. Note what the check found: this file had recorded v1.19.2's cover prose + demo as *unpublished*
+**Cover published and verified 2026-08-01 (v1.19.4)** — the live page serves the v1.19.4 badge and all
+five GIFs at 200. Two things the verification itself taught, both of which read as a failed deploy and
+were not: right after `wrangler pages deploy`, the bare URL served the **previous** badge while a
+cache-busted query already served the new one (edge cache, cleared within a minute — so check a
+`?cb=` URL before re-deploying), and `wrangler pages project list` reports the project's production
+column as `No` even for a deploy that *is* Production. `wrangler pages deployment list` is the command
+that answers it — it prints Environment, Branch, and the source commit per deployment.
+An earlier check found the reverse drift: this file had recorded v1.19.2's cover prose + demo as *unpublished*
 for two releases, and they were live the whole time — the deploy happened and the tracker never heard.
 So the drift runs both ways, and only fetching the live page settles it; a diff of the built bundle
 against `curl`'s copy of the live one is the cheap form (it came back as a single changed badge line).

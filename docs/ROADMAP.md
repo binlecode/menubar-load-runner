@@ -21,7 +21,7 @@ by **symbol, never by line number** — anchors rot every release, and a TODO fi
 | R8 | **English only** — zero `NSLocalizedString`. | P4 | — |
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
 | R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
-| R11 | **Die-temperature sensors.** Not API-blocked: the unprivileged SMC path the fan reader already uses covers temperature keys. **Catch:** that plumbing is private to `FanLoadMonitor` and must be extracted to a shared client (one `io_connect_t`, not two); key discovery is probe-a-candidate-list, since there is no `FNum`-equivalent for temperature. → `TODO-20260726-2059-r11-die-temperature-source.md` | P4 | — |
+| R11 | **Die-temperature sensors.** Believed not API-blocked — the unprivileged SMC path the fan reader already uses should cover temperature keys — but **that premise has never been probed on this hardware**, and settling it is step 0. Key discovery is probe-a-candidate-list; there is no `FNum`-equivalent for temperature. Two files since 2026-08-01: the prerequisite refactor (`TODO-20260801-1119-smc-client-extraction.md` — the SMC plumbing is private to `FanLoadMonitor` and wants extracting to a shared client, one `io_connect_t`, not two) and the feature itself (`TODO-20260726-2059-r11-die-temperature-source.md`). | P4 | — |
 
 ## Candidate — design open, do not implement as specified
 

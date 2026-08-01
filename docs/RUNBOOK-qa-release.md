@@ -105,14 +105,12 @@ off: `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_
       the display for the whole machine, so a paused instance next to it renders *foreign*. Compare them
       in sequence, one at a time. Paused vs `Off` — the pair the feature exists for — is safe together.
     - **Measure to compare candidates; decide by looking.** `screencapture -x -R<x>,<y>,<w>,<h>` a strip
-      of the bar (coordinates from `LOG_SLOTS`, which reports screen coords), then read the line's pixels
-      and composite the tone yourself: `bg×(1−α) + tint×α`. That turns "looks a bit faint" into a contrast
-      ratio and lets you evaluate a candidate alpha without waiting for a machine quiet enough to render
-      the paused state at all. **Expect the light bar to be the weak case** — its tint is darker than its
-      background rather than lighter, so every tone lands at a lower contrast than its dark-bar twin.
-      But the ratio is a **proxy** (and a text-legibility one, on a 2pt line): where it and a direct look
-      disagree, the look decides. It did — the shipped `0.22` is the eyes' answer over the ratio's `0.30`,
-      and the light bar's 1.29:1 is an accepted reading, not an open defect. `DESIGN-system.md` §22.5.
+      of the bar (coordinates from `LOG_SLOTS`, which reports screen coords) and composite the tone
+      yourself: `bg×(1−α) + tint×α`. That ranks candidate alphas without waiting for a machine quiet
+      enough to render the paused state at all. The light bar is the weak case (its tint is darker than
+      its background, not lighter). But the ratio is a **proxy** — where it and a direct look disagree,
+      the look decides. It did: the shipped `0.22` is the eyes' answer over the ratio's `0.30`, and the
+      light bar's 1.29:1 is accepted, not an open defect. Full argument: `DESIGN-system.md` §22.5.
 - [ ] The countdown **keeps ticking while paused** — the window is a wall-clock deadline and elapses
       whether or not the child is holding, so a pause must not freeze it (`29:55 → 29:44 → 29:34` on a
       paused instance). Same with the override active.
@@ -197,7 +195,9 @@ name** (a stale instance holds the *previous* build's menu), and the status item
 - [ ] Root menu reads: trace · 5 metric lines · `▸ Other Sources` · `Settings` · `Keep Awake` ·
       `Presets` · `Check for Updates…` · `About` · `Exit` — **13 rows** as launched, 19 with Other
       Sources expanded on a 7-source Mac (15 / 21 with the `Slowing animation` and `Update available`
-      lines). `Width` is read-only, **About** shows the version, **Exit** works.
+      lines). **Those counts exclude separators; `menu-dump` does not.** A collapsed launch dumps as
+      **19 numbered rows, 6 of them separators** — don't read the dump's 19 as the expanded 19.
+      `Width` is read-only, **About** shows the version, **Exit** works.
 - [ ] **Update check + restart** (needs a real newer tag, so check it on the *previous* version's
       binary): `Check for Updates…` becomes `Update available: vX.Y.Z`; the success alert's **Restart**
       quits and comes back on the new version within seconds, with exactly one instance afterwards. Switch
@@ -263,7 +263,11 @@ fails silently, and none of them is caught by anything upstream:
 - **New persisted state** → give it a `STATE_FILE`-style override *before* writing any test, then a
   round-trip in §3b. State only a real user path can write is state QA will silently corrupt.
 - **New load source** → a §3 run, a line in §5's `spec` loop, and its availability/fallback to §3.2.
-  App-side steps are in `AGENTS.md`.
+  App-side steps are in `AGENTS.md`. If it reads the SMC, it goes through `SMCClient.shared` and opens
+  no connection of its own; the shared `stride == 80` gate means a layout break disables *every* SMC
+  source at once, so verify the fan source still reads when you touch that tier.
+- **A readout shape §5 can't match** → add the shape to the `spec` loop, don't bend the label to fit
+  the two that exist (`%` and `rate`). A `72°` temperature reads as neither.
 - **New normalization/scaling** → drive the **real binary** and assert the readout. Never re-port the
   type into a probe — that pattern fails by *passing* (`AGENTS.md` § Testing rules). No functional path
   yet? Say so in `ROADMAP.md` § Verification debt.

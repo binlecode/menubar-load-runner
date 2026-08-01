@@ -291,15 +291,24 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
   (`getifaddrs → if_data`, AF_LINK, skip `lo0`) and disk (`IOBlockStorageDriver → Statistics → Bytes
   (Read)/(Write)`) are counter-deltas over `elapsed:`. Each has an `isAvailable` probe (`nil` reader →
   disabled menu item + launch fallback to `.cpu`).
-  - **`FanLoadMonitor`** — fan RPM as a cooling/thermal signal, via the *undocumented* 80-byte
-    `SMCKeyData` layout (`AppleSMCKeysEndpoint`, read-only; never the root-only `F{n}Tg`/`F{n}Md`
-    control keys), discovering `F{n}Ac`/`F{n}Mx` from `FNum`. Bounded per-machine, so it maps through
+  - **`SMCClient`** — the shared read-only client every SMC-backed source reads keys through, and the
+    only place holding the *undocumented* 80-byte `SMCKeyData` layout (`AppleSMCKeysEndpoint`; never
+    the root-only `F{n}Tg`/`F{n}Md` control keys). Three things are load-bearing. It is a **singleton
+    (`SMCClient.shared`), and a second instance is the bug to avoid**: the file has no
+    `IOServiceClose` and no `deinit` anywhere, so the `io_connect_t` is process-lifetime by design —
+    fine for one, sloppy for two. The `MemoryLayout<SMCKeyData>.stride == 80` check in `ensureOpen()`
+    is the availability gate for **every** SMC source at once, so a toolchain that lays the struct out
+    differently disables them all rather than corrupting memory in any. And the three trailing pad
+    bytes in `SMCKeyInfoData` are load-bearing — without them Swift packs `result` into the tail
+    padding, the struct becomes 76 bytes, and the kernel call fails `kIOReturnBadArgument`. Reads
+    (`readKeyInfo`/`readBytes`/`readFloat`/`floatKey`) return `nil`, never a fabricated `0`.
+  - **`FanLoadMonitor`** — fan RPM as a cooling/thermal signal, read through `SMCClient`, discovering
+    `F{n}Ac`/`F{n}Mx` from `FNum`. Bounded per-machine, so it maps through
     as a percentage — NOT via `ThroughputScaler`. Two deliberate choices: `actual/max` rather than the
     min-anchored `(actual-min)/(max-min)` (idle RPM sits well above 0, so motion stays visible), and
     the driver is the **average** across fans, not the max — one fan spinning up shouldn't dominate
     while the rest of the system is quiet (`perFan` keeps the per-fan readings for the menu lines).
-    Fanless Macs report `FNum == 0` → unavailable. The struct's computed stride is guarded at 80, and
-    the source disables itself if a future toolchain lays it out differently.
+    Fanless Macs report `FNum == 0` → unavailable, as does a machine whose SMC endpoint won't open.
   - **`BatteryLoadMonitor`** — a *mixed domain* like `MemoryLoadMonitor`: the driver is the
     instantaneous **discharge current in mA** (IOKit Power Sources `"Current"`), which despite being a
     point read (no warm-up tick) is an *unbounded* magnitude and so normalizes through the shared

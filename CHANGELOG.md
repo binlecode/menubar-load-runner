@@ -30,6 +30,28 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.19.4] - 2026-08-01
+
+An internal release: the SMC plumbing moved out of the fan reader into a shared client. Nothing you
+can see changed, and that is the whole acceptance criterion.
+
+### Fixed
+
+- **The SMC connection is now shared, so a second sensor source can't open a second one.** Reading
+  fan RPM opens a connection to the System Management Controller, and that connection is never
+  closed — the app holds it for its whole life and the kernel reclaims it at exit. That is fine for
+  one. But the plumbing was private to the fan reader, so the next SMC-backed source (die
+  temperature) would have had to duplicate it and open its own, leaving two permanently-open
+  connections where one would do. The mechanism now lives in a single shared `SMCClient`, and the
+  struct-layout safety check that disables the SMC path on an incompatible toolchain now gates
+  *every* SMC source at once instead of only the reader holding its own copy of the check.
+
+### Unchanged, deliberately
+
+- Fan readings, the per-fan menu lines, availability on fanless Macs, and every CLI flag and
+  environment variable. The fan label and menu rows were captured from the pre- and post-change
+  builds back-to-back and are identical, at two hardware states (fans warm, and both fans stopped).
+
 ## [1.19.3] - 2026-08-01
 
 A one-constant release, cut because the fix could not reach you any other way.

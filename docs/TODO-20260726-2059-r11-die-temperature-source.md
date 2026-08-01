@@ -1,7 +1,9 @@
 # R11 — Die-temperature load source
 
-**Priority** P4 · **Depends on** `TODO-20260801-1119-smc-client-extraction.md` (Step 1 lived here until
-2026-08-01; this file is now the feature only).
+**Priority** P4 · **Unblocked.** The prerequisite SMC extraction shipped in v1.19.4, so the plumbing
+this needs is already the shared `SMCClient` singleton — read keys through `SMCClient.shared`, add no
+`io_connect_t` of your own, and inherit its `stride == 80` availability gate. `floatKey(_:)` is the
+`"flt "` probe below, already on the client.
 
 Deliverable: an eighth `LoadSource` driven by die temperature, at the same unprivileged tier as every
 other reader.
@@ -18,11 +20,12 @@ clusters, `Tg0x` for GPU, and the set varies by chip). So discovery is **probe-a
 Write a throwaway probe in `tmp/` that opens the connection and walks a candidate list, keeping keys
 that both:
 
-1. return type `"flt "` with `dataSize == 4` from `readKeyInfo` (the `discoverFloatKey` test), and
+1. return type `"flt "` with `dataSize == 4` from `readKeyInfo` — i.e. `SMCClient.floatKey` returns
+   non-nil, and
 2. read a plausible value on the first sample — `0 < °C < 125`. A present-but-garbage key is common.
 
 The probe either hands Step 1 a concrete key list, or shows the item is unavailable on this hardware
-and should be re-scoped. Do it before the extraction; it is the cheap half.
+and should be re-scoped. It is the cheap half — do it first.
 
 ## Step 1 — `ThermalLoadMonitor`
 

@@ -35,16 +35,22 @@ self-restraint — it only ever reads the system, and the only thing it throttle
 6. **v1.20 — the sensor tier.** A shared `SMCClient` opened fan, then die temperature — the family
    of hardware readings the app can keep growing through without privileges.
 
-The Open items sit on the same arc: R10 is the next sensor tier and the first to need a private
-API — which is exactly why it waits; R9 extends preset identity beyond the repo; R8 is parity only.
+The Open items sit on the same arc: R17 points the self-restraint ethos at the animation itself;
+R18 closes the loop on v1.21's self-update investment; R9 extends preset identity beyond the repo;
+R10 is the next sensor tier and the first to need a private API — which is exactly why it waits;
+R8 is parity only.
 
 ## Open
 
+Ordered by ROI, highest first — value against cost, not just the priority band.
+
 | ID | Item | Pri | Blocked by |
 |---|---|---|---|
-| R8 | **English only** — zero `NSLocalizedString`. | P4 | — |
+| R17 | **Ignores Reduce Motion, and no manual static mode.** `NSWorkspace.accessibilityDisplayShouldReduceMotion` is unread — the app self-throttles under pressure and pauses when occluded, but the one OS signal saying *this user* needs less motion does nothing, and the only way to calm the icon is to quit. A manual pause toggle covers the screen-sharing case with the same machinery. Catch for the implementer: speed **is** the readout, so a frozen icon should hand the value to the label rather than go silent; the trigger is a user preference, not visibility, so it composes with (not replaces) `updateAnimationForOcclusion`. | P2 | — |
+| R18 | **Update discovery is once-per-launch.** The passive probe fires only from `applicationDidFinishLaunching` (a deliberate MVP cut, per the comment at the call site), so a start-at-login instance running for weeks never learns a release exists — the population most likely to be stale is the one the probe never reaches. `startUpdateProbe(userInitiated: false)` is already fail-silent and re-entrancy-guarded (`updatePhase`), so a periodic re-fire reuses everything. | P3 | — |
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
-| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
+| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. Assessed 2026-08-02: low ROI — of the three readings only ANE is a genuinely new signal (GPU power tracks the utilization reader; package power correlates with CPU/temperature, and battery mA already shows whole-system draw), against a permanent private-API maintenance surface and per-chip verification debt. Waits for a concrete user report wanting ANE/power visibility. | P4 | — |
+| R8 | **English only** — zero `NSLocalizedString`. | P4 | — |
 
 ## Declined
 

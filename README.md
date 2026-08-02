@@ -535,7 +535,7 @@ dashboard):
 | **Load sources** | CPU, memory+swap, GPU, network, disk, fan, battery, die temperature | CPU | CPU, GPU, RAM | Full hardware suite |
 | **Unbounded rates (net/disk/swap) drive the animation** | Yes — adaptive auto-scaling | — | — | n/a (numeric display) |
 | **In-menu readout** | 60s sparkline, numerics, load averages | Minimal | Numeric dropdown | Full graphs, temps, per-process |
-| **Sensor temps / battery health / per-process** | No (out of scope by design) | No | No | Yes |
+| **Battery health / per-process breakdowns** | No (out of scope by design) | No | No | Yes |
 | **Pauses when hidden; self-throttles under power/thermal pressure** | Yes | — | — | — |
 | **Built-in sleep inhibitor (Keep Awake)** | Yes (`caffeinate`, timed release, auto-disengage, survives relaunch) | — | — | — |
 | **CLI flags / headless install / login automation** | Yes (launcher, LaunchAgent scripts) | GUI app | GUI app | GUI app |
@@ -546,8 +546,8 @@ dashboard):
 > (no rigorous same-method measurements of other menu-bar apps exist; the only figures measured
 > here are this app's own, above). Verify each project's current state upstream.
 
-If you want temperatures, battery health, or per-process breakdowns, use **stats** — this app
-deliberately stays an unprivileged, aggregate-only indicator. If you want a graphical settings
+If you want per-sensor temperature lists, battery health, or per-process breakdowns, use
+**stats** — this app deliberately stays an unprivileged, aggregate-only indicator. If you want a graphical settings
 window over CLI flags, **zoomies** offers one.
 
 ## License

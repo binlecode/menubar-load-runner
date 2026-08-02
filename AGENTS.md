@@ -180,6 +180,18 @@ Run from the repository root:
   # AWAKE hold=foreign own=0 display=1 idle=1 owners=1 paused=0 tint=foreign row="Mac held awake — caffeinate · until 12:05 PM"
   # `tint` is the tone the line and the label actually wear, named by keepAwakeTint itself (R7).
   ```
+- `MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1` prints the **derived** freeze gate each 2s tick plus the raw
+  frame cursor, so `tests/qa.sh` §3g asserts both the decision and its effect (the frame stops moving).
+  Same no-TCC-grant reason as the three hooks above — whether the icon animates is otherwise only
+  visible to a screenshot or an eyeball.
+  ```bash
+  printf '{"version":1,"settings":{"freezeAnimation":true}}' > tmp/state.json
+  MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/state.json MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 \
+    MENUBAR_LOAD_RUNNER_EXIT_AFTER=6 ./tmp/mblr-check 2>&1 | grep ANIM
+  # ANIM running=0 freeze=manual frame=0 speed=0.74 labelHandoff=1
+  # `freeze` names the reason (manual/reduceMotion/none); `labelHandoff=1` = the frozen icon's reading
+  # moved to the label slot (R17).
+  ```
 - The launcher enforces a singleton via `pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)"` — only one
   instance **per user** runs unless `--extra` is passed. (The pattern matches the compiled binary path, not
   the process args, since args no longer carry a `.gif` path now that Swift resolves preset keywords. The
@@ -446,6 +458,23 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     entirely when the item is fully occluded (notch/overflow, another Space, display off) and restarts
     it when visible — no re-rasterizing frames no one can see. It only ever pauses in response to a
     positive occlusion event, so a never-firing notification leaves animation running (no freeze risk).
+  - **Freeze Animation (R17)**: `animationFreeze: AnimationFreeze?` (`nil` = animate) derives from two
+    inputs with different owners — `systemReduceMotion` (cached OS reading, event-driven via
+    `NSWorkspace.accessibilityDisplayOptionsDidChangeNotification` on the **workspace** center, torn
+    down there too; never persisted) and `manualFreeze` (the `Settings ▸ Freeze Animation` toggle;
+    persisted as `settings.freezeAnimation`, restored unconditionally by `applyLaunchFreezeState()`,
+    which must run before the label pass). **`syncGameLoopRunning()` is the single stop/start decider**,
+    total over occlusion + freeze — never start the game loop past it (the occlusion path used to
+    resume blindly on visibility, which a freeze must survive); `applicationDidFinishLaunching` and
+    `updateAnimationForOcclusion()` both go through it. Frozen = driver stopped, current frame held
+    (no jump to frame 0), everything else (2s tick, menu, label, keep-awake) keeps running. While
+    frozen with the label `off`, `effectiveLabelMode` hands the slot `.value` — speed *is* the readout,
+    so a frozen icon must not go silent — memory-only, `.custom` never overridden, and the three label
+    switch sites read it while `refreshLabelSelectionState`/`persistState` stay on `labelMode` (the
+    override never leaks to disk; the parent row says `off (value while frozen)`). Menu row: checkmark
+    = *intent* (`manualFreeze` only), title names the *condition* (` — on via Reduce Motion`); the row
+    stays enabled under system RM so intent isn't trapped behind an OS setting. Both triggers funnel
+    through `freezeDidChange()`; the observer path never persists (gesture-only rule).
   - **Keep Awake**: a menu checkbox spawns `caffeinate -di -w <pid>` (prevents both display and
     idle system sleep, bound to the app's PID) via the `SleepPreventer` class, which separates *intent*
     (`isEnabled`, the toggle) from *running state* (the process may be suspended/respawned by conditions

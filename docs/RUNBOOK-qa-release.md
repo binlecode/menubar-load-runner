@@ -31,7 +31,8 @@ pmset -g assertions | grep -i display     # the culprit is usually a browser pla
 | label slot: adjacent, constant width, icon never moves | §3c |
 | Keep Awake battery conditions, 5% floor, `--battery-threshold` | §3a |
 | Keep Awake launch arming, window round-trip, saved states that must not return | §3f |
-| settings persistence (label mode + side, battery threshold) | §3b |
+| settings persistence (label mode + side, battery threshold, freeze) | §3b |
+| freeze animation: frozen launch, held frame, label handoff | §3g |
 | other processes' sleep assertions: detection, grouping, retention, own-child exclusion | §3d |
 | machine sleep-hold row + the three track-line tones | §3e |
 | error paths exit fast with no modal (bad GIF, bad manifest) | §4 |
@@ -182,6 +183,15 @@ name** (a stale instance holds the *previous* build's menu), and the status item
       space (`--load-source network` is widest), digits reading as columns.
 - [ ] With Keep Awake running the label is tinted like the track line (pick Sage or Mauve), and both
       revert together on Off or suspend.
+- [ ] **`Settings ▸ Freeze Animation`** freezes the icon on click — the current frame holds, no jump —
+      and unfreezes on the next click, resuming from that frame. While frozen with the label Off, the
+      label slot shows the live value and the parent row reads `Menu Bar Label: off (value while
+      frozen)`; a custom label stays untouched. Survives a no-flag relaunch. (qa.sh §3g covers the
+      restore side; the click and how the frozen frame *looks* are checked here or nowhere.)
+- [ ] Toggle System Settings → Accessibility → Display → **Reduce Motion**: the icon freezes/resumes
+      live without a relaunch, and the menu row reads `Freeze Animation — on via Reduce Motion` with
+      the checkmark still tracking your own toggle. This is the ROADMAP debt row's wiring check — the
+      observer→reading path no test can reach.
 - [ ] **`Settings ▸ Battery Threshold`**: parent reads `Battery Threshold: 20%`, mark on the matching
       row, an uncovered value (`18`) marks **Custom…**; a blank/non-numeric custom entry changes nothing.
       The trace's red band must still turn at **20%** under `--battery-threshold 10` — it is not the

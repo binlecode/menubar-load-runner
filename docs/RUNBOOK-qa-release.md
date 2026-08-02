@@ -255,8 +255,9 @@ fails silently, and none of them is caught by anything upstream:
    `UpdateChecker` polls exactly this, so a tag that never left your machine tells every installed copy
    the old version is current — silently, and with the local repo looking fully released. A tag can be
    cut correctly and still never ship; this is the only step that can tell you. Sort with `-V`, never a
-   plain `sort`: lexically `v1.9.0` beats `v1.10.0`, so the naive form names the wrong "latest" the
-   moment a minor reaches double digits — and then hides exactly the gap you are checking for.
+   plain `sort`: lexically `v1.9.1` beats `v1.19.2`, which stopped being hypothetical at `v1.10.0` — so
+   the naive form now names the wrong "latest" every time, and then hides exactly the gap you are
+   checking for.
 
 ## 5. Adding coverage when the app grows
 

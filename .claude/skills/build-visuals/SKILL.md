@@ -59,11 +59,10 @@ aspect, so full-canvas frames are fine. To confirm a change:
    ```
    Read `tmp/edge-zoom.png` — smooth = grey anti-aliased transition pixels; jagged = hard blocky steps.
 2. **Design page**: `docs/cover.html` embeds the preset GIFs directly (`../gifs/*.gif`), so regenerating
-   a GIF in place updates the page. Screenshot it headless to confirm:
+   a GIF in place updates the page — no rebuild needed to see it locally. Hand it to the owner to eyeball;
+   appearance is theirs to judge, not something to headless-render or screenshot and grade yourself:
    ```bash
-   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-     --headless --disable-gpu --screenshot=tmp/cover.png --window-size=1400,2000 \
-     "file://$PWD/docs/cover.html"
+   open docs/cover.html
    ```
 3. **In the app**: `MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 ./menubar-load-runner dog-white --foreground`.
 

@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.20.0"
+    static let version = "1.20.1"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -2120,8 +2120,10 @@ private final class TemperatureLoadMonitor {
     func sampleUsage() -> Double? {
         guard ensureDiscovered() else { hasSample = false; return nil }
         var readings: [SensorReading] = []
+        var answered = 0
         for sensor in sensorKeys {
             guard let value = smc.readFloat(sensor.info) else { continue }
+            answered += 1
             let celsius = Double(value)
             // A parked (powered-down) core cluster answers 0 or ≈ -4 rather than declining to answer,
             // so the plausibility band is what separates "this cluster is cold" from "this cluster is
@@ -2131,7 +2133,23 @@ private final class TemperatureLoadMonitor {
                   celsius <= Tuning.temperatureMaxPlausibleCelsius else { continue }
             readings.append(SensorReading(name: sensor.name, celsius: celsius))
         }
-        guard let hottest = readings.map(\.celsius).max() else { hasSample = false; return nil }
+        // Nothing answered at all — the SMC went away mid-run. THAT is missing data.
+        guard answered > 0 else { hasSample = false; return nil }
+        // Every sensor answered and every one of them is parked. That is a reading of **idle**, not an
+        // absence of one, and conflating the two is a shipped bug worth not reintroducing: v1.20.0
+        // returned nil here, which flipped `hasSample` false and made the menu say "warming up..."
+        // after minutes of correct readings — beside a live "Speed Multiplier (auto: Temperature):
+        // 1.74x" row, so the dashboard contradicted itself. Report the floor and an idle load: we
+        // cannot name the die's temperature when every cluster is power-gated, but we can say it is at
+        // or below the point where this scale starts caring. `perSensor` stays empty, which is what
+        // the menu line keys off to say "≤" rather than claim a measurement.
+        guard let hottest = readings.map(\.celsius).max() else {
+            perSensor = []
+            currentCelsius = Tuning.temperatureFloorCelsius
+            currentLoad = 0
+            hasSample = true
+            return 0
+        }
         perSensor = readings
         currentCelsius = hottest
         let span = Tuning.temperatureCeilingCelsius - Tuning.temperatureFloorCelsius
@@ -4456,12 +4474,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // reads 12 clusters here and up to 102 on the full-family fallback, which would run off the menu.
     // The range is what the per-fan segments were for: it shows the max isn't a lone outlier.
     private func temperatureUsageLineText() -> String {
-        var line = String(format: "Temperature: %.0f °C", temperatureMonitor.currentCelsius)
         let values = temperatureMonitor.perSensor.map(\.celsius)
-        if let coolest = values.min(), let hottest = values.max() {
-            line += String(format: " · P-cores %.0f–%.0f °C", coolest, hottest)
-            line += " · \(values.count) sensor\(values.count == 1 ? "" : "s")"
+        // No sensor reporting means every cluster is power-gated. Say so and bound the reading with
+        // "≤" — the floor is the number the animation runs on, but nothing measured it, so the row
+        // must not present it as a measurement (see TemperatureLoadMonitor.sampleUsage).
+        guard let coolest = values.min(), let hottest = values.max() else {
+            return String(format: "Temperature: ≤%.0f °C · every core cluster parked",
+                          temperatureMonitor.currentCelsius)
         }
+        var line = String(format: "Temperature: %.0f °C", temperatureMonitor.currentCelsius)
+        line += String(format: " · P-cores %.0f–%.0f °C", coolest, hottest)
+        line += " · \(values.count) sensor\(values.count == 1 ? "" : "s")"
         return line
     }
 

@@ -84,14 +84,12 @@ git tag the in-app update check reads. **Four of the five are enforced** — `te
 
 Three rules with a track record, each learned from a shipped miss:
 
-- **A new user-facing surface needs its cover paragraph in the same pass as its menu row.** Prose drift
-  is not greppable and the passing badge actively reads as "the cover is current". The cover's **demos
-  are executable claims** too — a stale one doesn't read as out of date, it reads as the specification.
-  `RUNBOOK-qa-release.md` §4 step 2.
-- **Pushing is the last manual step, not tagging, and the two fail differently.** An unpushed tag is
-  invisible locally and tells every installed copy the old version is current (`UpdateChecker` polls
-  `git ls-remote --tags origin 'v*'`). Confirm with that same command and `sort -uV`, never a plain
-  `sort` — `v1.9.1` beats `v1.19.2` lexically. `RUNBOOK-qa-release.md` §4 steps 5–6.
+- **A new user-facing surface needs its cover paragraph — and its demo — in the same pass as its menu
+  row.** Neither is greppable, so nothing upstream catches the drift and the passing badge reads as
+  proof the page is current. Argument and the click-it check: `RUNBOOK-qa-release.md` §4 step 2.
+- **Pushing is the last manual step, not tagging.** An unpushed tag is invisible locally while every
+  installed copy is told the old version is current. Confirm with the command `UpdateChecker` itself
+  polls: `RUNBOOK-qa-release.md` §4 steps 5–6.
 - **The tag gates the prompt; the branch carries the code.** A behavioral change committed *after* its
   release tag is an undeliverable fix, not a stale tag: `UpdateChecker` finds the versions equal and
   offers no update, while `git pull --ff-only` would have delivered it. The only resolution is a

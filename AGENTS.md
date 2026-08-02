@@ -45,10 +45,16 @@ map; **rationale does not live here** — when a section starts arguing, move th
 | Path | What | Naming |
 |---|---|---|
 | `docs/ROADMAP.md` | the standing tracker (see below) | — |
-| `docs/RUNBOOK-<topic>.md` | operational procedures (QA/release, publishing) | no timestamp |
+| `docs/RUNBOOK-<topic>.md` | operational procedures a **person** walks — clicks, eyes, judgment (today: QA/release, 125 of whose 278 lines are exactly that) | no timestamp |
 | `docs/TODO-<YYYYMMDD-HHMM>-<slug>.md` | one item being actively worked | timestamped |
-| `docs/design-docs/` | **symlink into the private vault.** `DESIGN-system.md` is the canonical design record — invariants, rejected alternatives, probe facts, per-release verification. Also strategy + competitor research. Gitignored, **never committed**: the public repo carries only README / RUNBOOK / this file | — |
+| `docs/design-docs/` | **symlink into the private vault.** `DESIGN-system.md` is the canonical design record — invariants, rejected alternatives, probe facts, per-release verification. Also strategy + competitor research. Gitignored, **never committed**: no design rationale reaches the public repo, which carries only README / RUNBOOK / skills / this file | — |
 | `docs/cover.html`, `docs/media/` | the landing page and its assets | — |
+| `.claude/skills/<name>/` | the sibling category, outside `docs/`: operational flows an **agent** runs end to end (`build-visuals`, `publish-cover`), each owning its private tooling in `scripts/` alongside. Tracked and public like everything above | — |
+
+**Runbook or skill? Ask who executes the steps.** Agent runs it and the human confirms the result →
+skill. Human runs it and the agent can only prep and report → runbook. Shared, standalone tooling
+(`tests/qa.sh`) is a further sign it is not a skill's to own — it stays in `tests/`, reachable without
+any doc wrapper. Publishing the cover moved to a skill on this rule; QA/release stays a runbook on it.
 
 `tmp/` is **scratch only, and gitignored** — treat everything in it as deletable at any moment. Nothing
 durable may live there: not the source of a tracked asset, not a test whose coverage exists nowhere else,

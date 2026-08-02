@@ -79,9 +79,13 @@ main() {
   ok "Source at $INSTALL_DIR ($(git -C "$INSTALL_DIR" describe --tags --always 2>/dev/null || echo unknown))"
 
   # --- Build -----------------------------------------------------------------
+  # Through the launcher's --precompile, never a swiftc line of our own: that flag is the single
+  # place the build command lives, so an installed binary can't end up built with different flags
+  # than a later rebuild would use. This pairs THIS script with the launcher it just cloned/pulled,
+  # which is sound because both come from the same commit — but it means a change to the flag isn't
+  # exercised by tests/install-smoke.sh until it is committed (that test clones committed HEAD).
   info "Compiling (swiftc -O)…"
-  if swiftc -O -strict-concurrency=complete "$INSTALL_DIR/MenuBarLoadRunner.swift" \
-       -o "$INSTALL_DIR/MenuBarLoadRunner" 2>/dev/null; then
+  if "$INSTALL_DIR/$LAUNCHER_NAME" --precompile; then
     ok "Built $INSTALL_DIR/MenuBarLoadRunner"
   else
     warn "precompile failed; the launcher will compile on first run instead"

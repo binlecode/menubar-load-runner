@@ -13,8 +13,9 @@
 #             §3f Keep Awake launch arming · §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
 #             they need an active WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on
 #             hosted runners.
-#   launcher  §6 launcher wrapper + singleton. Disruptive: calls `pkill MenuBarLoadRunner`,
-#             so it STOPS any running instance (incl. a login-item one). Opt-in only.
+#   launcher  §6 launcher wrapper: singleton guard, `--precompile`, and the build's safety against a
+#             live instance. Disruptive: calls `pkill MenuBarLoadRunner`, so it STOPS any running
+#             instance (incl. a login-item one). Opt-in only.
 #   manual    the menu walk + the eyes-only checks — RUNBOOK §3, never scripted.
 #
 # Usage:
@@ -83,6 +84,14 @@ $BIN --keep-awake 1h30m --help >/dev/null 2>&1;     chk "--keep-awake compound f
 $BIN --battery-threshold >/dev/null 2>&1;           chk "--battery-threshold no value" 1 $?
 for f in --speed-multiplier --label --load-source --keep-awake --battery-threshold --show-all-sources --no-update-check; do
   $BIN --help 2>&1 | grep -q -- "$f" && { echo "  PASS --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL --help missing $f"; fail=$((fail+1)); }
+done
+# The launcher's OWN flags, against the launcher's own help — the app binary never sees these and its
+# help correctly omits them, so the loop above can't cover them. Safe in the [core] tier: `--help` is
+# handled before the singleton guard and before any compile, so this neither builds nor touches a
+# running instance. `--precompile` earns a listing like any other: it is in the CHANGELOG's public-API
+# surface, so an undocumented one is a semver-governed flag nobody can find.
+for f in --foreground --no-detach --detach --extra --precompile; do
+  ./menubar-load-runner --help 2>&1 | grep -q -- "$f" && { echo "  PASS launcher --help lists $f"; pass=$((pass+1)); } || { echo "  FAIL launcher --help missing $f"; fail=$((fail+1)); }
 done
 $BIN foo bar >/dev/null 2>&1;                       chk "extra positional" 1 $?
 # Version consistency. AppInfo.version is the source of truth; every *in-repo* surface that names the
@@ -704,11 +713,28 @@ if [ "$RUN_LAUNCHER" = 1 ]; then
   # instance on a machine with fast user switching.
   pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null; sleep 1
   MENUBAR_LOAD_RUNNER_EXIT_AFTER=3 ./menubar-load-runner --foreground --load-source memory 2>&1 | tail -1
+
+  # --precompile is the in-app updater's build step: it must produce the binary and start NOTHING.
+  # (The whole point is that it runs before the app quits, so the restart doesn't pay for the compile.)
+  touch MenuBarLoadRunner.swift
+  ./menubar-load-runner --precompile
+  { [ MenuBarLoadRunner -nt MenuBarLoadRunner.swift ] \
+    && ! pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" >/dev/null; } \
+    && echo "  PASS --precompile builds and launches nothing" \
+    || { echo "  FAIL --precompile (binary stale, or it started an instance)"; total_fail=$((total_fail+1)); }
+
   # Launch the "victim" instance with a generous self-exit window (a long QA run leaves the machine
-  # busy, so a short EXIT_AFTER could fire before the singleton check completes), then poll up to ~10s
-  # for it to finish AppKit init and register before the 2nd launch. pkill cleans up after.
-  MENUBAR_LOAD_RUNNER_EXIT_AFTER=30 ./menubar-load-runner --load-source memory >/dev/null 2>&1
+  # busy, and the rebuild below adds a compile, so a short EXIT_AFTER could fire before the checks
+  # complete), then poll up to ~10s for it to finish AppKit init and register. pkill cleans up after.
+  MENUBAR_LOAD_RUNNER_EXIT_AFTER=90 ./menubar-load-runner --load-source memory >/dev/null 2>&1
   for _ in $(seq 10); do pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" >/dev/null && break; sleep 1; done
+  victim=$(pgrep -U "$(id -u)" -f "/MenuBarLoadRunner( |$)" | head -1)
+
+  # The guard runs BEFORE the compile, so a rejected launch costs a pgrep and leaves the binary alone.
+  # Asserted on the binary's mtime with the source deliberately stale: a guard that ran second would
+  # rebuild here, which is how a second swiftc used to be able to race the one already in flight.
+  touch MenuBarLoadRunner.swift
+  before=$(stat -f %m MenuBarLoadRunner)
   # Capture into a var, then match without a pipe: under `set -o pipefail`, `… | grep -q` makes the
   # launcher take SIGPIPE (141) when grep closes the pipe after matching its first line, and pipefail
   # would report that as a false failure even though the singleton correctly printed "already running".
@@ -717,6 +743,18 @@ if [ "$RUN_LAUNCHER" = 1 ]; then
     *"already running"*) echo "  PASS singleton rejects 2nd" ;;
     *) echo "  FAIL singleton (got: $out)"; total_fail=$((total_fail+1)) ;;
   esac
+  [ "$(stat -f %m MenuBarLoadRunner)" = "$before" ] \
+    && echo "  PASS rejected launch did not compile" \
+    || { echo "  FAIL rejected launch rebuilt the binary (guard runs after the compile)"; total_fail=$((total_fail+1)); }
+
+  # …and the rebuild that the updater performs while an instance is live must not disturb it. The
+  # build is renamed into place rather than written over the binary, so the running process keeps its
+  # own inode; an in-place overwrite is what kills the victim here. (Also leaves the tree built.)
+  ./menubar-load-runner --precompile
+  { [ -n "$victim" ] && kill -0 "$victim" 2>/dev/null; } \
+    && echo "  PASS live instance survives a rebuild (pid $victim)" \
+    || { echo "  FAIL live instance died during --precompile (pid ${victim:-none})"; total_fail=$((total_fail+1)); }
+
   pkill -U "$(id -u)" -f 'MenuBarLoadRunner' 2>/dev/null
 else
   skip "§6 launcher wrapper [launcher]" "disruptive — re-run with: tests/qa.sh --launcher"

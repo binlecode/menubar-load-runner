@@ -7,7 +7,7 @@
 Small macOS menu bar app that renders an animated GIF in the status bar.
 Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, battery, or die temperature — see Load source below).
 
-Current version: **1.20.1** (see [`CHANGELOG.md`](CHANGELOG.md)).
+Current version: **1.21.0** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
 **Cover page:** [menubar-load-runner.pages.dev](https://menubar-load-runner.pages.dev)
 
@@ -116,7 +116,9 @@ Running from a cloned repo instead? Symlink it yourself:
 ln -s "$PWD/menubar-load-runner" ~/.local/bin/menubar-load-runner
 ```
 
-`menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`, `--extra`).
+`menubar-load-runner` supports the same flags (`--foreground`, `--no-detach`, `--detach`, `--extra`),
+plus `--precompile` — build the binary if the source is newer, then exit without launching. It's safe
+to run while the app is going; the in-app updater uses it so a restart doesn't wait on a compile.
 
 ## Start at login (personal, optional)
 
@@ -464,9 +466,11 @@ never automatic:
 
 1. Click **`Update available`** (or **`Check for Updates...`** when it finds a newer version).
 2. Confirm the dialog. The app runs `git pull --ff-only` in its install directory (never `--force` /
-   `reset`, so a modified or diverged checkout aborts cleanly and offers the releases page instead).
-3. On success it offers a **Restart** button, which quits and relaunches you onto the new version. The
-   launcher recompiles automatically because the source is now newer than the binary. Your Keep Awake
+   `reset`, so a modified or diverged checkout aborts cleanly and offers the releases page instead),
+   then compiles the new version. The app keeps running throughout — the menu shows
+   `Building vX.Y.Z…` while it works, which can take up to a minute.
+3. On success it offers a **Restart** button, which quits and relaunches you onto the new version.
+   Because the compile already happened, the icon comes back in about a second. Your Keep Awake
    window, label, battery threshold, and Keep Awake tint carry over (they're saved to disk), and a
    restart also carries the preset, load source, fixed speed, and Other Sources disclosure you picked
    from the menu, which are not saved between ordinary launches.

@@ -12,7 +12,7 @@ MenuBar Load Runner is a CLI-launched app; the surface that MAJOR / MINOR / PATC
 - **Launcher CLI** — the positional preset keyword or GIF path, and the flags
   `--speed-multiplier`, `--label`, `--load-source`, `--keep-awake`, `--battery-threshold`,
   `--no-update-check`,
-  `--foreground` / `--no-detach`, `--detach`, `--extra`, `-h` / `--help`.
+  `--foreground` / `--no-detach`, `--detach`, `--extra`, `--precompile`, `-h` / `--help`.
 - **Environment variables** — `MENUBAR_LOAD_RUNNER_PATH`, `MENUBAR_LOAD_RUNNER_LOAD_SOURCE`,
   `MENUBAR_LOAD_RUNNER_LABEL`, `MENUBAR_LOAD_RUNNER_KEEP_AWAKE`,
   `MENUBAR_LOAD_RUNNER_BATTERY_THRESHOLD`, `MENUBAR_LOAD_RUNNER_UPDATE_CHECK`,
@@ -29,6 +29,51 @@ Internal implementation details (Swift types, `Tuning` constants, file structure
 of the public API and may change in any release.
 
 ## [Unreleased]
+
+## [1.21.0] - 2026-08-02
+
+### Fixed
+
+- **Restarting after a self-update left the menu bar empty for minutes.** Reported as "after
+  auto-upgrade, restart no longer works" — and the restart did in fact work, which is the whole
+  problem: it just took 132 seconds during which nothing was on screen and nothing said why.
+  Applying an update pulled the *source* only, leaving the compile to the launcher at restart, i.e.
+  to the one window in which the app does not exist. The build now runs between the pull and the
+  Restart offer, while the app is still up and animating, so the restart itself is about a second.
+  The cost was bimodal, which is why this survived so long: against a warm clang module cache the
+  deferred build was ~6.5s and looked fine, cold it was 32s, and under load on the day it was
+  measured, 132s. The dropdown reports the new phase as `Building vX.Y.Z…` rather than sitting
+  silent, and a build that fails is not fatal — the launcher still compiles at restart, and the
+  alert says so instead of letting a long gap read as a failure.
+- **A restart that never happened left no trace.** The relaunch is handed to a detached shell that
+  waits for the app's pid to disappear; its output went to `/dev/null`. When the 30s wait expired
+  with the app still alive it ran the launcher anyway, the singleton guard declined, and that was
+  the end of it — silently, in the one code path whose failure the app cannot report, because by
+  then it has quit. Both the timeout and the launcher's reason now go to the log file.
+- **The launcher compiled before checking the singleton guard.** A duplicate launch paid for a full
+  `swiftc` run only to be turned away, and during a long build — when no instance is up yet — it
+  could start a second compile writing the same output as the one already in flight. The guard runs
+  first now.
+- **Rebuilding could corrupt a running instance.** The build was written over the binary in place,
+  which is unsafe for a process paging out of it; `scripts/install-login-item.sh` did exactly that
+  on every reinstall. Builds now go to a temp and are renamed into place, so the live process keeps
+  its own inode.
+
+### Added
+
+- **`--precompile`** on the launcher: build the binary if the source is newer, then exit without
+  launching. Safe to run while an instance is live. This is the single place the build command
+  lives — `install.sh`, `scripts/install-login-item.sh`, and the in-app updater all call it instead
+  of carrying their own `swiftc` line, so the flags cannot drift out of agreement.
+
+### Internal
+
+- `tests/qa.sh` §6 covers `--precompile` building without launching, a live instance surviving a
+  rebuild, and a rejected launch leaving the binary untouched; §2 now checks the launcher's own
+  `--help` lists its own flags, which nothing did before.
+- `tests/install-smoke.sh` asserts that installing never *starts* the app, and cleans up any
+  instance it finds under its sandbox rather than letting one outlive the directory it was
+  installed into.
 
 ## [1.20.1] - 2026-08-01
 

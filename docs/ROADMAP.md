@@ -1,18 +1,42 @@
 # ROADMAP
 
-Standing tracker for open work, declined proposals, and known limits. Created 2026-07-26; current as
-of v1.19.4; R11 (die temperature) shipped and left for the CHANGELOG.
+The product tracker: the strategy lineage that got the app here, what is open on that path, what was
+declined, known limits, and verification debt. Created 2026-07-26; current as of v1.21.0.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
 commitment or a date.
 
 Keep this at tracking altitude — item, priority, blocker, and any catch an implementer would trip
-over. Rationale belongs in the design record, not here; declined items keep a one-line reason so
-nobody re-proposes them, not the full argument. Shipped items leave for the CHANGELOG. Refer to code
-by **symbol, never by line number** — anchors rot every release, and a TODO file is where they belong.
+over. Design and technical rationale live in the internal `DESIGN-system.md` (vault, not in this
+repo; `§` pointers below refer to it); release history lives in `CHANGELOG.md` and git. Refer to
+code by **symbol, never by line number** — anchors rot every release.
 
 ---
+
+## Lineage — the strategy so far, and the path it implies
+
+One line: a load *visualizer* that earns each new capability through unprivileged reads and
+self-restraint — it only ever reads the system, and the only thing it throttles is itself.
+
+1. **v1.0 — the thesis.** A GIF whose playback speed *is* the load readout: five unprivileged
+   readers (CPU / memory / GPU / network / disk), btop-style adaptive scaling for unbounded rates,
+   self-throttle under power/thermal/memory pressure. One source file, no bundle, no Xcode.
+2. **v1.6 — distribution without a bundle.** MIT license, one-line installer, git-checkout
+   self-update. The standing decision every later one leans on (see Declined: `.app`/notarization).
+3. **v1.8 → v1.13 — the first *action*: Keep Awake.** From a checkbox spawning `caffeinate` to the
+   intent/running split, timed windows, persistence across relaunches, and battery/thermal release —
+   the visualizer learned to hold state responsibly.
+4. **v1.10 → v1.16 — the second slot.** The live-value label as its own status item: reserved width,
+   figure-space padding, the no-jitter guarantee. The dropdown becomes a live dashboard.
+5. **v1.17 → v1.19 — from *our* hold to *the machine's*.** Other sleep assertions, the machine-hold
+   row, brightness-tracks-the-hold tint: report the whole truth about sleep, not just this app's
+   part of it.
+6. **v1.20 — the sensor tier.** A shared `SMCClient` opened fan, then die temperature — the family
+   of hardware readings the app can keep growing through without privileges.
+
+The Open items sit on the same arc: R10 is the next sensor tier and the first to need a private
+API — which is exactly why it waits; R9 extends preset identity beyond the repo; R8 is parity only.
 
 ## Open
 
@@ -20,30 +44,20 @@ by **symbol, never by line number** — anchors rot every release, and a TODO fi
 |---|---|---|---|
 | R8 | **English only** — zero `NSLocalizedString`. | P4 | — |
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
-| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
-
-## Candidate — design open, do not implement as specified
-
-| ID | Item | Pri | Settle first |
-|---|---|---|---|
-| R12 | **Arm Keep Awake when an external display connects.** Wiring is nearly free: `screenObserver` already watches `didChangeScreenParametersNotification` and would call `conditionsDidChange()`. Must be opt-in; `Settings ▸` is the home for that toggle. → `TODO-20260726-2100-r12-external-display-auto-arm.md` | P3 | Three things. (1) The asymmetry, not the wiring: every condition in `keepAwakeSuspension` only turns keep-awake **off**; auto-engage inverts that and needs a matching auto-disengage on unplug. (2) That notification also fires on display sleep/wake and resolution changes, and `NSScreen.screens.count > 1` is false in clamshell — the common case. (3) Whether the docked-clamshell scenario people mean is one `caffeinate` even affects; if not, decline. Probe committed (`tests/clamshell-sleep-check.sh`) and **unrun** — the remaining blocker is physical (lid open/close, idle time, no sleep-assertion holders), not code. |
+| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. §7.14 holds the API research. | P4 | — |
 
 ## Declined
 
-Re-propose only with a concrete report of the behavior being missed.
+A row earns its place here only by guarding a boundary the **current** design rests on, and only if the
+reason lives nowhere else — a decline whose argument is already in `AGENTS.md`, or that merely records
+something once cut for scope, is history and belongs in git. Re-propose only with a concrete report of
+the behavior being missed.
 
 | Item | Why not |
 |---|---|
-| A transient HUD panel announcing Keep Awake events | **Declined 2026-07-30.** A ~2s panel is gone by the time it matters — the pause worth reporting fires overnight, on battery, unattended. R7 ships a persistent paused tone instead. This declines the *panel*, not the goal; system notifications stay independently impossible (they need a bundle). |
-| Idle-only sleep assertion (let the display sleep) | Would reintroduce a fixed bug: `-di` is deliberate because an idle-only assertion is unreliable on modern macOS — the system follows the display down, so the Mac slept with Keep Awake on. |
-| Quit the app when a Keep Awake window expires | Would quit a load visualizer because a side feature timed out. |
-| Release Keep Awake on fast user switching | Contradicts a chosen default: the window is a *time* promise, not a *task* promise — an unattended job in a background session is still running. |
-| Low Power Mode as a release trigger | LPM is a performance policy, not a sleep policy; battery-low already guards drain. (LPM *is* observed, to cap animation speed.) |
-| `--replace` / auto-kill a running instance | Silently killing a running instance is a surprising default. |
-| Installer tag-pinning, `--ref`, `VERSION` | Cut as non-MVP; it tracks the default branch and power users check out a tag. |
 | An `.app` bundle · notarization · Homebrew cask · Sparkle · a URL scheme / automation interface | **Decided 2026-07-26: stays a source-built, bundle-less binary.** Notarization is $99/yr forever for a free OSS utility, and Homebrew disables unsigned casks on 2026-09-01 — ad-hoc signing can't substitute, since identity churns on every recompile. Bundling would also retire the git-checkout self-update and break the CLI-first interface, which a `.app` can't take argv for. |
-| Persisted update-check throttle · persisted auto-check toggle · About version line | Cut for v1; the menu item is the real surface. |
-| A doc-drift checker beyond version strings (grep prose for symbol names) | Version strings are the only mechanically checkable claim, and `qa.sh` §2 already enforces them; a symbol-name grep false-positives on every intentional rewording, which is how checks get disabled. |
+| Release Keep Awake on fast user switching | Contradicts a chosen default: the window is a *time* promise, not a *task* promise — an unattended job in a background session is still running. |
+| Any transient announcement of a Keep Awake event (HUD panel, notification) | A ~2s panel is gone by the time it matters — the pause worth reporting fires overnight, on battery, unattended, which is why R7 ships a persistent paused tone instead. System notifications are independently impossible: they need a bundle, which the row above declines. |
 
 ## Known limits — not gaps
 
@@ -54,7 +68,7 @@ Re-propose only with a concrete report of the behavior being missed.
 | Clamshell sleep can't be prevented | `caffeinate` cannot inhibit it. |
 | Below 5% on battery the Mac sleeps regardless | Deliberate floor under the arm-anyway override: an explicit "anyway" is honored from 20% to 5%, not into a hard power-off. |
 | The interpreted-`swift` fallback isn't singleton-guarded | Runs only when `swiftc` fails; the guard matches the compiled binary's path. |
-| The menu-bar label may not sit adjacent to the icon on a **full** bar | macOS owns status-item placement and offers no reorder API. Verified 2026-07-29: on a notched built-in display, 6/6 runs scattered the three items with foreign icons between, while a roomy external bar placed the same build correctly 100% of the time. Creation order decides *intent*; the bar decides the outcome. The v1.16.0 no-jitter guarantee is unaffected. `tests/qa.sh` §3c reports NOTE instead of FAIL when it detects scatter, so adjacency goes **unverified** on such a machine. |
+| The menu-bar label may not sit adjacent to the icon on a **full** bar | macOS owns status-item placement and offers no reorder API — verified 2026-07-29 (6/6 scattered on a notched built-in display, 100% correct on a roomy external). Creation order decides *intent*; the bar decides the outcome. The v1.16.0 no-jitter guarantee is unaffected; `tests/qa.sh` §3c reports NOTE on scatter, so adjacency goes **unverified** on such a machine. Full account: `AGENTS.md` § menu-bar label. |
 
 ## Verification debt
 
@@ -64,46 +78,27 @@ Re-propose only with a concrete report of the behavior being missed.
 | Battery Threshold (R5) click-path residue | Code complete and mechanically verified for the flag/env/persistence halves (`qa.sh` §3a/§3b, 18 cases each). **Click-only and unverified:** apply-immediately, override-retirement, the red band's *rendering*, the mark's position (AX can't read a custom `onStateImage`), and the threshold submenu's own row list (`menu-dump` descends one level; that submenu is two deep). |
 | Per-user single-instance guard (`pgrep -U`) | Flag semantics proven in isolation; same-user rejection tested live. **Cross-user unverified** — needs a second account + fast user switching. `RUNBOOK-qa-release.md` §1. |
 | Keep Awake radio-mark glyphs, and the `This App` header's styling | Eyes-only. `AXMenuItemMarkChar` is empty (custom `onStateImage`), so AX can't read the mark; a synthesized `CGEvent` click renders the menu for a screenshot but needs screen coordinates AX reports unreliably across displays — deliberately a rebuild-ad-hoc recipe (RUNBOOK §3.2), not a script. Menu *structure* is mechanical (`tests/menu-dump.applescript`) and the v1.19.1 two-section order verified 2026-07-31. |
-| R13 is category-first ("no other menu-bar util tells you") | Only **KeepingYouAwake 1.6.8** was inspected. **Amphetamine and the standalone assertion-viewer utilities are unchecked.** R13 shipped in v1.17.0 without the claim, which is the point: settle it before the claim reaches `README.md` or `docs/cover.html`. `pmset -g assertions` is one command, so any user can check it, and a wrong category claim is worse than no claim. |
+| R13 is category-first ("no other menu-bar util tells you") | Only **KeepingYouAwake 1.6.8** was inspected; Amphetamine and the standalone assertion-viewers are unchecked. The claim stays out of `README.md` and `docs/cover.html` until settled — `pmset -g assertions` is one command, so a wrong category claim is worse than none. |
 | `ThroughputScaler` hysteresis, `SemVer` / `highestTag` parsing, `Restarter`'s argv + mode mapping | **No check at all.** These have no reachable functional path yet: the scaler needs sustained synthetic net/disk load to move its ceiling; the tag parse needs a checkout whose `origin` has canned `v*` tags; `Restarter`'s launchd branch needs a real LaunchAgent job. Don't "restore coverage" by re-adding a re-ported copy of the logic — see `AGENTS.md` § Testing rules. |
-| R7's `tint=paused`, **caught by the harness** | The reading itself is confirmed by hand (2026-08-01: `hold=partial own=0 display=0 idle=1 paused=1 tint=paused`, three consecutive ticks with no `-w` child). **§3e has never fired the case in a full run** — it needs a machine with no display holder and NOTEs otherwise. Don't read that NOTE as the tone being unverified, and don't soften the case to make it pass. |
-| The machine sleep-hold row's `Nothing holding sleep` reading (R16) | **Unverified locally.** The other three readings are covered by `qa.sh` §3e. The unheld one needs a machine with **no sleep assertions at all** — §3e NOTEs it rather than faking a quiet system. The same gate hides two more cases (attribution when another display holder sorts first; the idle-only reading when anything holds the display). |
-| `SMCClient` holds exactly one `io_connect_t` | **Still structural, but the two-consumer half is now covered.** A process's IOKit connections aren't visible to `lsof`/`ps`, and counting `IOServiceOpen` calls needs dtrace (root + SIP off), so *exactly one* rests on the shape: one `static let shared`, one holder, one `openSMC()` call site, one write to `connection`, gated by a cached `availabilityChecked`. R11 supplied the second SMC source this row was waiting on, and both readers were driven in one process with `--show-all-sources` (fan sampled every tick under `--load-source temperature`, and the reverse): `FAN 24–25%` and `TMP 57–61°` both correct, so the shared client demonstrably serves two consumers. That is sharing-works, not connection-counting — don't upgrade the wording, and don't "cover" the remainder with a re-ported copy of the client. |
-| `Tpx*` really are the per-cluster maxima | **One chip only.** `TemperatureLoadMonitor` prefers the ~12 `Tpx*` keys over all 102 `Tp**` because sampling the family costs 20 ms a tick (~1% of a core) against 2.3 ms — verified equal in 22/22 samples across an idle → 1 → 8 → 16-core → cooldown ramp on one M-series die. If some chip publishes `Tpx*` that are *not* cluster maxima, the driver silently under-reads; there is no in-process way to tell, since a single sample can't distinguish an aggregate from an ordinary sensor. Re-run the ramp comparison on any new hardware before trusting the reading. The fallback to the whole family only triggers when `Tpx*` is **absent**, not when it is wrong. |
-| The temperature reader's all-clusters-parked branch (v1.20.1) | **No functional check, and none is available.** The branch fires only when every `Tpx*` sensor reads below the plausibility floor on one tick — hardware state, not input, so the only hook that would force it is one that *changes a decision*, which `AGENTS.md` § Testing rules bars. What is known: the v1.20.0 bug it fixes was observed **once**, in the release's own menu walk (`Temperature: warming up...` two rows above a live `1.74x`), and did **not** recur in 45 probe ticks or three targeted attempts. A 45-tick probe did show the plausible-sensor count routinely halving (12 → 6) and one menu open where all six survivors read exactly 40.00, so reaching zero is reachable rather than theoretical. The normal path is covered by qa.sh §5; only the parked branch is dark. Don't "cover" it with a re-ported copy of the reader. |
-| The top half of the 30–100 °C temperature map | **Never exercised.** Sustained all-core load on the test machine peaked at 78 °C, so the animation only ever used the 0.14…0.69 band and everything above ~78 °C is untested by anything but arithmetic. This is the accepted cost of an absolute scale (see `Tuning.temperatureFloorCelsius`); a hotter Mac would exercise it. Don't "fix" the gap by making the map adaptive — that trades a tested range for a reading that means something different on every machine. |
+| The in-app update sequence: pull → `Builder.precompile` → Restart | **Click-only, unverified.** The pieces the launcher owns *are* covered — `qa.sh` §6 asserts `--precompile` builds and launches nothing, that a live instance survives the rebuild (the temp+rename), and that a rejected launch doesn't compile. What no run reaches is the modal path that drives them: the `Building vX.Y.Z…` row, the build-failed wording, and the restart actually being fast afterwards. Reaching it needs a checkout whose `origin` carries a newer canned tag — the same harness the row above wants — so RUNBOOK §3 walks it by hand. The failure being guarded against is silent and bimodal: with a warm module cache a deferred build costs ~7s and looks fine, so a regression only shows on the cold path. |
+| Four §3e cases gated on a **quiet machine** (no display holder / no assertions at all) | §3e NOTEs each rather than faking a quiet system: R7's `tint=paused`, R16's `Nothing holding sleep`, attribution when another display holder sorts first, and the idle-only reading. Their states differ — R7's tone **is** confirmed by hand (2026-08-01: three consecutive `tint=paused` ticks, no `-w` child), so don't read its NOTE as the tone being unverified; the other three are unverified locally. Don't soften any of them to make a run pass. |
+| `SMCClient` holds exactly one `io_connect_t` | **Structural only** — IOKit connections aren't visible to `lsof`/`ps`, and counting `IOServiceOpen` calls needs dtrace (root + SIP off), so *exactly one* rests on the code's shape; the argument is §7.15's. The weaker sharing-works claim **is** covered: fan and temperature driven together in one process, both correct (2026-08-01). Don't upgrade that into connection-counting, and don't "cover" the remainder with a re-ported copy of the client. |
+| Temperature reader — three dark spots (§7.17 holds the facts) | (1) `Tpx*`-are-cluster-maxima verified on **one chip only** — re-run the ramp comparison on any new hardware; a wrong chip silently under-reads and no in-process sample can tell. (2) The all-clusters-parked branch (v1.20.1) has **no functional check and none is available** — hardware state, and forcing it needs a decision-changing hook, which is barred; reachable, not theoretical. (3) The map above ~78 °C is exercised by arithmetic only — the test machine peaks there. Don't cover any of these with a re-ported copy, and don't make the map adaptive. |
 | Thermal pause rendering | No way to force a thermal state. The battery reasons share the code path and are covered by `tests/qa.sh` §3a; only the thermal *trigger* is untested. |
-| Label slot order is "creation order", assumed not guaranteed | Confirmed on a roomy bar 2026-08-01 — §3c passed all six cases (adjacency both sides, 87pt slot, constant width, icon stationary). Unexplained: the notched built-in display inverts the order **deterministically**, 3/3 for both a modified and an unmodified binary, so it is environmental, not a code change. Contiguous-but-wrong, so the scatter detector doesn't fire and §3c **FAILs** — read a §3c adjacency FAIL against which screen the bar was on before believing it. Deliberately not softened into a NOTE, or a real ordering regression hides behind it. Lead if it recurs: status items are ⌘-draggable and their position persists against `NSStatusItem.autosaveName`, which this app never sets — probe that before blaming the creation-order assumption. |
+| Label slot order is "creation order", assumed not guaranteed | Confirmed on a roomy bar 2026-08-01 (§3c passed all six cases). The notched built-in display inverts the order **deterministically** (3/3, modified and unmodified binary) — environmental, not a code change, and contiguous-but-wrong, so §3c **FAILs** there: read an adjacency FAIL against which screen the bar was on before believing it. Deliberately not softened into a NOTE, or a real ordering regression hides behind it. Lead if it recurs: `NSStatusItem.autosaveName` is never set, and ⌘-drag positions persist against it — probe that first. |
 
 ## Release hygiene
 
-A version bump moves five things together: `AppInfo.version` in `MenuBarLoadRunner.swift`, the
-`CHANGELOG.md` heading, the `README.md` "Current version" line, the `docs/cover.html` badge, and the
-git tag the in-app update check reads. **Four of the five are enforced** — `tests/qa.sh` §2 derives
-`VER` from `AppInfo.version` and asserts the other four. The git tag is deliberately not checked:
-`qa.sh` runs *before* the tag exists.
+A version bump moves five surfaces together: `AppInfo.version`, the `CHANGELOG.md` heading, the
+`README.md` version line, the `docs/cover.html` badge, and the git tag `UpdateChecker` reads.
+`tests/qa.sh` §2 enforces the first four; the tag is deliberately unchecked (qa.sh runs before it
+exists), so **pushing the commit and tag is the last manual step** — `RUNBOOK-qa-release.md` §4 is
+the walk, including the confirm-with-`ls-remote` step and the rule that a new user-facing surface
+gets its cover paragraph in the same pass. One rule with no other home: **the tag gates the prompt;
+the branch carries the code** — a behavioral change committed *after* its release tag is an
+undeliverable fix (`UpdateChecker` sees equal versions and offers nothing), resolved only by the next
+bump across all five surfaces. Never re-cut a published tag.
 
-Three rules with a track record, each learned from a shipped miss:
-
-- **A new user-facing surface needs its cover paragraph — and its demo — in the same pass as its menu
-  row.** Neither is greppable, so nothing upstream catches the drift and the passing badge reads as
-  proof the page is current. Argument and the click-it check: `RUNBOOK-qa-release.md` §4 step 2.
-- **Pushing is the last manual step, not tagging.** An unpushed tag is invisible locally while every
-  installed copy is told the old version is current. Confirm with the command `UpdateChecker` itself
-  polls: `RUNBOOK-qa-release.md` §4 steps 5–6.
-- **The tag gates the prompt; the branch carries the code.** A behavioral change committed *after* its
-  release tag is an undeliverable fix, not a stale tag: `UpdateChecker` finds the versions equal and
-  offers no update, while `git pull --ff-only` would have delivered it. The only resolution is a
-  version bump across the five surfaces. Never re-cut a published tag in place.
-
-**Cover published and verified 2026-08-01 (v1.19.4)** — the live page serves the v1.19.4 badge and all
-five GIFs at 200. Two things the verification itself taught, both of which read as a failed deploy and
-were not: right after `wrangler pages deploy`, the bare URL served the **previous** badge while a
-cache-busted query already served the new one (edge cache, cleared within a minute — so check a
-`?cb=` URL before re-deploying), and `wrangler pages project list` reports the project's production
-column as `No` even for a deploy that *is* Production. `wrangler pages deployment list` is the command
-that answers it — it prints Environment, Branch, and the source commit per deployment.
-An earlier check found the reverse drift: this file had recorded v1.19.2's cover prose + demo as *unpublished*
-for two releases, and they were live the whole time — the deploy happened and the tracker never heard.
-So the drift runs both ways, and only fetching the live page settles it; a diff of the built bundle
-against `curl`'s copy of the live one is the cheap form (it came back as a single changed badge line).
+Don't record the cover's published state here — fetch it. This file has been wrong in *both*
+directions, and a `curl` of the live badge settles it in one command; the flow, including the two
+checks that read as a failed deploy and aren't, is the `publish-cover` skill's.

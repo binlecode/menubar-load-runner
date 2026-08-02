@@ -86,6 +86,10 @@ The deployment-specific URL wrangler prints is served straight from that upload,
 was actually shipped. New badge there + old badge on production = cache, wait it out. **Old badge on
 the deployment URL = a genuinely bad bundle** — rebuild (§1), don't just redeploy.
 
+**Don't ask `wrangler pages project list` whether a deploy went to production** — it reports the
+production column as `No` even for a deploy that *is* Production. `wrangler pages deployment list` is
+the command that answers it: it prints Environment, Branch, and the source commit per deployment.
+
 ## Notes
 
 - **Snapshot, not live.** Editing `docs/cover.html` or a GIF does nothing to the live page until you

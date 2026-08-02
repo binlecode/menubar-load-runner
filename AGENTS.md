@@ -92,12 +92,28 @@ Run from the repository root:
   `swift <file>` (interpreted, no cached binary). The `-strict-concurrency=complete` flag opts into
   full data-race checking; the two classes are annotated `@MainActor`, so the build is warning-clean.
   It runs in Swift 5 mode, so any future concurrency violation surfaces as a warning, not a hard build
-  break.
+  break. Three things about `compile_if_stale`, the function that owns this:
+  - **It is the only place the build command exists.** `--precompile` (build if stale, then exit
+    without launching) exposes it so the in-app updater can run the compile *before* the app quits —
+    see the self-update section below. Don't reproduce the `swiftc` line in Swift: if the two drifted,
+    the launcher's mtime check would just rebuild at restart and the whole fix would silently buy
+    nothing.
+  - **The build is renamed into place, never written over the binary.** `--precompile` runs while an
+    instance is live by design, and overwriting a running Mach-O corrupts the process paging out of it.
+    `mv` within one directory is `rename(2)`: atomic, and the live process keeps its old inode.
+    `tests/qa.sh` §6 asserts the victim survives a rebuild.
+  - **The singleton guard runs BEFORE the compile.** A rejected launch then costs a `pgrep`, and — the
+    reason it matters — cannot start a second `swiftc` writing the same `-o` path as one already in
+    flight. §6 asserts the rejected launch leaves the binary's mtime alone.
 - There's no separate "build" step — editing `MenuBarLoadRunner.swift` and re-running `./menubar-load-runner`
-  is the whole loop. To force a rebuild without relying on the mtime check:
+  is the whole loop. To build without launching (e.g. to time a compile, or to get the new binary in
+  place before restarting):
   ```bash
-  swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o MenuBarLoadRunner
+  ./menubar-load-runner --precompile
   ```
+  Prefer this over a bare `swiftc … -o MenuBarLoadRunner`, which writes **over** the binary: with an
+  instance running, that corrupts the process paging out of it. `--precompile` renames into place
+  instead, and it can't drift from what a normal launch would build.
 - To check compile errors quickly without launching the app:
   ```bash
   swiftc -O -strict-concurrency=complete MenuBarLoadRunner.swift -o tmp/mblr-check
@@ -594,15 +610,27 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     `updateSleepPrevention()`, which also runs on every thermal/battery/power event and would write
     disk for a change in *running* state. Persist intent, never running state: the
     `isEnabled`/`isRunning` split has to survive a relaunch too.
-  - **Self-update, and the restart after it** (`UpdateChecker` / `Restarter`, both above `Tuning`). The
+  - **Self-update, and the restart after it** (`UpdateChecker` / `Builder` / `Restarter`, all above
+    `Tuning`). The
     check is `git ls-remote --tags origin 'v*'` (no token, no API, honors the checkout's own origin);
-    applying is a click-gated `git pull --ff-only`, never `--force`. Two things are load-bearing:
+    applying is a click-gated `git pull --ff-only`, never `--force`. Three things are load-bearing:
+    - **Applying an update is pull THEN build, and the build happens before the Restart alert.** The
+      pull only moves the *source*; `Builder.precompile` shells out to
+      `$MENUBAR_LOAD_RUNNER_LAUNCHER --precompile` to make it runnable. Deferring that to the launcher
+      at restart — which is what shipped through v1.20.1 — put the whole compile in the window where
+      the app is *gone*: measured 6.5s against a warm clang module cache, 32s cold, and 132s once under
+      load, all of it a blank menu bar with no feedback, which read as a restart that had failed. The
+      cost is bimodal, so a warm restart looks fine and hides it. `updatePhase`
+      (`.idle`/`.checking`/`.building`) is both the re-entrancy guard and what the menu row reports, so
+      the long phase says `Building vX.Y.Z…` instead of looking stuck. A build failure is **not** fatal
+      (the launcher retries at restart, and falls back to interpreted `swift`) — the alert says the
+      restart will be slow instead of pretending otherwise.
     - **The pull names its refspec when tracking is missing.** A bare `pull --ff-only` needs
       `branch.<name>.remote`/`.merge`, which a *copied* (not cloned) checkout lacks — it then dies on
       "no tracking information", an error no button in the alert can fix. So `pullArguments` falls back to
       `pull --ff-only origin <branch>`, and detached HEAD keeps the bare form so git's own message shows.
-    - **The app cannot restart itself directly** — the pull moves the *source*, and the launcher is what
-      recompiles, so the restart re-invokes whoever started us. That is not inferrable in-process (a
+    - **The app cannot restart itself directly** — the launcher is what runs the (normally already
+      built) binary, so the restart re-invokes whoever started us. That is not inferrable in-process (a
       detached run and a launchd job both reparent to pid 1), hence the launcher's exported markers, and
       hence launchd being *asked* rather than sniffed: a LaunchAgent job's `XPC_SERVICE_NAME` is `"0"`,
       **not** the label (verified — it is the obvious-looking signal and it is wrong), so `isLaunchAgentJob`
@@ -611,6 +639,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
       waits for our pid to disappear (bounded ~30s) — required, since the launcher's singleton guard
       refuses while we live and launchd won't restart a job whose process is up — and `kickstart` is
       deliberately **without `-k`**, which would SIGKILL us mid-quit and skip the caffeinate teardown.
+      That waiter writes to the log file, **never `/dev/null`**: it is the one path whose failure the
+      app cannot report, because by the time it fails we have quit. When the 30s bound expires with us
+      still alive it runs the command anyway, the singleton guard declines it, and without the log that
+      is a restart that simply never happened and left nothing behind to explain it.
       `appArguments` reproduces the *running* config (menu-chosen preset/source/label/threshold/disclosure
       and a fixed `--speed-multiplier`), because none of those persist; Keep Awake needs a flag only when
       **indefinite**, since a bounded window restores from the saved deadline and the restore path refuses

@@ -77,6 +77,9 @@ Options:
   --foreground, --no-detach  Run attached to current shell (default is detached)
   --detach                   Run detached (default)
   --extra                    Allow launching a new instance even if one is already running
+  --precompile               Compile the source if it is newer than the binary, then exit without
+                             launching. Safe to run while an instance is live (the build is renamed
+                             into place). The in-app updater uses this so a restart is instant
   -h, --help                 Show this help
 
 Examples:
@@ -105,6 +108,31 @@ Examples:
 EOF
 }
 
+# Compiles MenuBarLoadRunner.swift to the sibling binary when the source is newer (or the binary is
+# missing). Returns 0 when the binary is current — already, or after a successful build — and 1 when
+# swiftc failed, which is the caller's cue to fall back to the interpreted `swift`.
+#
+# -strict-concurrency=complete opts into full data-race checking (Swift 5 mode, so violations
+# surface as warnings rather than breaking the build). The source is annotated @MainActor to satisfy
+# it; see docs for the concurrency posture.
+#
+# The build goes to a temp and is renamed into place, never written over the binary directly:
+# `--precompile` exists to run *while an instance is live*, and overwriting a running Mach-O in place
+# corrupts the process paging out of it. rename(2) within one directory is atomic and leaves the live
+# process holding its old inode. `tests/qa.sh` §6 asserts the live instance survives a rebuild.
+compile_if_stale() {
+  local swift_src="$1" swift_bin="$2"
+  if [[ -x "$swift_bin" && ! "$swift_src" -nt "$swift_bin" ]]; then
+    return 0
+  fi
+  if swiftc -O -strict-concurrency=complete "$swift_src" -o "$swift_bin.new" >/dev/null 2>&1; then
+    mv -f -- "$swift_bin.new" "$swift_bin"
+    return 0
+  fi
+  rm -f -- "$swift_bin.new"
+  return 1
+}
+
 main() {
   if ! command -v swift >/dev/null 2>&1; then
     print -u2 "$APP_CMD_NAME: swift command not found"
@@ -114,6 +142,7 @@ main() {
   local script_dir launcher_path swift_module_cache
   local launch_detached=1
   local allow_extra=0
+  local do_precompile=0
   local log_file pid
   local -a passthrough_args swift_cmd
 
@@ -132,6 +161,9 @@ main() {
         ;;
       --extra)
         allow_extra=1
+        ;;
+      --precompile)
+        do_precompile=1
         ;;
       *)
         passthrough_args+=("$1")
@@ -156,21 +188,22 @@ main() {
   local swift_src="$script_dir/MenuBarLoadRunner.swift"
   local swift_bin="$script_dir/MenuBarLoadRunner"
 
-  # -strict-concurrency=complete opts into full data-race checking (Swift 5 mode, so
-  # violations surface as warnings rather than breaking the build). The source is annotated
-  # @MainActor to satisfy it; see docs for the concurrency posture.
-  if [[ ! -x "$swift_bin" ]] || [[ "$swift_src" -nt "$swift_bin" ]]; then
-    if swiftc -O -strict-concurrency=complete "$swift_src" -o "$swift_bin" >/dev/null 2>&1; then
-      swift_cmd=("$swift_bin" "$@")
-    else
-      mkdir -p -- "$swift_module_cache"
-      swift_cmd=(swift -strict-concurrency=complete -module-cache-path "$swift_module_cache" "$swift_src" "$@")
+  # --precompile: build and stop. This is the app's half of a self-update — `git pull` moves the
+  # source, and the compile that makes it runnable has to happen *before* the app quits, or the user
+  # watches an empty menu bar for as long as swiftc takes (measured 6.5s warm, 32s on a cold clang
+  # module cache, 132s once under load). Deliberately ahead of the singleton guard: its whole purpose
+  # is to run while an instance is live, which is what the temp+rename in compile_if_stale is for.
+  if (( do_precompile )); then
+    if compile_if_stale "$swift_src" "$swift_bin"; then
+      exit 0
     fi
-  else
-    swift_cmd=("$swift_bin" "$@")
+    print -u2 "$APP_CMD_NAME: swiftc failed; the next launch compiles on demand or falls back to interpreted swift."
+    exit 1
   fi
 
-  # Enforce singleton unless --extra is specified
+  # Enforce singleton unless --extra is specified. Ahead of the compile, so a duplicate launch costs
+  # a pgrep rather than a full swiftc run — and, when the source is stale, so it can't start a second
+  # build racing the one whose gap it wandered into.
   if (( ! allow_extra )); then
     # Match the compiled binary by its path — `/MenuBarLoadRunner` followed by a space
     # (it has args) or end-of-line (env-var mode, no positional). Args no longer carry a
@@ -194,12 +227,21 @@ main() {
     fi
   fi
 
+  if compile_if_stale "$swift_src" "$swift_bin"; then
+    swift_cmd=("$swift_bin" "$@")
+  else
+    mkdir -p -- "$swift_module_cache"
+    swift_cmd=(swift -strict-concurrency=complete -module-cache-path "$swift_module_cache" "$swift_src" "$@")
+  fi
+
   # MENUBAR_LOAD_RUNNER_LAUNCHER / _LAUNCH_MODE are how the app answers "can I restart myself, and
   # how" for the update prompt's Restart button — it cannot infer that on its own, because a
   # detached run and a launchd-supervised one both reparent to pid 1. `detached` means "re-exec this
   # launcher once I've exited"; `attached` means the caller is waiting on us, so the app offers a
-  # restart only when launchd is the caller (it checks XPC_SERVICE_NAME for that) and never steals a
-  # --foreground run out from under the shell that started it.
+  # restart only when launchd is the caller — asked via `launchctl list`, NOT sniffed from
+  # XPC_SERVICE_NAME, which a LaunchAgent job reports as "0" — and never steals a --foreground run
+  # out from under the shell that started it. LAUNCHER is also what the app runs `--precompile`
+  # through, so the swiftc invocation lives in this file only.
   if (( launch_detached )); then
     log_file="${MENUBAR_LOAD_RUNNER_LOG_FILE:-/tmp/menubar-load-runner.log}"
     mkdir -p -- "$(dirname -- "$log_file")"

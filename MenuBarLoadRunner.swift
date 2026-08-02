@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.20.1"
+    static let version = "1.21.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -156,9 +156,49 @@ private enum UpdateChecker {
     }
 }
 
+// The second half of applying an update. `git pull` moves the *source*; this is what makes it
+// runnable. It runs while the app is still alive on purpose. The launcher would otherwise compile at
+// restart — after the app has quit — and the user watches an empty menu bar for the whole build:
+// measured 6.5s against a warm clang module cache, 32s cold, and 132s once under load, which is what
+// made a working restart read as a broken one.
+//
+// The build command is NOT duplicated here. The launcher owns it behind `--precompile`, so the flags
+// cannot drift: if they did, the launcher's mtime check would just recompile at restart and this whole
+// path would silently stop buying anything. The launcher path comes from the same
+// MENUBAR_LOAD_RUNNER_LAUNCHER marker `Restarter.mode` reads — no marker means we were not started by
+// the launcher, which is also exactly the case that gets no Restart button.
+private enum Builder {
+    // nil when there is no launcher to build through. Otherwise (ok, message), with the launcher's
+    // stderr on failure — the shape of `UpdateChecker.pull`. Blocking; callers dispatch off-main.
+    // Read-then-wait is safe for the same reason it is there: the output is one line, far under the
+    // pipe buffer, so the child cannot block on it.
+    static func precompile(environment: [String: String]) -> (ok: Bool, message: String)? {
+        guard let launcher = environment["MENUBAR_LOAD_RUNNER_LAUNCHER"], !launcher.isEmpty else {
+            return nil
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launcher)
+        process.arguments = ["--precompile"]
+        let errPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return (false, "Could not run the launcher at \(launcher).")
+        }
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let message = (String(data: errData, encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (process.terminationStatus == 0, message)
+    }
+}
+
 // Restarting the app after a self-update. The app can't just re-exec itself: `git pull` moves the
-// *source*, and it is the launcher script that notices the source is newer than the binary and re-runs
-// `swiftc` — so coming back on the new version means invoking whatever started us. That differs per
+// *source*, and it is the launcher script that owns compiling it — so coming back on the new version
+// means invoking whatever started us (`Builder` has normally already built, so the launcher finds the
+// binary current and the relaunch is immediate). That differs per
 // install, and the difference is not inferrable from inside the process (a detached run and a
 // launchd-supervised one both reparent to pid 1), so each launch path leaves a signal:
 //   - launchd: no env marker works — a LaunchAgent job's XPC_SERVICE_NAME is "0", not the job label
@@ -272,24 +312,45 @@ private enum Restarter {
     // command runs anyway and the singleton guard (or launchd) declines it harmlessly. Args go through
     // `sh`'s argv, never interpolated into the script, so a GIF path with a space or a quote in it
     // can't reshape the command.
+    //
+    // Both the timeout note and whatever the launcher says go to the log, NOT /dev/null. This is the
+    // one path whose failure the app cannot report: by the time it fails we have quit, so a silent
+    // waiter means a restart that simply never happened and left nothing behind to explain it.
     static func spawnRestart(command: [String]) -> Bool {
         guard !command.isEmpty else { return false }
         let script = """
         pid=$1; shift; i=0
         while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i+1)); done
+        [ "$i" -ge 150 ] && echo "restart: pid $pid still alive after 30s; running anyway: $*"
         exec "$@"
         """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script, "sh", String(ProcessInfo.processInfo.processIdentifier)] + command
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let log = logHandle()
+        process.standardOutput = log
+        process.standardError = log
         do {
             try process.run()
         } catch {
             return false
         }
         return true
+    }
+
+    // A handle positioned at the end of the same file the launcher redirects a detached run's output
+    // to, so the waiter's account sits next to the app's own. Seek-to-end, not O_APPEND — which is
+    // enough here because the waiter writes only after we have quit, so nothing of ours is still
+    // appending. nullDevice if the file can't be opened: losing the note beats losing the restart.
+    private static func logHandle() -> FileHandle {
+        let path = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_FILE"]
+            ?? "/tmp/menubar-load-runner.log"
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
+        guard let handle = FileHandle(forWritingAtPath: path) else { return FileHandle.nullDevice }
+        handle.seekToEndOfFile()
+        return handle
     }
 }
 
@@ -629,6 +690,9 @@ private enum MenuTitle {
     static let updateAvailablePrefix = "Update available"
     static let checkForUpdates = "Check for Updates…"
     static let checkingForUpdates = "Checking for Updates…"
+    // The compile between the pull and the Restart offer. Names the version so the row reads as
+    // progress on a known thing rather than an unexplained wait — it can run for a minute.
+    static func building(_ tag: String) -> String { "Building \(tag)…" }
 
     // Parent row for menu-driven preferences (the menu-bar label and the battery release threshold).
     static let settings = "Settings"
@@ -2985,8 +3049,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var latestKnownVersion: SemVer?
     private var updateItem: NSMenuItem!
     private var checkForUpdatesItem: NSMenuItem!
-    // Set while a probe is running so overlapping manual checks don't stack git processes.
-    private var updateCheckInFlight = false
+    // Where the update flow is, which is both the re-entrancy guard (so overlapping manual checks
+    // can't stack git processes) and what the menu row reports. `.building` is a real third state, not
+    // a longer `.checking`: it is the phase that can run for a minute, and saying so is the difference
+    // between a menu that looks stuck and one that is explaining itself. Mutated on the main actor only.
+    private enum UpdatePhase { case idle, checking, building(SemVer) }
+    private var updatePhase: UpdatePhase = .idle
     private var frames: [NSImage] = []
     private var frameAspects: [CGFloat] = []
     private var baseDurations: [TimeInterval] = []
@@ -3785,8 +3853,17 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return
         }
         checkForUpdatesItem.isHidden = false
-        checkForUpdatesItem.isEnabled = !updateCheckInFlight
-        checkForUpdatesItem.title = updateCheckInFlight ? MenuTitle.checkingForUpdates : MenuTitle.checkForUpdates
+        switch updatePhase {
+        case .idle:
+            checkForUpdatesItem.isEnabled = true
+            checkForUpdatesItem.title = MenuTitle.checkForUpdates
+        case .checking:
+            checkForUpdatesItem.isEnabled = false
+            checkForUpdatesItem.title = MenuTitle.checkingForUpdates
+        case .building(let version):
+            checkForUpdatesItem.isEnabled = false
+            checkForUpdatesItem.title = MenuTitle.building(version.tagString)
+        }
 
         if let latest = latestKnownVersion, let current = SemVer(AppInfo.version), latest > current {
             let title = MenuTitle.line(MenuTitle.updateAvailablePrefix, "\(latest.tagString) →")
@@ -3808,8 +3885,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             }
             return
         }
-        guard !updateCheckInFlight else { return }
-        updateCheckInFlight = true
+        guard case .idle = updatePhase else { return }
+        updatePhase = .checking
         refreshUpdateStatus()
         DispatchQueue.global(qos: .utility).async {
             let latest = UpdateChecker.latestRemoteTag(repoDir: repoDir)
@@ -3818,7 +3895,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.updateCheckInFlight = false
+                    self.updatePhase = .idle
                     if let latest { self.latestKnownVersion = latest }
                     self.refreshUpdateStatus()
                     if userInitiated { self.reportManualCheckResult(latest: latest) }
@@ -3865,37 +3942,64 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
-        alert.informativeText = "This runs 'git pull --ff-only' in \(repoDir.path), then you restart the app to load the new version."
+        alert.informativeText = "This runs 'git pull --ff-only' in \(repoDir.path), then compiles the new version so the restart afterwards is immediate. The build can take a minute; the app keeps running the whole time."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Update")   // first = default (Return)
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        updateCheckInFlight = true
+        updatePhase = .checking
         refreshUpdateStatus()
         DispatchQueue.global(qos: .userInitiated).async {
             let result = UpdateChecker.pull(repoDir: repoDir)
+            guard result.ok else {
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.updatePhase = .idle
+                        self.refreshUpdateStatus()
+                        self.showUpdateFailed(message: result.message)
+                    }
+                }
+                return
+            }
+            // The pull landed, so the source on disk is already the new version. Move the row to
+            // `building` BEFORE the compile — that is the phase that can run for a minute, and it is
+            // the only thing standing between here and an instant restart.
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.updateCheckInFlight = false
+                    self.updatePhase = .building(latest)
                     self.refreshUpdateStatus()
-                    if result.ok {
-                        self.showUpdateSucceeded(version: latest)
-                    } else {
-                        self.showUpdateFailed(message: result.message)
-                    }
+                }
+            }
+            // nil = no launcher to build through, which is also the no-Restart-button case; a non-nil
+            // failure is worth saying out loud, since the restart then pays the compile after all.
+            let build = Builder.precompile(environment: ProcessInfo.processInfo.environment)
+            if let build, !build.ok {
+                // Same rule as the restart waiter: the slow path must not be silent. The alert says
+                // the restart will be slow; this says why, in the log a detached run already writes to.
+                fputs("Update: precompile failed — \(build.message.isEmpty ? "no output" : build.message)\n", stderr)
+            }
+            let buildFailed = build.map { !$0.ok } ?? false
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.updatePhase = .idle
+                    self.refreshUpdateStatus()
+                    self.showUpdateSucceeded(version: latest, buildFailed: buildFailed)
                 }
             }
         }
     }
 
-    // Update applied. The pull moved the source; the *running* process is still the old binary, so the
-    // alert's job is to get the user onto the new one. Restart is offered only when we know how to come
-    // back (`Restarter.Mode`) — otherwise the alert says what to do by hand, which is all there was
-    // before. Resolved fresh on each alert rather than cached at launch: a login item can be installed
-    // while the app runs, and this is a click-gated path where one `launchctl list` costs nothing.
-    private func showUpdateSucceeded(version: SemVer) {
+    // Update applied — pulled and, unless `buildFailed`, compiled. The *running* process is still the
+    // old binary, so the alert's job is to get the user onto the new one. Restart is offered only when
+    // we know how to come back (`Restarter.Mode`) — otherwise the alert says what to do by hand, which
+    // is all there was before. Resolved fresh on each alert rather than cached at launch: a login item
+    // can be installed while the app runs, and this is a click-gated path where one `launchctl list`
+    // costs nothing.
+    private func showUpdateSucceeded(version: SemVer, buildFailed: Bool) {
         let title = "Updated to \(version.tagString)"
         let mode = Restarter.mode(
             environment: ProcessInfo.processInfo.environment,
@@ -3915,7 +4019,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         if let icon = makeMenuAlertIcon() {
             alert.icon = icon
         }
-        alert.informativeText = "Restart now to load it. The app quits and comes straight back — your Keep Awake window, label, and settings carry over."
+        // The build normally already happened, so "straight back" is literal. When it didn't, the
+        // launcher compiles during the restart instead and the gap is however long swiftc takes — say
+        // so, rather than let a minute of empty menu bar read as a restart that failed.
+        alert.informativeText = buildFailed
+            ? "Restart now to load it. The new version still needs compiling, so this restart can take a minute before the icon comes back. Your Keep Awake window, label, and settings carry over."
+            : "Restart now to load it. The app quits and comes straight back — your Keep Awake window, label, and settings carry over."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Restart")   // first = default (Return)
         alert.addButton(withTitle: "Later")

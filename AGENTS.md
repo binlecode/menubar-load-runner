@@ -495,8 +495,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     stays dark because the termination handler clears `isEnabled`; and the tick's redraw guard is
     `"\(awakeHold.tintSignature)|\(keepAwakeArmedNotHolding)"`, composed at the call site because
     `AwakeHold`'s subject is the machine. `LOG_AWAKE` prints `tint=` off `keepAwakeTint` itself, so qa.sh §3e
-    asserts the rendered tone; perceptibility stays eyes-only (RUNBOOK §3.1). Rationale: `DESIGN-system.md`
-    §22.5. It must NEVER be composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
+    asserts the rendered tone; perceptibility stays eyes-only (RUNBOOK §3.1).
+    It must NEVER be composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
     `KeepAwakeColor` case — Dusty Teal (default), Sand, Graphite, Mauve, Sage — each a dark/light tone
     chosen per menu-bar appearance. The enum drives the rows, so adding a case needs no menu edit; it does
@@ -594,7 +594,7 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     Two IOKit facts an implementer will otherwise re-derive: `AssertionTrueType` splits display- from
     idle-sleep holds, and a timed foreign hold exposes a deadline — but `AssertTimeoutTimeLeft` is stale as
     of `AssertTimeoutUpdateTime`, **not** live, so reading it as time-from-now makes the deadline slide
-    forward every tick. Full rationale: internal `DESIGN-system.md` §22.11 (vault, not in this repo).
+    forward every tick.
   - **Keep Awake at launch and across launches** (`applyLaunchKeepAwakeState`, run from
     `applicationDidFinishLaunching` before the first `refreshKeepAwakeSelectionState`). Precedence:
     `--keep-awake` / `MENUBAR_LOAD_RUNNER_KEEP_AWAKE` (parsed by `KeepAwakeDuration.parse` into a

@@ -8,9 +8,9 @@ real capability gap · **P3** nice to have · **P4** parity for its own sake. No
 commitment or a date.
 
 Keep this at tracking altitude — item, priority, blocker, and any catch an implementer would trip
-over. Design and technical rationale live in the internal `DESIGN-system.md` (vault, not in this
-repo; `§` pointers below refer to it); release history lives in `CHANGELOG.md` and git. Refer to
-code by **symbol, never by line number** — anchors rot every release.
+over. Design and technical rationale live in the maintainer's internal design record; release
+history lives in `CHANGELOG.md` and git. Refer to code by **symbol, never by line number** —
+anchors rot every release.
 
 ---
 
@@ -44,7 +44,7 @@ API — which is exactly why it waits; R9 extends preset identity beyond the rep
 |---|---|---|---|
 | R8 | **English only** — zero `NSLocalizedString`. | P4 | — |
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
-| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. §7.14 holds the API research. | P4 | — |
+| R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. | P4 | — |
 
 ## Declined
 
@@ -82,8 +82,8 @@ the behavior being missed.
 | `ThroughputScaler` hysteresis, `SemVer` / `highestTag` parsing, `Restarter`'s argv + mode mapping | **No check at all.** These have no reachable functional path yet: the scaler needs sustained synthetic net/disk load to move its ceiling; the tag parse needs a checkout whose `origin` has canned `v*` tags; `Restarter`'s launchd branch needs a real LaunchAgent job. Don't "restore coverage" by re-adding a re-ported copy of the logic — see `AGENTS.md` § Testing rules. |
 | The in-app update sequence: pull → `Builder.precompile` → Restart | **Click-only, unverified.** The pieces the launcher owns *are* covered — `qa.sh` §6 asserts `--precompile` builds and launches nothing, that a live instance survives the rebuild (the temp+rename), and that a rejected launch doesn't compile. What no run reaches is the modal path that drives them: the `Building vX.Y.Z…` row, the build-failed wording, and the restart actually being fast afterwards. Reaching it needs a checkout whose `origin` carries a newer canned tag — the same harness the row above wants — so RUNBOOK §3 walks it by hand. The failure being guarded against is silent and bimodal: with a warm module cache a deferred build costs ~7s and looks fine, so a regression only shows on the cold path. |
 | Four §3e cases gated on a **quiet machine** (no display holder / no assertions at all) | §3e NOTEs each rather than faking a quiet system: R7's `tint=paused`, R16's `Nothing holding sleep`, attribution when another display holder sorts first, and the idle-only reading. Their states differ — R7's tone **is** confirmed by hand (2026-08-01: three consecutive `tint=paused` ticks, no `-w` child), so don't read its NOTE as the tone being unverified; the other three are unverified locally. Don't soften any of them to make a run pass. |
-| `SMCClient` holds exactly one `io_connect_t` | **Structural only** — IOKit connections aren't visible to `lsof`/`ps`, and counting `IOServiceOpen` calls needs dtrace (root + SIP off), so *exactly one* rests on the code's shape; the argument is §7.15's. The weaker sharing-works claim **is** covered: fan and temperature driven together in one process, both correct (2026-08-01). Don't upgrade that into connection-counting, and don't "cover" the remainder with a re-ported copy of the client. |
-| Temperature reader — three dark spots (§7.17 holds the facts) | (1) `Tpx*`-are-cluster-maxima verified on **one chip only** — re-run the ramp comparison on any new hardware; a wrong chip silently under-reads and no in-process sample can tell. (2) The all-clusters-parked branch (v1.20.1) has **no functional check and none is available** — hardware state, and forcing it needs a decision-changing hook, which is barred; reachable, not theoretical. (3) The map above ~78 °C is exercised by arithmetic only — the test machine peaks there. Don't cover any of these with a re-ported copy, and don't make the map adaptive. |
+| `SMCClient` holds exactly one `io_connect_t` | **Structural only** — IOKit connections aren't visible to `lsof`/`ps`, and counting `IOServiceOpen` calls needs dtrace (root + SIP off), so *exactly one* rests on the code's shape: one `static let shared`, one `openSMC()` call site, one write to `connection`. The weaker sharing-works claim **is** covered: fan and temperature driven together in one process, both correct (2026-08-01). Don't upgrade that into connection-counting, and don't "cover" the remainder with a re-ported copy of the client. |
+| Temperature reader — three dark spots | (1) `Tpx*`-are-cluster-maxima verified on **one chip only** — re-run the ramp comparison on any new hardware; a wrong chip silently under-reads and no in-process sample can tell. (2) The all-clusters-parked branch (v1.20.1) has **no functional check and none is available** — hardware state, and forcing it needs a decision-changing hook, which is barred; reachable, not theoretical. (3) The map above ~78 °C is exercised by arithmetic only — the test machine peaks there. Don't cover any of these with a re-ported copy, and don't make the map adaptive. |
 | Thermal pause rendering | No way to force a thermal state. The battery reasons share the code path and are covered by `tests/qa.sh` §3a; only the thermal *trigger* is untested. |
 | Label slot order is "creation order", assumed not guaranteed | Confirmed on a roomy bar 2026-08-01 (§3c passed all six cases). The notched built-in display inverts the order **deterministically** (3/3, modified and unmodified binary) — environmental, not a code change, and contiguous-but-wrong, so §3c **FAILs** there: read an adjacency FAIL against which screen the bar was on before believing it. Deliberately not softened into a NOTE, or a real ordering regression hides behind it. Lead if it recurs: `NSStatusItem.autosaveName` is never set, and ⌘-drag positions persist against it — probe that first. |
 

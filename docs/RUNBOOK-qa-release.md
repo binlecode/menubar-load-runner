@@ -108,7 +108,7 @@ off: `MENUBAR_LOAD_RUNNER_STATE_FILE=$PWD/tmp/qa-state.json MENUBAR_LOAD_RUNNER_
       enough to render the paused state at all. The light bar is the weak case (its tint is darker than
       its background, not lighter). But the ratio is a **proxy** — where it and a direct look disagree,
       the look decides. It did: the shipped `0.22` is the eyes' answer over the ratio's `0.30`, and the
-      light bar's 1.29:1 is accepted, not an open defect. Full argument: `DESIGN-system.md` §22.5.
+      light bar's 1.29:1 is accepted, not an open defect.
 - [ ] The countdown **keeps ticking while paused** — the window is a wall-clock deadline and elapses
       whether or not the child is holding, so a pause must not freeze it (`29:55 → 29:44 → 29:34` on a
       paused instance). Same with the override active.

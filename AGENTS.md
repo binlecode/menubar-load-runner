@@ -285,7 +285,7 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
   documented in the class comment / `Tuning` (a deliberate approximation, not Activity Monitor's exact
   algorithm).
 - **`GPULoadMonitor` / `NetworkLoadMonitor` / `DiskLoadMonitor` / `FanLoadMonitor` /
-  `BatteryLoadMonitor`** — the other five load-source readers, same unprivileged tier (IORegistry +
+  `BatteryLoadMonitor` / `TemperatureLoadMonitor`** — the other six load-source readers, same unprivileged tier (IORegistry +
   `getifaddrs` + SMC + IOKit Power Sources; `import IOKit`, `import IOKit.ps`). GPU is an instantaneous
   0…1 point read (`IOAccelerator → PerformanceStatistics → "Device Utilization %"`); network
   (`getifaddrs → if_data`, AF_LINK, skip `lo0`) and disk (`IOBlockStorageDriver → Statistics → Bytes
@@ -302,6 +302,14 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     bytes in `SMCKeyInfoData` are load-bearing — without them Swift packs `result` into the tail
     padding, the struct becomes 76 bytes, and the kernel call fails `kIOReturnBadArgument`. Reads
     (`readKeyInfo`/`readBytes`/`readFloat`/`floatKey`) return `nil`, never a fabricated `0`.
+    `floatKeys(withPrefix:)` discovers a whole sensor family from the SMC's **own** key table (`#KEY`
+    for the count, command `8` to read the key at an index) rather than probing a guessed candidate
+    list — the key set varies by chip, so a guess can't tell "absent" from "didn't think of it". It
+    **binary-searches** the prefix range because the table is sorted ascending: ~115 calls (~20 ms)
+    against ~600 ms to walk all 3385 entries, which is the difference between a usable launch-time
+    availability probe and a visible stall. Sortedness is the one assumption and it fails **safe** —
+    every key the forward scan collects is re-checked against the prefix, so an unsorted table yields
+    *fewer* sensors (caller reports unavailable) and never the wrong ones.
   - **`FanLoadMonitor`** — fan RPM as a cooling/thermal signal, read through `SMCClient`, discovering
     `F{n}Ac`/`F{n}Mx` from `FNum`. Bounded per-machine, so it maps through
     as a percentage — NOT via `ThroughputScaler`. Two deliberate choices: `actual/max` rather than the
@@ -314,6 +322,20 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     point read (no warm-up tick) is an *unbounded* magnitude and so normalizes through the shared
     `ThroughputScaler`; charge level is a readout only. On AC the draw is 0 → idle animation. Reuses
     the same `IOPSCopyPowerSourcesInfo` plumbing as `evaluateBatteryState`; desktop Macs → unavailable.
+  - **`TemperatureLoadMonitor`** — die temperature, the *leading* thermal signal where `FanLoadMonitor`
+    is the lagging one. Point read through `SMCClient` (no `elapsed:`). Three things not to undo:
+    it takes the **max, not the average — deliberately inverting the fan precedent one bullet up**
+    (throttling responds to the hottest die; averaging a loaded cluster against an idle one hides the
+    event worth showing); the max is over a **curated family**, because the five *hottest* keys on an
+    M-series die (`Tf06`/`Tf16`/`Tf26`/`Tf36`/`Tf46`, 94–107 °C) are **frozen constants** — trip points
+    that never moved across a 12s all-core load that moved 245 other sensors, so a max over every `T`
+    key pins the animation at a plausible-looking 106.73 °C forever; and a key earns its place by
+    **moving under load**, never by reading a sane number once. The family is `Tp**`, of which the
+    ~12 `Tpx*` **per-cluster maxima** are sampled when present (identical max to all 102 keys in 22/22
+    ramp samples, 2.3 ms a tick against 20 ms — 20 ms/2 s would roughly triple this app's own CPU,
+    which the self-throttle ethos won't have), falling back to the whole family on a chip without them.
+    A parked cluster answers `0`/`≈ -4`, not a refusal, so `Tuning.temperatureMinPlausibleCelsius`
+    drops those from both the max and the menu's range line. No readable sensor → unavailable (VMs).
 - **`ThroughputScaler`** — shared value type (ported from btop `Net::collect`) that normalizes any
   *unbounded rate* signal (network/disk/swap bytes-per-sec, battery discharge mA) to 0…1 against an adaptive ceiling:
   `max(avg(last Tuning.scalerWindow) × headroom, floor)`, rescaled only after
@@ -321,6 +343,11 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
   (`scalerHeadroomUp`/`scalerHeadroomDown`), per-source floor. **Bounded** percentage signals (CPU %,
   memory-used %, GPU %, fan %) are NOT scaled — they map through directly. Note the split is
   bounded-vs-unbounded, not delta-vs-point-read: battery mA is an instantaneous read that still scales.
+  Die temperature is a **third category**: bounded, but not already a fraction, so it maps through a
+  fixed `Tuning.temperatureFloorCelsius`…`temperatureCeilingCelsius` (30…100 °C) window and never
+  through the scaler. Absolute on purpose — a given speed then means the same temperature on every Mac
+  and every day, at the cost that a well-cooled Mac never reaches the top of its range (measured: idle
+  40 °C, sustained all-core 78 °C, i.e. the 0.14…0.69 band). Don't "fix" that by making it adaptive.
 - **`MenuBarLoadRunnerApp`** (`NSApplicationDelegate`/`NSMenuDelegate`) — the entire app. Key internal
   concepts to know before changing behavior:
   - **Preset identity is externalized to `gifs/presets.json`.** That manifest (`defaultPreset` + a
@@ -356,7 +383,10 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     `Tuning.speedUpdateHysteresis`, to avoid visible jitter. Disabled entirely when
     `--speed-multiplier` is passed.
   - **Load source selector**: `activeLoadSource: LoadSource` (`.cpu` default; `.memory`, `.gpu`,
-    `.network`, `.disk`, `.fan`, `.battery` also available, the last two hardware-dependent;
+    `.network`, `.disk`, `.fan`, `.battery`, `.temperature` also available, the last three
+    hardware-dependent — and the case is spelled **`temperature`, never `thermal`**, because
+    `KeepAwakeSuspension.thermal` and the throttle row already use "thermal" for
+    `ProcessInfo.thermalState`, a different thing;
     `--load-source`/`MENUBAR_LOAD_RUNNER_LOAD_SOURCE`, unknown → `.cpu`) picks *which* reader drives the
     animation, independent of the preset's speed range. `LoadSource` is a single registry (key + menu title)
     like `PresetDescriptor`. The speed path reads the active source, never `loadMonitor` directly, through
@@ -376,8 +406,8 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     Counter-delta sources divide by the real elapsed wall time captured
     each tick in `sampleSystemLoad` (`ProcessInfo.systemUptime` → `lastSampleUptime`, threaded as the
     `elapsed:` arg); the memory source's swap rate already uses it, and network/disk reuse it (a source
-    switch resets `lastSampleUptime` so rates re-warm cleanly). Fan and battery are point reads and
-    take no `elapsed:`.
+    switch resets `lastSampleUptime` so rates re-warm cleanly). Fan, battery and temperature are point
+    reads and take no `elapsed:`.
   - **Self-throttling under pressure** (the app throttles *its own* animation, never the system —
     it only ever *reads* system state): the indicator reduces its own CPU use so it doesn't add to
     the load it visualizes. `speedMultiplier(forUsage:)` caps *this app's* auto animation speed at the

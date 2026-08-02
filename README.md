@@ -5,7 +5,7 @@
 </p>
 
 Small macOS menu bar app that renders an animated GIF in the status bar.
-Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, or battery — see Load source below).
+Animation speed automatically adapts to a system load source (CPU by default; also memory, GPU, network, disk, fan, battery, or die temperature — see Load source below).
 
 Current version: **1.19.4** (see [`CHANGELOG.md`](CHANGELOG.md)).
 
@@ -277,7 +277,7 @@ MENUBAR_LOAD_RUNNER_LOAD_SOURCE=network ./menubar-load-runner
 ```
 
 `--load-source` (or the `MENUBAR_LOAD_RUNNER_LOAD_SOURCE` env var) selects which system reader
-drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, `disk`, `fan`, or `battery`. Unknown values —
+drives the animation speed: `cpu` (default), `memory`, `gpu`, `network`, `disk`, `fan`, `battery`, or `temperature`. Unknown values —
 or a source with no readable hardware on this machine — fall back to `cpu` (unavailable sources are
 disabled in the menu). It can also be switched live by expanding the **Other Sources** list in the menu
 and clicking a reader (see below). All readers are
@@ -290,6 +290,7 @@ unprivileged (no `sudo`); the app only ever *reads* load.
 - **disk**: total block-device throughput (read+write across all drives).
 - **fan**: fan speed as a thermal/cooling signal (RPM as a fraction of the fan's max, averaged across fans — one fan spinning up doesn't dominate while the rest of the system is quiet). A lagging signal that trails actual work and only ramps under sustained thermal load, but idle fans still spin — so it keeps some visible motion (a genuinely stopped fan still crawls at the preset's minimum speed). Unavailable on fanless Macs (e.g. MacBook Air, which have zero fans), which fall back to `cpu`.
 - **battery**: discharge current (instantaneous draw, in mA) while on battery — a fast drain animates faster; on AC power the draw is zero, so the animation idles. Since every machine's draw ceiling differs, the current is normalized against the same adaptive ceiling the byte-rate sources use. The menu also shows the charge level. Unavailable on desktop Macs with no battery, which fall back to `cpu`.
+- **temperature**: die temperature — the *leading* thermal signal, where fan speed is the lagging one (the die heats in milliseconds; the fans answering it ramp over seconds). Read straight off the performance-core temperature sensors and mapped on an absolute 30 °C → 100 °C scale, so a given animation speed means the same temperature on every Mac rather than being rescaled to your machine's recent range. The driver is the *hottest* sensor, not the average — throttling responds to the hottest die, and averaging a loaded core cluster against an idle one hides the event worth watching; the menu shows the full spread it came from. A Mac that cools well may never reach the top of the speed range, which is the honest reading. Unavailable where no sensor answers (typically VMs), which fall back to `cpu`.
 
 Without `--speed-multiplier`, animation speed adapts to the selected load source. Per-preset speed
 ranges are defined in `gifs/presets.json`; edit that file to change a range or add a preset (the app
@@ -431,10 +432,10 @@ If a detached instance won't stop or a launch silently fails, check `/tmp/menuba
 
 Click the menu bar item to open:
 
-- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`; or `Battery` (charge % + discharge A, or `AC`) / `Battery State`
+- The active source's metric + state line: `CPU Usage (smoothed)` / `CPU State`; or `Memory` (used-% + swap capacity + swap MB/s when paging) / `Memory Pressure`; or `GPU` / `GPU State`; or `Network` (MB/s) / `Network State`; or `Disk` (MB/s) / `Disk State`; or `Fan` (RPM + %) / `Fan State`; or `Battery` (charge % + discharge A, or `AC`) / `Battery State`; or `Temperature` (hottest sensor °C + the spread across sensors) / `Temperature State`
 - `Load Avg (1/5/15m)`
 - `Speed Multiplier` (shows the active load source and mode; a separate `Slowing animation — <cause>` line appears only when a self-throttle condition is active, naming the cause: thermal throttling, Low Power Mode, or memory pressure)
-- `▸ Other Sources` (disclosure row) — click to expand/collapse an inline list of every *other* available reader (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan` / `Battery`, minus the active one; sources with no readable hardware are omitted). Each row shows that reader's live readout; clicking it switches the driving source to it (takes effect immediately). Expanding samples every reader each tick; collapsed (the default) samples only the active source. The active source still drives the animation. Launch expanded with `--show-all-sources` / `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`
+- `▸ Other Sources` (disclosure row) — click to expand/collapse an inline list of every *other* available reader (`CPU` / `Memory` / `GPU` / `Network` / `Disk` / `Fan` / `Battery` / `Temperature`, minus the active one; sources with no readable hardware are omitted). Each row shows that reader's live readout; clicking it switches the driving source to it (takes effect immediately). Expanding samples every reader each tick; collapsed (the default) samples only the active source. The active source still drives the animation. Launch expanded with `--show-all-sources` / `MENUBAR_LOAD_RUNNER_SHOW_ALL=1`
 - `Width` (read-only: shows the GIF-derived item width in points and the GIF aspect ratio; not configurable)
 - `Settings` (submenu) — where preferences live, so they don't crowd the top level
   - `Menu Bar Label` -> `Off` / `Live Value` (the active source's compact live reading in its own slot) / `Custom Text…` (a fixed label, up to 24 chars). Off by default; the parent title shows the current state. **Your choice is remembered across relaunches.** Also settable at launch via `--label` / `MENUBAR_LOAD_RUNNER_LABEL`, which wins over the saved value for that run — including `--label off`, which starts with no label even if one was saved. Below those, a second group — `Position` -> `Left of Icon` (default) / `Right of Icon` — puts the slot on either side of the animation; it applies immediately, stays set while the label is off, and is remembered across relaunches. Menu-only (no flag), like the Keep Awake tint. The slot's width is fixed either way, so neither side jitters — see [Menu-bar label](#menu-bar-label-adjacent-value--text-slot)
@@ -527,7 +528,7 @@ dashboard):
 | :--- | :--- | :--- | :--- | :--- |
 | **Category** | Animated load indicator | Animated load indicator | Animated load indicator | System monitor |
 | **Packaging** | Single Swift file + shell launcher (no Xcode project) | Xcode `.app` | Xcode `.app` | Xcode `.app` |
-| **Load sources** | CPU, memory+swap, GPU, network, disk, fan, battery | CPU | CPU, GPU, RAM | Full hardware suite |
+| **Load sources** | CPU, memory+swap, GPU, network, disk, fan, battery, die temperature | CPU | CPU, GPU, RAM | Full hardware suite |
 | **Unbounded rates (net/disk/swap) drive the animation** | Yes — adaptive auto-scaling | — | — | n/a (numeric display) |
 | **In-menu readout** | 60s sparkline, numerics, load averages | Minimal | Numeric dropdown | Full graphs, temps, per-process |
 | **Sensor temps / battery health / per-process** | No (out of scope by design) | No | No | Yes |

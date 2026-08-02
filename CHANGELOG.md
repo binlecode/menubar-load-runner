@@ -30,6 +30,27 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+### Added
+
+- **An eighth load source: die temperature** (`--load-source temperature`, or pick **Temperature**
+  from **Other Sources** in the menu). Where fan speed is the *lagging* thermal signal — fans trail
+  the work that heated the machine by seconds — this is the leading one: the die responds in
+  milliseconds. Read at the same unprivileged tier as every other source (no `sudo`, no
+  entitlement), straight off the performance-core temperature sensors via the shared `SMCClient`
+  that shipped in 1.19.4. The menu shows the hottest sensor, the spread across all of them, and how
+  many answered; the menu-bar label shows `TMP 72°`. Machines where no sensor answers (typically
+  VMs) disable the row and fall back to CPU, exactly like fan on a fanless Mac.
+
+  Three things about it are deliberate and worth knowing. The animation follows the **hottest**
+  sensor, not the average — throttling responds to the hottest die, and averaging a loaded core
+  cluster against an idle one hides the event worth watching. The scale is **absolute** (30 °C idle
+  → 100 °C flat out) rather than rescaled to your machine's recent range, so a given animation speed
+  means the same temperature on every Mac and on every day; the cost is that a Mac which cools well
+  never quite reaches the top of the range, which is the honest reading rather than a flattering
+  one. And only ~12 cluster sensors are sampled per tick rather than all 102 the chip publishes —
+  they carry the same maximum, and the full sweep would have cost about 1% of a core continuously,
+  which is not a thing an indicator built to *not* add load gets to spend.
+
 ## [1.19.4] - 2026-08-01
 
 An internal release: the SMC plumbing moved out of the fan reader into a shared client. Nothing you

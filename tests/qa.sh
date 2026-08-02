@@ -121,10 +121,13 @@ run "load-source disk"         "" $BIN --load-source disk
 # fan/battery may be absent (fanless / AC-only / desktop); allow the fallback line so the run passes there.
 run "load-source fan"          "unavailable on this machine" $BIN --load-source fan
 run "load-source battery"      "unavailable on this machine" $BIN --load-source battery
+# temperature is absent wherever no SMC sensor answers (VMs), so allow the same fallback line.
+run "load-source temperature"  "unavailable on this machine" $BIN --load-source temperature
 run "load-source bogus"        "Unknown --load-source" $BIN --load-source bogus
 run "force-unavail gpu->cpu"   "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu $BIN --load-source gpu
 run "force-unavail fan->cpu"   "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=fan $BIN --load-source fan
 run "force-unavail battery"    "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=battery $BIN --load-source battery
+run "force-unavail temp->cpu"  "unavailable on this machine" env MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=temperature $BIN --load-source temperature
 run "fixed speed"              "" $BIN --speed-multiplier 1.5
 run "label value + gpu"        "" $BIN --label value --load-source gpu
 run "label custom text"        "" $BIN --label BUILD
@@ -657,7 +660,7 @@ RO="$PWD/tmp/qa-readout-state.json"
 rk(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
 # `warming up` is legitimate for a counter-delta source on its first tick, so each shape allows the
 # placeholder; what must never appear is a different source's shape or an out-of-range number.
-for spec in "cpu:CPU:%" "memory:MEM:%" "gpu:GPU:%" "network:NET:rate" "disk:DSK:rate" "fan:FAN:%" "battery:BAT:%"; do
+for spec in "cpu:CPU:%" "memory:MEM:%" "gpu:GPU:%" "network:NET:rate" "disk:DSK:rate" "fan:FAN:%" "battery:BAT:%" "temperature:TMP:deg"; do
   src=${spec%%:*}; rest=${spec#*:}; tag=${rest%%:*}; shape=${rest##*:}
   out=$(MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_STATE_FILE="$RO" \
         MENUBAR_LOAD_RUNNER_EXIT_AFTER=9 $BIN --label value --load-source "$src" 2>&1 | grep '^SLOTS')
@@ -676,6 +679,9 @@ for spec in "cpu:CPU:%" "memory:MEM:%" "gpu:GPU:%" "network:NET:rate" "disk:DSK:
     # The arrow/letter is followed by its own padding ("NET ↓  0.1 ↑  0.0"), and alternation beats a
     # bracket expression here — a multibyte char inside [] is not portable in POSIX ERE.
     rate) bad=$(echo "$labels" | grep -vE "^$tag +(↓|R) *[0-9.]+ +(↑|W) *[0-9.]+$") ;;
+    # Degrees Celsius, a third shape — neither a percent nor a rate, so `%` above rejects it. The
+    # reader drops any sensor outside 1…125 °C, which is what makes 1-3 digits a true bound here.
+    deg)  bad=$(echo "$labels" | grep -vE "^$tag +[0-9]{1,3}°$") ;;
   esac
   rk "$src readout has $tag's shape and an in-range value" \
      "$([ -z "$bad" ] && [ -n "$labels" ] && echo 1 || echo 0)" "unexpected: $(echo "$bad" | head -2)"

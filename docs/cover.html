@@ -607,7 +607,7 @@
     <h1>Something small is <em>running</em> in your&nbsp;menu&nbsp;bar.</h1>
     <p class="lede">A dog, a horse, a soot sprite, Totoro. It trots when the machine is calm and
       <b>breaks into a sprint when the system is under load</b> — a live, ambient read on CPU,
-      memory, GPU, network, disk, fan, or battery, tucked into the status bar you already stare at.</p>
+      memory, GPU, network, disk, fan, battery, or die temperature, tucked into the status bar you already stare at.</p>
 
     <!-- interactive: load → tempo mapping, the app's whole idea -->
     <div class="demo">
@@ -636,7 +636,7 @@
 
   <section id="sources">
     <div class="sechead">
-      <h2>Seven ways to feel the machine</h2>
+      <h2>Eight ways to feel the machine</h2>
       <span class="n">Load sources</span>
     </div>
     <div class="sources">
@@ -674,6 +674,11 @@
         <div class="top"><span class="mark"><svg viewBox="0 0 24 24" fill="none"><rect x="2" y="7" width="16" height="10" rx="2.4" stroke="var(--river)" stroke-width="1.6"/><rect x="20" y="10" width="2.4" height="4" rx="1" fill="var(--river)"/><path d="M11 9l-2.4 3.4H12l-2 3.1" stroke="var(--lantern)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
         <div class="name">Battery</div>
         <div class="desc">Discharge current — a fast drain sprints, AC idles it. The menu shows charge level.</div>
+      </div>
+      <div class="src">
+        <div class="top"><span class="mark"><svg viewBox="0 0 24 24" fill="none"><path d="M10 14.5V5a2 2 0 114 0v9.5a4 4 0 11-4 0z" stroke="var(--ember)" stroke-width="1.6"/><circle cx="12" cy="17.5" r="1.8" fill="var(--ember)"/><path d="M16.5 6h3M16.5 9.5h3M16.5 13h3" stroke="var(--ember)" stroke-width="1.4" stroke-linecap="round"/></svg></span></div>
+        <div class="name">Temperature</div>
+        <div class="desc">Die temperature — the leading thermal signal, where fan RPM is the lagging one. Hottest core, on an absolute scale.</div>
       </div>
     </div>
     <p class="heroBar cap">Unbounded rates (network / disk / swap) auto-scale to a btop-style adaptive ceiling. Every reader is unprivileged — the app only ever <b>reads</b> load, never adds to it.</p>

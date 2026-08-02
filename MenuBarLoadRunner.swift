@@ -352,6 +352,23 @@ private enum Tuning {
     // rise through the range.
     static let batteryFloorMilliamps: Double = 500
 
+    // Die temperature is a THIRD normalization category. It is bounded, like a percentage, but it is
+    // not already a 0…1 fraction, so it maps through a fixed floor/ceiling rather than through
+    // ThroughputScaler (which is only ever for unbounded rates). Deliberately absolute rather than
+    // adaptive: ~100 °C is where an Apple Silicon die throttles and 30 °C is a genuinely cold machine,
+    // so a given animation speed means the same temperature on every Mac and on every day. The cost is
+    // that a Mac which cools well never reaches the top of its speed range — measured on an M-series
+    // laptop, idle 40 °C and a sustained all-core load 78 °C, i.e. only the 0.14…0.69 band. Accepted:
+    // an honest scale beats a full one.
+    static let temperatureFloorCelsius: Double = 30
+    static let temperatureCeilingCelsius: Double = 100
+    // Plausibility band for a single sensor. The low end is not a temperature check but a
+    // parked-cluster check: a powered-down core cluster answers 0 (or ≈ -4) instead of declining to
+    // answer, and those belong in neither the max nor the range shown in the menu. The high end
+    // rejects a garbage decode. Doubles as the label field's width ceiling (3 digits).
+    static let temperatureMinPlausibleCelsius: Double = 1
+    static let temperatureMaxPlausibleCelsius: Double = 125
+
     // Memory used-fraction rests high on a healthy Mac (the OS holds most physical RAM as cache/
     // wired), so a linear map from raw used-fraction would drive the animation well up its speed
     // range while the machine is effectively idle. This floor is subtracted from the *used-fraction
@@ -760,6 +777,11 @@ private enum LoadSource: Int, CaseIterable {
     case disk = 4
     case fan = 5
     case battery = 6
+    // "Temperature", never "Thermal": KeepAwakeSuspension.thermal and the throttle row already use
+    // "thermal" for ProcessInfo.thermalState, and a Thermal load source sitting next to a "Thermal
+    // state" line reads as the same thing when it is not — one is a die reading, the other is the OS's
+    // own pressure verdict.
+    case temperature = 7
 
     var key: String {
         switch self {
@@ -770,6 +792,7 @@ private enum LoadSource: Int, CaseIterable {
         case .disk: return "disk"
         case .fan: return "fan"
         case .battery: return "battery"
+        case .temperature: return "temperature"
         }
     }
 
@@ -782,6 +805,7 @@ private enum LoadSource: Int, CaseIterable {
         case .disk: return "Disk"
         case .fan: return "Fan"
         case .battery: return "Battery"
+        case .temperature: return "Temperature"
         }
     }
 
@@ -1788,6 +1812,7 @@ private final class SMCClient {
     private static let selector: UInt32 = 2      // kernel selector for SMC struct calls
     private static let cmdReadKeyInfo: UInt8 = 9
     private static let cmdReadBytes: UInt8 = 5
+    private static let cmdReadIndex: UInt8 = 8   // key at position N of the SMC's own key table
     private static let typeFLT = fourCharCode("flt ")
 
     private var connection: io_connect_t = 0
@@ -1866,6 +1891,57 @@ private final class SMCClient {
         return KeyInfo(key: key, size: info.size, type: info.type)
     }
 
+    // Every "flt " key whose name starts with `prefix`, discovered from the SMC's OWN key table rather
+    // than probed from a guessed candidate list — the key set varies by chip, so a guess cannot tell
+    // "this machine hasn't got that sensor" from "I didn't think of that name". `#KEY` reports the
+    // table size and command 8 reads the key at an index.
+    //
+    // The table is sorted ascending by key, so this binary-searches the prefix's lower bound and scans
+    // forward: ~115 calls (~20 ms) where walking all 3385 entries costs ~600 ms — far too long to spend
+    // at launch inside an availability probe. Sortedness is the one assumption, and it fails SAFE:
+    // every key the scan collects is re-checked against `prefix`, so an unsorted table yields FEWER
+    // sensors (→ the caller reports itself unavailable, like a fanless Mac) and never the wrong ones.
+    func floatKeys(withPrefix prefix: String) -> [(name: String, info: KeyInfo)] {
+        // 4 chars is a whole key — use floatKey(_:). 0 would match the entire table.
+        guard (1...3).contains(prefix.count), ensureOpen(), let total = keyCount() else { return [] }
+        let shift = UInt32(8 * (4 - prefix.count))
+        let low = Self.fourCharCode(prefix) << shift
+        let high = low | ((UInt32(1) << shift) &- 1)
+
+        var lo = 0, hi = total
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            guard let key = keyAtIndex(mid) else { break }
+            if key < low { lo = mid + 1 } else { hi = mid }
+        }
+
+        var result: [(name: String, info: KeyInfo)] = []
+        var index = lo
+        while index < total, let key = keyAtIndex(index), key <= high {
+            index += 1
+            guard Self.keyName(key).hasPrefix(prefix), let info = readKeyInfo(key),
+                  info.type == Self.typeFLT, info.size == 4 else { continue }
+            result.append((Self.keyName(key), KeyInfo(key: key, size: info.size, type: info.type)))
+        }
+        return result
+    }
+
+    // Total number of keys the SMC publishes ("#KEY", a big-endian ui32) — the bound for the search above.
+    private func keyCount() -> Int? {
+        let key = Self.fourCharCode("#KEY")
+        guard let info = readKeyInfo(key),
+              let raw = readBytes(key: key, size: info.size, type: info.type), raw.count >= 4 else { return nil }
+        return Int((UInt32(raw[0]) << 24) | (UInt32(raw[1]) << 16) | (UInt32(raw[2]) << 8) | UInt32(raw[3]))
+    }
+
+    private func keyAtIndex(_ index: Int) -> UInt32? {
+        var input = SMCKeyData()
+        input.data8 = Self.cmdReadIndex
+        input.data32 = UInt32(index)
+        guard let out = smcCall(&input), out.key != 0 else { return nil }
+        return out.key
+    }
+
     func readFloat(_ ki: KeyInfo) -> Float? {
         guard let raw = readBytes(key: ki.key, size: ki.size, type: ki.type), raw.count >= 4 else { return nil }
         // SMC "flt " values are little-endian; both Apple architectures are LE, so a raw copy of
@@ -1896,6 +1972,12 @@ private final class SMCClient {
         var result: UInt32 = 0
         for byte in s.utf8.prefix(4) { result = (result << 8) | UInt32(byte) }
         return result
+    }
+
+    // The inverse, for keys discovered by index rather than named up front.
+    static func keyName(_ key: UInt32) -> String {
+        let bytes = (0..<4).map { UInt8(truncatingIfNeeded: key >> (8 * (3 - $0))) }
+        return String(bytes: bytes, encoding: .ascii) ?? ""
     }
 }
 
@@ -1980,6 +2062,98 @@ private final class FanLoadMonitor {
             result.append(FanKeys(ac: ac, mx: smc.floatKey("F\(i)Mx")))
         }
         return result
+    }
+}
+
+// Die temperature as a 0…1 load — the leading thermal signal, where FanLoadMonitor is the lagging one
+// (the die heats in milliseconds; the fans that answer it ramp over seconds). Reads through the shared
+// SMCClient at the same unprivileged tier as fan RPM: no entitlement, no root, and no io_connect_t of
+// its own. Point read, no warm-up, so sampleUsage() takes no `elapsed:` — like fan and battery, unlike
+// network/disk/swap. `nil`, never a fabricated 0, when nothing readable answers.
+//
+// Three decisions an implementer will otherwise undo:
+//
+//   1. MAX, not average — and that deliberately INVERTS the fan precedent one class up. Averaging is
+//      right for fans (one fan spinning up shouldn't dominate while the rest of the machine is quiet)
+//      and wrong here: throttling responds to the hottest die, and averaging a loaded P-core cluster
+//      against an idle one hides the exact event worth visualising.
+//
+//   2. Max over a CURATED family, never over every temperature key. The five hottest keys on this
+//      machine (Tf06/Tf16/Tf26/Tf36/Tf46, 94–107 °C) are FROZEN CONSTANTS — limits or trip points, not
+//      readings; they did not move by 0.5 °C across a 12s all-core load that moved 245 other sensors. A
+//      naive max over everything would pin the animation at 106.73 °C forever, regardless of load, and
+//      look entirely plausible while doing it. Tp** is the family used here because all 102 of its keys
+//      moved under load. A single sample cannot tell a constant from a reading — the constants sit in
+//      the plausible range and read hottest — so any key added here earns its place by MOVING under
+//      load, not by reading a sane number once.
+//
+//   3. Tpx* preferred over the full Tp** family, for cost. These are the per-cluster maxima: across an
+//      idle → 1-core → 8-core → 16-core → cooldown ramp, max(Tpx*) equalled max over all 102 Tp** keys
+//      in 22 of 22 samples, at 2.3 ms a tick against 20 ms. 20 ms every 2 s is ~1% of a core, which
+//      would roughly triple this app's own CPU — untenable for an indicator whose whole premise is not
+//      adding to the load it visualizes. A chip publishing no Tpx* falls back to the whole family; the
+//      driver is max() either way, so the fallback costs time, not accuracy.
+//
+// Normalization is a THIRD category, neither a bounded percentage nor an unbounded rate: a fixed
+// floor/ceiling map (Tuning.temperatureFloorCelsius…temperatureCeilingCelsius), NOT ThroughputScaler.
+// A deliberate approximation, in the spirit of MemoryLoadMonitor's composite — see those constants for
+// what it costs. No readable sensor → isAvailable false → disabled menu row and a launch fallback to
+// CPU, exactly like fan on a fanless Mac. Expect that on VMs.
+@MainActor
+private final class TemperatureLoadMonitor {
+    // One sensor's current readout, kept for the menu's range line the way FanLoadMonitor keeps perFan.
+    struct SensorReading { let name: String; let celsius: Double }
+    // The hottest sensor's reading — the human-meaningful figure the menu and label show.
+    private(set) var currentCelsius: Double = 0
+    // That same reading mapped to 0…1 — what drives the animation.
+    private(set) var currentLoad: Double = 0
+    private(set) var perSensor: [SensorReading] = []
+    private(set) var hasSample = false
+
+    private let smc = SMCClient.shared
+    private var sensorKeys: [(name: String, info: SMCClient.KeyInfo)] = []
+    private var availabilityChecked = false
+    private var available = false
+
+    var isAvailable: Bool { ensureDiscovered() }
+
+    func sampleUsage() -> Double? {
+        guard ensureDiscovered() else { hasSample = false; return nil }
+        var readings: [SensorReading] = []
+        for sensor in sensorKeys {
+            guard let value = smc.readFloat(sensor.info) else { continue }
+            let celsius = Double(value)
+            // A parked (powered-down) core cluster answers 0 or ≈ -4 rather than declining to answer,
+            // so the plausibility band is what separates "this cluster is cold" from "this cluster is
+            // off". Dropped, not clamped: max() ignores them either way, but the menu's range line
+            // should describe the clusters actually running, not print "-4 °C".
+            guard celsius >= Tuning.temperatureMinPlausibleCelsius,
+                  celsius <= Tuning.temperatureMaxPlausibleCelsius else { continue }
+            readings.append(SensorReading(name: sensor.name, celsius: celsius))
+        }
+        guard let hottest = readings.map(\.celsius).max() else { hasSample = false; return nil }
+        perSensor = readings
+        currentCelsius = hottest
+        let span = Tuning.temperatureCeilingCelsius - Tuning.temperatureFloorCelsius
+        currentLoad = min(max((hottest - Tuning.temperatureFloorCelsius) / span, 0), 1)
+        hasSample = true
+        return currentLoad
+    }
+
+    // Discover this machine's sensor keys once; cache the result. The struct-layout guard that gates
+    // every SMC source lives in SMCClient, so isAvailable failing there disables this one too.
+    private func ensureDiscovered() -> Bool {
+        if availabilityChecked { return available }
+        availabilityChecked = true
+        guard smc.isAvailable else {
+            available = false
+            return false
+        }
+        let family = smc.floatKeys(withPrefix: "Tp")
+        let clusterMaxima = family.filter { $0.name.hasPrefix("Tpx") }
+        sensorKeys = clusterMaxima.isEmpty ? family : clusterMaxima
+        available = !sensorKeys.isEmpty
+        return available
     }
 }
 
@@ -2822,6 +2996,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var diskMonitor = DiskLoadMonitor()
     private var fanMonitor = FanLoadMonitor()
     private var batteryMonitor = BatteryLoadMonitor()
+    private var temperatureMonitor = TemperatureLoadMonitor()
     private var activeLoadSource: LoadSource
     // Multi-source dashboard mode / other-sources disclosure state: when on (expanded), every
     // AVAILABLE reader is sampled each tick (not just the active one) and its live readout is surfaced
@@ -3958,6 +4133,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .disk: return diskMonitor.sampleUsage(elapsed: elapsed)
         case .fan: return fanMonitor.sampleUsage()
         case .battery: return batteryMonitor.sampleUsage()
+        case .temperature: return temperatureMonitor.sampleUsage()
         }
     }
 
@@ -3987,6 +4163,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .disk: return diskMonitor.hasSample
         case .fan: return fanMonitor.hasSample
         case .battery: return batteryMonitor.hasSample
+        case .temperature: return temperatureMonitor.hasSample
         }
     }
 
@@ -4002,6 +4179,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .disk: return diskMonitor.currentLoad
         case .fan: return fanMonitor.currentUtilization
         case .battery: return batteryMonitor.currentLoad
+        case .temperature: return temperatureMonitor.currentLoad
         }
     }
 
@@ -4172,6 +4350,20 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                 stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .battery), MenuTitle.warmingUp)
                 statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring battery load")
             }
+        case .temperature:
+            if temperatureMonitor.hasSample {
+                usageItem.title = temperatureUsageLineText()
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .temperature), cpuStateText(for: temperatureMonitor.currentLoad))
+                statusItem.button?.setAccessibilityLabel(String(
+                    format: "MenuBar Load Runner — temperature %.0f degrees Celsius, %@",
+                    temperatureMonitor.currentCelsius,
+                    cpuStateText(for: temperatureMonitor.currentLoad)
+                ))
+            } else {
+                usageItem.title = MenuTitle.line(LoadSource.temperature.menuTitle, MenuTitle.warmingUp)
+                stateItem.title = MenuTitle.line(MenuTitle.statePrefix(for: .temperature), MenuTitle.warmingUp)
+                statusItem.button?.setAccessibilityLabel("MenuBar Load Runner — measuring temperature")
+            }
         }
 
         if isAutoSpeed {
@@ -4257,6 +4449,20 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             String(format: "Fan %d: %.0f RPM (%.0f%%)", index + 1, reading.rpm, reading.utilization * Tuning.percentScale)
         }
         return segments.joined(separator: " · ")
+    }
+
+    // Temperature line: the hottest sensor (the driver), the spread it was taken from, and how many
+    // sensors answered. Deliberately NOT one segment per sensor the way the fan line does it — that
+    // reads 12 clusters here and up to 102 on the full-family fallback, which would run off the menu.
+    // The range is what the per-fan segments were for: it shows the max isn't a lone outlier.
+    private func temperatureUsageLineText() -> String {
+        var line = String(format: "Temperature: %.0f °C", temperatureMonitor.currentCelsius)
+        let values = temperatureMonitor.perSensor.map(\.celsius)
+        if let coolest = values.min(), let hottest = values.max() {
+            line += String(format: " · P-cores %.0f–%.0f °C", coolest, hottest)
+            line += " · \(values.count) sensor\(values.count == 1 ? "" : "s")"
+        }
+        return line
     }
 
     // Battery line: charge % (the readout) plus the discharge current in amps while on battery — the
@@ -4554,6 +4760,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .disk: return diskMonitor.isAvailable
         case .fan: return fanMonitor.isAvailable
         case .battery: return batteryMonitor.isAvailable
+        case .temperature: return temperatureMonitor.isAvailable
         }
     }
 
@@ -4780,6 +4987,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             return "FAN \(Self.percentField(fanMonitor.currentUtilization))%"
         case .battery:
             return "BAT \(Self.percentField(batteryMonitor.currentChargeFraction))%"
+        case .temperature:
+            // "TMP", not the "TEM" that menuTitle.prefix(3) yields for the warming placeholder above —
+            // same small divergence disk already has (DIS while warming, DSK once reading).
+            return "TMP \(Self.degreeField(temperatureMonitor.currentCelsius))°"
         }
     }
 
@@ -4797,6 +5008,8 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .disk:
             return "DSK R\(Self.diskField(Tuning.labelDiskCeiling * Tuning.bytesPerMiB))"
                 + " W\(Self.diskField(Tuning.labelDiskCeiling * Tuning.bytesPerMiB))"
+        case .temperature:
+            return "TMP \(Self.degreeField(Tuning.temperatureMaxPlausibleCelsius))°"
         }
     }
 
@@ -4813,6 +5026,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
 
     private static func diskField(_ bytesPerSec: Double) -> String {
         labelField(bytesPerSec / Tuning.bytesPerMiB, decimals: 0, ceiling: Tuning.labelDiskCeiling)
+    }
+
+    // Whole degrees Celsius. The plausibility ceiling doubles as the width ceiling — a reading past it
+    // is rejected by the reader, so three digits is a true bound here, not an estimate like the rates'.
+    private static func degreeField(_ celsius: Double) -> String {
+        labelField(celsius, decimals: 0, ceiling: Tuning.temperatureMaxPlausibleCelsius)
     }
 
     // Format one numeric field at a fixed width: the value, left-padded with FIGURE SPACE (U+2007) to
@@ -4931,6 +5150,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         case .battery:
             guard batteryMonitor.hasSample else { return warming }
             return batteryUsageLineText()
+        case .temperature:
+            guard temperatureMonitor.hasSample else { return warming }
+            return temperatureUsageLineText()
         }
     }
 

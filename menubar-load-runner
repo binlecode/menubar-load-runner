@@ -35,8 +35,8 @@ resolve_script_path() {
 print_help() {
   cat <<EOF
 Usage:
-  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
-  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
+  $APP_CMD_NAME [dog-white|dog-black|horse-black|horse-white|chihiro|chihiro-white|chihiro-black|totoro|totoro-group-white|totoro-group-black|totoro-white|totoro-black|/path/to.gif] [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery|temperature>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
+  MENUBAR_LOAD_RUNNER_PATH=/path/to.gif $APP_CMD_NAME [--speed-multiplier <x>] [--load-source <cpu|memory|gpu|network|disk|fan|battery|temperature>] [--show-all-sources] [--label <off|value|text>] [--keep-awake <off|on|duration>] [--battery-threshold <pct|off>] [--no-update-check] [--foreground|--no-detach]
 
 Presets:
   dog-white   Built-in running dog (white)
@@ -54,7 +54,7 @@ Presets:
 
 Options:
   --speed-multiplier <x>     Fixed speed (e.g. 0.5, 1.0, 1.5, 2.0)
-  --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk, fan, battery
+  --load-source <src>        Reader driving the animation: cpu (default), memory, gpu, network, disk, fan, battery, temperature
                              (also via MENUBAR_LOAD_RUNNER_LOAD_SOURCE; unknown/unavailable -> cpu)
   --show-all-sources         Start with the menu's "Other Sources" list expanded, sampling every available
                              reader and showing each as a live row (also via MENUBAR_LOAD_RUNNER_SHOW_ALL=1;

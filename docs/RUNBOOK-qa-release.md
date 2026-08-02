@@ -27,7 +27,7 @@ pmset -g assertions | grep -i display     # the culprit is usually a browser pla
 |---|---|
 | build is warning-clean under `-strict-concurrency=complete` | §1 |
 | CLI parse paths + every in-repo version surface agrees with `AppInfo.version` | §2 |
-| all 7 load sources launch and exit 0, incl. availability fallback | §3 |
+| all 8 load sources launch and exit 0, incl. availability fallback | §3 |
 | label slot: adjacent, constant width, icon never moves | §3c |
 | Keep Awake battery conditions, 5% floor, `--battery-threshold` | §3a |
 | Keep Awake launch arming, window round-trip, saved states that must not return | §3f |
@@ -150,12 +150,14 @@ name** (a stale instance holds the *previous* build's menu), and the status item
       re-warm one tick). `--show-all-sources` starts it expanded.
 - [ ] Each source's readout has the right shape (`GPU: NN%`, `Network: ↓N.N MB/s ↑N.N MB/s`,
       `Disk: read N.N MB/s write N.N MB/s`, `Fan N: NNNN RPM (NN%)` — one ` · `-joined segment per fan,
-      `Battery: NN% · N.N A` on battery / `Battery: NN% · AC` plugged in) and a real load on it speeds
+      `Battery: NN% · N.N A` on battery / `Battery: NN% · AC` plugged in,
+      `Temperature: NN °C · P-cores NN–NN °C · NN sensors` — the range is the whole point of that line,
+      it shows the driving max isn't a lone outlier) and a real load on it speeds
       the animation. The trailing clause is the part worth reading: the amps figure is what drives the
       battery source, the way swap does for memory. Network settles after a burst — no permanent
       max-out, no idle jitter. Loads to hand: `memory_pressure -l` (swap), a download (net),
       `dd if=/dev/zero of=tmp/x bs=1m count=500` (disk — §4 deletes it).
-- [ ] Relaunched with `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk,fan,battery`, those sources
+- [ ] Relaunched with `MENUBAR_LOAD_RUNNER_FORCE_UNAVAILABLE=gpu,network,disk,fan,battery,temperature`, those sources
       are **absent from the Other Sources list** — qa.sh §3 sees only the fallback log line, not the menu.
 - [ ] **Keep Awake ▸ is two sections:** **This Mac** first and unheaded (machine-hold row, then
       `Other Assertions` and its indented rows as that row's evidence), then a disabled **This App**

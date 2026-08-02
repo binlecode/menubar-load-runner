@@ -30,6 +30,29 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-08-02
+
+### Added
+
+- **The animation can now hold still — and does so on its own when macOS asks.** The app has always
+  throttled itself under pressure and paused when hidden, but the one OS signal saying *this user*
+  wants less motion — System Settings → Accessibility → Display → **Reduce Motion** — did nothing,
+  and the only way to calm the icon was to quit. Now that setting freezes the animation live (no
+  relaunch), and a manual **`Settings ▸ Freeze Animation`** toggle reaches the same machinery for
+  screen-sharing or just a quieter menu bar. Frozen means frozen: the game loop stops entirely (zero
+  redraws — cheaper than even the slowest animation) and the icon holds its current frame, no jump.
+  Because the animation's speed *is* the readout, a frozen icon doesn't go silent: with the menu-bar
+  label off, the label slot temporarily shows the live value instead (a custom label is respected,
+  and your saved label choice is untouched — the menu says `off (value while frozen)` so nothing is
+  invisible). The toggle survives a relaunch; the Reduce Motion half is re-read fresh each launch.
+  While the OS setting holds, the menu row reads `Freeze Animation — on via Reduce Motion` and its
+  checkmark keeps tracking your own toggle, which stays editable underneath. Menu-only, like the
+  label position — no new CLI flag.
+- **`MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1`** (debug/test hook): prints the freeze gate, frame cursor,
+  speed, and label-handoff state each 2s tick, so `tests/qa.sh` §3g can assert a frozen launch never
+  animates — the sibling of the `LOG_SLOTS`/`LOG_ASSERTIONS`/`LOG_AWAKE` hooks, for the same
+  no-TCC-grant reason.
+
 ## [1.21.0] - 2026-08-02
 
 ### Fixed

@@ -10,7 +10,7 @@
 #             re-ported copies of the app's logic and were deleted (see §5).
 #   gui       §3 launch lifecycle · §3a Keep Awake battery conditions · §3b settings persistence ·
 #             §3c label slot geometry · §3d other sleep assertions · §3e machine sleep-hold state ·
-#             §3f Keep Awake launch arming · §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
+#             §3f Keep Awake launch arming · §3g freeze animation · §5 reader readouts · §4 error paths. These boot NSApplication + create an NSStatusItem, so
 #             they need an active WindowServer (GUI) session. Fine on a logged-in Mac; best-effort on
 #             hosted runners.
 #   launcher  §6 launcher wrapper: singleton guard, `--precompile`, and the build's safety against a
@@ -436,6 +436,19 @@ bt "garbage type -> launch default"   0.2 $BIN
 grep -q '"keepAwake"' "$SF" \
   && { echo "  PASS [both blocks written after an unreadable file]"; pass=$((pass+1)); } \
   || { echo "  FAIL [both blocks written after an unreadable file]"; fail=$((fail+1)); }
+# Freeze Animation (R17) is the third settings value and the second with no flag at all (menu-only,
+# like the side). What must hold is the round-trip: a seeded true survives the termination rewrite,
+# and a file without the key degrades to false rather than erroring (Optional-field degradation).
+# What the freeze DOES is §3g's subject, not this one's.
+fz(){ desc="$1"; expect="$2"; shift 2
+  MENUBAR_LOAD_RUNNER_STATE_FILE="$SF" MENUBAR_LOAD_RUNNER_EXIT_AFTER=2 "$@" >/dev/null 2>&1; rc=$?
+  got=$(sed -n 's/.*"freezeAnimation" *: *\([a-z]*\).*/\1/p' "$SF" 2>/dev/null)
+  if [ "$rc" = 0 ] && [ "$got" = "$expect" ]; then echo "  PASS [$desc]"; pass=$((pass+1))
+  else echo "  FAIL [$desc] rc=$rc expect=$expect got=${got:-<none>}"; fail=$((fail+1)); fi; }
+printf '{"version":1,"settings":{"freezeAnimation":true}}' > "$SF"
+fz "seeded freeze survives the rewrite"  true  $BIN
+printf '{"version":1,"settings":{"labelMode":"off"}}' > "$SF"
+fz "absent key round-trips to false"     false $BIN
 rm -f "$SF"
 echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
@@ -633,6 +646,64 @@ else
 fi
 rm -f "$PROBE" "$AW"
 echo "  machine sleep-hold state: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
+
+# --- §3g Freeze animation [gui] ---------------------------------------------
+# R17: the frozen icon (game loop stopped, current frame held) and the label handoff, asserted through
+# MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 and driven via the state file — the Settings toggle itself is a
+# menu click no agent can perform (RUNBOOK §3.2, the §3b precedent). The Reduce Motion TRIGGER is
+# deliberately untested: the pref is the machine's, not the test's, and a FORCE hook would change a
+# decision (mocking with extra steps). Everything downstream of the observer is exactly what these
+# cases cover via the manual freeze; the notification→reading wiring is eyes-only, recorded as
+# verification debt in docs/ROADMAP.md.
+section "§3g freeze animation [gui — needs WindowServer]"
+pass=0; fail=0
+FZ="$PWD/tmp/qa-freeze-state.json"
+fk(){ [ "$2" = 1 ] && { echo "  PASS [$1]"; pass=$((pass+1)); } || { echo "  FAIL [$1] $3"; fail=$((fail+1)); }; }
+
+# 1+2. Frozen launch: the driver never starts, the reason is named, ONE frame holds across every tick —
+# and the label slot carries the live reading despite no --label flag (the handoff: speed IS the
+# readout, so a frozen icon with no label would be a load indicator gone silent).
+printf '{"version":1,"settings":{"freezeAnimation":true}}' > "$FZ"
+out=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$FZ" MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 \
+      MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=8 $BIN 2>&1)
+anim=$(echo "$out" | grep '^ANIM')
+fk "frozen launch never starts the driver" \
+   "$([ -n "$anim" ] && ! echo "$anim" | grep -vq 'running=0 freeze=manual' && echo 1 || echo 0)" \
+   "raw:\n$anim"
+frames=$(echo "$anim" | sed -n 's/.*frame=\([0-9]*\).*/\1/p' | sort -u | wc -l | tr -d ' ')
+fk "the frame cursor holds one value across all ticks" \
+   "$([ "${frames:-0}" = 1 ] && echo 1 || echo 0)" "distinct frames=$frames"
+fk "every tick reports the label handoff engaged" \
+   "$([ -n "$anim" ] && ! echo "$anim" | grep -vq 'labelHandoff=1' && echo 1 || echo 0)" "raw:\n$anim"
+lbl=$(echo "$out" | grep '^SLOTS' | tail -1 | sed -n 's/.*label="\(.*\)".*/\1/p')
+fk "the slot carries a live reading with no --label flag" \
+   "$([ -n "$lbl" ] && echo 1 || echo 0)" "slot label empty"
+
+# 3. An explicit label mode is respected, never overridden: same freeze, --label "hi" → no handoff.
+out=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$FZ" MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 \
+      MENUBAR_LOAD_RUNNER_LOG_SLOTS=1 MENUBAR_LOAD_RUNNER_EXIT_AFTER=5 $BIN --label "hi" 2>&1)
+fk "custom label is respected while frozen (no handoff)" \
+   "$(echo "$out" | grep '^ANIM' | tail -1 | grep -q 'labelHandoff=0' \
+      && echo "$out" | grep '^SLOTS' | tail -1 | grep -q 'label="hi"' && echo 1 || echo 0)" \
+   "got: $(echo "$out" | grep -E '^(ANIM|SLOTS)' | tail -2)"
+
+# 4. Running baseline — gated on the machine's own Reduce Motion, which inverts it BY DESIGN: that
+# setting is the user's, not the test's to control (the §3c/§3e shape — NOTE, never a false FAIL).
+rm -f "$FZ"
+if [ "$(defaults read com.apple.universalaccess reduceMotion 2>/dev/null || echo 0)" = 1 ]; then
+  echo "  NOTE [running baseline unverifiable: this machine has Reduce Motion ON, so an unfrozen run"
+  echo "       correctly freezes anyway — the frozen cases above still hold]"
+else
+  anim=$(MENUBAR_LOAD_RUNNER_STATE_FILE="$FZ" MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 \
+         MENUBAR_LOAD_RUNNER_EXIT_AFTER=8 $BIN 2>&1 | grep '^ANIM')
+  frames=$(echo "$anim" | sed -n 's/.*frame=\([0-9]*\).*/\1/p' | sort -u | wc -l | tr -d ' ')
+  fk "unfrozen baseline runs and the frame advances" \
+     "$([ -n "$anim" ] && ! echo "$anim" | grep -vq 'running=1 freeze=none' \
+        && [ "${frames:-0}" -ge 2 ] && echo 1 || echo 0)" \
+     "distinct frames=$frames raw:\n$anim"
+fi
+rm -f "$FZ"
+echo "  freeze animation: passes=$pass fails=$fail"; total_fail=$((total_fail+fail))
 
 # --- §4 Error paths [gui] --------------------------------------------------
 section "§4 error paths (fast, no modal) [gui — needs WindowServer]"

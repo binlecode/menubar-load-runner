@@ -10,7 +10,7 @@ import QuartzCore
 // Human-facing app version (semver). Surfaced in --help and the About dialog, and the anchor for
 // CHANGELOG.md releases. Bump this together with a new CHANGELOG entry and git tag.
 private enum AppInfo {
-    static let version = "1.21.0"
+    static let version = "1.22.0"
     static let name = "MenuBar Load Runner"
     static let tagline = "An animated GIF in the macOS menu bar, its playback speed driven by live system load."
     static let copyright = "© 2026 Bin Le"
@@ -722,6 +722,13 @@ private enum MenuTitle {
     static func labelCustomItem(max: Int) -> String { "Custom Text… (max \(max))" }
     static let labelPositionHeader = "Position"
 
+    // Settings ▸ Freeze Animation. "Freeze", not "Pause": Keep Awake already uses "(paused)" for a
+    // condition-suspend, and the collision would make one word mean two mechanisms. The second form is
+    // the same row while the OS setting holds — the checkmark keeps showing intent, the title names
+    // the condition.
+    static let freezeAnimation = "Freeze Animation"
+    static let freezeAnimationViaReduceMotion = "Freeze Animation — on via Reduce Motion"
+
     // Read-only readouts.
     static let widthPrefix = "Width"
     static let placeholderValue = "--"
@@ -1143,6 +1150,14 @@ private enum KeepAwakeSuspension: Equatable {
     }
 }
 
+// Why the animation is frozen, when it is. A reason rather than a Bool for the same cause as
+// KeepAwakeSuspension: the two triggers have different owners (the OS vs the user), different
+// persistence (a reading is never persisted; intent always is), and the menu reports which one holds.
+private enum AnimationFreeze: Equatable {
+    case reduceMotion   // NSWorkspace.accessibilityDisplayShouldReduceMotion — the OS speaks for the user
+    case manual         // the Settings ▸ Freeze Animation toggle
+}
+
 private struct Config {
     enum ParseResult {
         case config(Config)
@@ -1452,6 +1467,10 @@ private struct PersistedState: Codable {
         // is distinct from absent; anything out of band is pulled in by Tuning.clampedBatteryThreshold
         // on the way back in, since a state file is one more untrusted entry point.
         var batteryThreshold: Double?
+        // Settings ▸ Freeze Animation — the MANUAL freeze intent only. Menu-only like labelSide, so it
+        // restores unconditionally. The Reduce Motion half is never persisted: it's an OS reading with
+        // its own owner, re-read fresh at every launch.
+        var freezeAnimation: Bool?
     }
     var version: Int
     var keepAwake: KeepAwake?
@@ -3040,6 +3059,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var batteryThresholdItems: [NSMenuItem] = []
     private var batteryThresholdCustomItem: NSMenuItem!
     private static let batteryThresholdNeverTag = -1
+    // Settings ▸ Freeze Animation. Checkmark = manualFreeze (intent); the title names the condition
+    // (" — on via Reduce Motion") while systemReduceMotion holds — see refreshFreezeAnimationState.
+    private var freezeAnimationMenuItem: NSMenuItem!
     private var startAtLoginMenuItem: NSMenuItem!
     private var presetMenuItems: [NSMenuItem] = []
     // In-app update check. `latestKnownVersion` is the newest release tag found on origin (nil until a
@@ -3124,6 +3146,25 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private var powerStateObserver: NSObjectProtocol?
     private var thermalStateObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
+
+    // Freeze Animation (R17): stop the frame driver, hold the current frame, hand the reading to the
+    // label. Two triggers over one mechanism.
+    // Intent — the Settings ▸ Freeze Animation toggle. Persisted (settings.freezeAnimation), restored
+    // unconditionally by applyLaunchFreezeState(); mutated only by toggleFreezeAnimation.
+    private var manualFreeze = false
+    // Cached OS reading — event-driven via accessibilityDisplayOptionsDidChangeNotification, like
+    // memoryPressureLevel (no polling; re-read on the notification). Never persisted: it's a reading.
+    private var systemReduceMotion = false
+    // The one derivation every consumer reads. reduceMotion outranks manual for reporting only —
+    // if both hold, the OS-imposed one is the one worth naming; behavior is identical either way.
+    private var animationFreeze: AnimationFreeze? {
+        if systemReduceMotion { return .reduceMotion }
+        if manualFreeze { return .manual }
+        return nil
+    }
+    // Lives on NSWorkspace.shared.notificationCenter, NOT NotificationCenter.default — teardown must
+    // remove it from that center, so it stays out of applicationWillTerminate's default-center loop.
+    private var reduceMotionObserver: NSObjectProtocol?
 
     // Keep Awake. Intent is restored at launch from --keep-awake or the state file (see
     // applyLaunchKeepAwakeState) and saved on every change to it; the actual caffeinate process is
@@ -3484,6 +3525,16 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         settingsSubmenu.addItem(batteryThresholdMenuItem)
 
         settingsSubmenu.addItem(NSMenuItem.separator())
+        // Plain toggles below the radio-group submenus. Freeze Animation is a standing preference like
+        // Start at Login (persists, outlives a relaunch), hence Settings and not the root — see R17.
+        freezeAnimationMenuItem = NSMenuItem(
+            title: MenuTitle.freezeAnimation,
+            action: #selector(toggleFreezeAnimation(_:)),
+            keyEquivalent: ""
+        )
+        freezeAnimationMenuItem.target = self   // nested — infoMenu's blanket target pass never reaches here
+        useSelectionMark(freezeAnimationMenuItem)
+        settingsSubmenu.addItem(freezeAnimationMenuItem)
         startAtLoginMenuItem = NSMenuItem(
             title: "Start at Login",
             action: #selector(toggleStartAtLogin(_:)),
@@ -3644,12 +3695,14 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // Root items only — anything nested in a submenu sets its own target at construction.
         infoMenu.items.forEach { $0.target = self }
         refreshStartAtLoginState()
+        refreshFreezeAnimationState()
         statusItem.menu = infoMenu
         // Both label slots share the animation's dropdown, so clicking the number opens the same menu.
         labelItemLeft.menu = infoMenu
         labelItemRight.menu = infoMenu
         refreshPresetSelectionState()
         refreshWidthInfo()
+        applyLaunchFreezeState()   // before the label pass below: a frozen launch sizes the handoff slot with it
         applyLaunchLabelState()   // resolve --label vs. the saved mode/side BEFORE sizing the slots
         refreshLabelSelectionState()
         applyLabelMode()   // size the live slot now if launched with --label value / custom text
@@ -3695,7 +3748,9 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         // which honestly reads "warming up..." until it has two samples — an unsampled assertion list
         // would render `none`, a wrong answer rather than an absent one.
         sampleOtherAssertions(now: ProcessInfo.processInfo.systemUptime)
-        startGameLoop()
+        // Through the freeze-aware gate, not startGameLoop() directly: a launch under Reduce Motion or
+        // with a saved manual freeze must never animate a few frames before the first sync.
+        syncGameLoopRunning()
         refreshMenuMetrics()
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -3726,6 +3781,24 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.conditionsDidChange() }
+        }
+
+        // Reduce Motion — the OS-side freeze trigger. Lives on the WORKSPACE center (not
+        // NotificationCenter.default, so teardown is separate too). The notification fires for every
+        // accessibility display option (contrast, transparency, …), hence the guard: only a change in
+        // the one reading we cache may churn freezeDidChange().
+        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let reading = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                guard reading != self.systemReduceMotion else { return }
+                self.systemReduceMotion = reading
+                self.freezeDidChange()
+            }
         }
 
         // Memory pressure is the third self-throttle input alongside low-power/thermal, but its
@@ -3787,6 +3860,12 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             if let observer {
                 NotificationCenter.default.removeObserver(observer)
             }
+        }
+        // Registered on the workspace center, so it must be removed from that center — the default-
+        // center loop above would silently fail to release it.
+        if let reduceMotionObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+            self.reduceMotionObserver = nil
         }
         // Dispatch source: cancel() (not removeObserver) — its own lifecycle.
         memoryPressureSource?.cancel()
@@ -4236,6 +4315,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
             updateKeepAwakeBar()
         }
         logAwakeHoldIfRequested()
+        logAnimationIfRequested()
 
         refreshMenuMetrics()
         // Keep Awake's countdown is the one selection-state row that changes on its own, so it refreshes
@@ -4320,6 +4400,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         refreshKeepAwakeSelectionState()
         refreshUpdateStatus()
         refreshStartAtLoginState()
+        refreshFreezeAnimationState()
         startKeepAwakeCountdownTicker()
     }
 
@@ -4876,6 +4957,26 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
               + " tint=\(tint) row=\"\(hold.rowText)\"\n", stderr)
     }
 
+    // Debug/test hook: MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1, sibling to LOG_SLOTS/LOG_ASSERTIONS/
+    // LOG_AWAKE and there for the same no-TCC-grant reason: whether the icon is animating is otherwise
+    // only visible to a screenshot (Screen Recording) or an eyeball. Prints the DERIVED gate plus the
+    // raw frame cursor, so a test asserts both the decision and its effect (frame stops moving).
+    private let logAnimation = ProcessInfo.processInfo.environment["MENUBAR_LOAD_RUNNER_LOG_ANIMATION"] == "1"
+
+    private func logAnimationIfRequested() {
+        guard logAnimation else { return }
+        let freeze: String
+        switch animationFreeze {
+        case .reduceMotion: freeze = "reduceMotion"
+        case .manual:       freeze = "manual"
+        case nil:           freeze = "none"
+        }
+        let running = (displayLink != nil || fallbackTimer != nil) ? 1 : 0
+        let handoff = (effectiveLabelMode != labelMode) ? 1 : 0
+        fputs("ANIM running=\(running) freeze=\(freeze) frame=\(frameIndex) "
+              + String(format: "speed=%.2f", speedMultiplier) + " labelHandoff=\(handoff)\n", stderr)
+    }
+
     // Whether a source's reader can produce a value on this machine. CPU/memory are always available
     // (core Mach/sysctl); gpu/network/disk defer to their monitor's probe. Availability is static, so
     // an unavailable source is disabled in the menu and, if requested at launch, falls back to CPU —
@@ -4948,7 +5049,10 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private func refreshLabelSelectionState() {
         switch labelMode {
         case .off:
-            labelMenuItem.title = MenuTitle.label(MenuTitle.labelOff)
+            // An invisible handoff override would violate the never-silent ethos; one suffix keeps the
+            // menu honest about why the slot shows a value while the user's choice is off.
+            let suffix = (effectiveLabelMode == .value) ? " (value while frozen)" : ""
+            labelMenuItem.title = MenuTitle.label(MenuTitle.labelOff + suffix)
         case .value:
             labelMenuItem.title = MenuTitle.label(MenuTitle.labelValueItem.lowercased())
         case .custom(let text):
@@ -5008,10 +5112,18 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // text at its reserved width, the other is zeroed (~16pt, not 0 — see labelItemLeft). Nothing is
     // created, destroyed, hidden or shown: slot order is creation order, and both items must stay
     // visible to keep theirs.
+    // What the label SLOT renders, as opposed to what the user chose (labelMode, which the menu marks
+    // and persistState read). Differs only while frozen with the label off: a frozen icon carries no
+    // reading, so the slot borrows .value rather than letting the indicator go silent. Memory-only —
+    // the persisted mode is untouched, and .custom is respected (that text was an explicit choice).
+    private var effectiveLabelMode: MenuBarLabel {
+        (animationFreeze != nil && labelMode == .off) ? .value : labelMode
+    }
+
     private func applyLabelMode() {
         guard let live = activeLabelItem, let left = labelItemLeft, let right = labelItemRight else { return }
         (live === left ? right : left).length = 0
-        guard labelMode != .off else {
+        guard effectiveLabelMode != .off else {
             live.length = 0
             return
         }
@@ -5032,7 +5144,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     // where the width moves at all, and a wrong-looking number is worse than a rare nudge.
     private func labelSlotWidth(for text: String) -> CGFloat {
         let reserved: String
-        switch labelMode {
+        switch effectiveLabelMode {
         case .off:
             return 0
         case .value:
@@ -5056,7 +5168,7 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
     private func updateValueLabel() {
         guard let item = activeLabelItem, let button = item.button else { return }
         let text: String
-        switch labelMode {
+        switch effectiveLabelMode {
         case .off:
             return
         case .value:
@@ -5371,10 +5483,20 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
                     labelMode: labelMode.persistedMode,
                     labelCustomText: labelMode.persistedCustomText,
                     labelSide: labelSide.rawValue,
-                    batteryThreshold: keepAwakeBatteryThreshold
+                    batteryThreshold: keepAwakeBatteryThreshold,
+                    freezeAnimation: manualFreeze
                 )
             )
         )
+    }
+
+    // Launch-time freeze. Menu-only like the label side, so it restores unconditionally from the
+    // settings block — no flag exists to defer to. The OS reading is taken here too, so a launch under
+    // Reduce Motion (or with a saved manual freeze) never animates before the first sync: this runs
+    // before the label pass (handoff slot sizing) and before syncGameLoopRunning() ever starts a driver.
+    private func applyLaunchFreezeState() {
+        manualFreeze = StateStore.load()?.settings?.freezeAnimation ?? false
+        systemReduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     // Launch-time label mode, the same precedence shape as applyLaunchKeepAwakeState: an explicit
@@ -5695,6 +5817,34 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         labelSide = side
         applyLabelMode()
         refreshLabelSelectionState()
+        persistState()
+    }
+
+    // Everything that must react when the effective freeze changes, from either trigger — the
+    // conditionsDidChange() shape. Persisting is NOT here: the observer path is a reading, not intent,
+    // and persistState() stays gesture-only.
+    private func freezeDidChange() {
+        syncGameLoopRunning()
+        applyLabelMode()                  // engage/release the label handoff (resizes the slot)
+        refreshFreezeAnimationState()
+        refreshLabelSelectionState()      // parent readout may gain/lose the handoff suffix
+    }
+
+    // Checkmark is INTENT (manualFreeze only); the title names the CONDITION while Reduce Motion
+    // holds. The row stays enabled under system RM — intent must stay editable while a condition
+    // holds (the Keep Awake isEnabled-vs-suspension split), or a stale manual freeze gets trapped
+    // behind an OS setting.
+    private func refreshFreezeAnimationState() {
+        freezeAnimationMenuItem?.state = manualFreeze ? .on : .off
+        freezeAnimationMenuItem?.title = systemReduceMotion
+            ? MenuTitle.freezeAnimationViaReduceMotion
+            : MenuTitle.freezeAnimation
+    }
+
+    // The one mutating gesture, and the only persistState() call site this feature adds.
+    @objc private func toggleFreezeAnimation(_ sender: NSMenuItem) {
+        manualFreeze.toggle()
+        freezeDidChange()
         persistState()
     }
 
@@ -6087,19 +6237,31 @@ private final class MenuBarLoadRunnerApp: NSObject, NSApplicationDelegate, NSMen
         sleepPreventer.isEnabled && !sleepPreventer.isRunning
     }
 
-    // Pause the game loop while the status item is fully occluded, resume when it
-    // becomes visible again. On resume startGameLoop() re-syncs timing, so the
-    // animation picks up from the current frame rather than replaying skipped ones.
-    private func updateAnimationForOcclusion() {
-        guard let window = statusItem.button?.window else { return }
-        if window.occlusionState.contains(.visible) {
-            if displayLink == nil, fallbackTimer == nil {
-                startGameLoop()
-            }
+    // The one place that decides whether the frame driver runs. Total over both inputs (occlusion,
+    // freeze) so no caller can resume past a condition it didn't check — the occlusion path used to
+    // start the loop blindly on visibility, which a freeze must survive. On resume startGameLoop()
+    // re-syncs timing, so the animation picks up from the current frame rather than replaying skipped
+    // ones — identical for an occlusion resume and an unfreeze. On freeze the last advance already
+    // drew the current frame, so no renderCurrentFrame() is needed either way.
+    private func syncGameLoopRunning() {
+        let occluded: Bool
+        if let window = statusItem.button?.window {
+            occluded = !window.occlusionState.contains(.visible)
+        } else {
+            occluded = false   // no window yet (early launch) — matches the old unconditional start
+        }
+        let shouldRun = !occluded && animationFreeze == nil
+        if shouldRun {
+            if displayLink == nil, fallbackTimer == nil { startGameLoop() }
         } else {
             stopGameLoop()
         }
     }
+
+    // Pause the game loop while the status item is fully occluded, resume when it becomes visible
+    // again. Only ever stops in response to a positive occlusion event (no window reads as visible
+    // above), so a never-firing notification leaves animation running — no freeze risk.
+    private func updateAnimationForOcclusion() { syncGameLoopRunning() }
 
     // Drives frame advancement off the display's refresh signal via CADisplayLink
     // (macOS 14+), so ticks are vsync-aligned and follow the status item's screen

@@ -1,7 +1,7 @@
 # ROADMAP
 
 The product tracker: the strategy lineage that got the app here, what is open on that path, what was
-declined, known limits, and verification debt. Created 2026-07-26; current as of v1.21.0.
+declined, known limits, and verification debt. Created 2026-07-26; current as of v1.22.0.
 
 Items are `R<n>`, assigned once, never reused. **P1** user-visible defect or silent failure · **P2**
 real capability gap · **P3** nice to have · **P4** parity for its own sake. Nothing here is a
@@ -35,8 +35,8 @@ self-restraint — it only ever reads the system, and the only thing it throttle
 6. **v1.20 — the sensor tier.** A shared `SMCClient` opened fan, then die temperature — the family
    of hardware readings the app can keep growing through without privileges.
 
-The Open items sit on the same arc: R17 points the self-restraint ethos at the animation itself;
-R18 closes the loop on v1.21's self-update investment; R9 extends preset identity beyond the repo;
+The Open items sit on the same arc: R18 closes the loop on v1.21's self-update investment;
+R9 extends preset identity beyond the repo;
 R10 is the next sensor tier and the first to need a private API — which is exactly why it waits;
 R8 is parity only.
 
@@ -46,7 +46,6 @@ Ordered by ROI, highest first — value against cost, not just the priority band
 
 | ID | Item | Pri | Blocked by |
 |---|---|---|---|
-| R17 | **Ignores Reduce Motion, and no manual static mode.** `NSWorkspace.accessibilityDisplayShouldReduceMotion` is unread — the app self-throttles under pressure and pauses when occluded, but the one OS signal saying *this user* needs less motion does nothing, and the only way to calm the icon is to quit. A manual pause toggle covers the screen-sharing case with the same machinery. Catch for the implementer: speed **is** the readout, so a frozen icon should hand the value to the label rather than go silent; the trigger is a user preference, not visibility, so it composes with (not replaces) `updateAnimationForOcclusion`. | P2 | — |
 | R18 | **Update discovery is once-per-launch.** The passive probe fires only from `applicationDidFinishLaunching` (a deliberate MVP cut, per the comment at the call site), so a start-at-login instance running for weeks never learns a release exists — the population most likely to be stale is the one the probe never reaches. `startUpdateProbe(userInitiated: false)` is already fail-silent and re-entrancy-guarded (`updatePhase`), so a periodic re-fire reuses everything. | P3 | — |
 | R9 | **Preset art is repo-only** (`gifs/presets.json`); no user art directory, no menu-bar highlight toggle. A custom GIF works per-launch only. | P4 | — |
 | R10 | **GPU power / ANE / package power readers.** The one tier needing a private, unheadered API, which every current reader avoids. Also the first needing a long-lived subscription rather than a point read — its own design pass, not an add-a-reader task. Assessed 2026-08-02: low ROI — of the three readings only ANE is a genuinely new signal (GPU power tracks the utilization reader; package power correlates with CPU/temperature, and battery mA already shows whole-system draw), against a permanent private-API maintenance surface and per-chip verification debt. Waits for a concrete user report wanting ANE/power visibility. | P4 | — |
@@ -91,6 +90,7 @@ the behavior being missed.
 | `SMCClient` holds exactly one `io_connect_t` | **Structural only** — IOKit connections aren't visible to `lsof`/`ps`, and counting `IOServiceOpen` calls needs dtrace (root + SIP off), so *exactly one* rests on the code's shape: one `static let shared`, one `openSMC()` call site, one write to `connection`. The weaker sharing-works claim **is** covered: fan and temperature driven together in one process, both correct (2026-08-01). Don't upgrade that into connection-counting, and don't "cover" the remainder with a re-ported copy of the client. |
 | Temperature reader — three dark spots | (1) `Tpx*`-are-cluster-maxima verified on **one chip only** — re-run the ramp comparison on any new hardware; a wrong chip silently under-reads and no in-process sample can tell. (2) The all-clusters-parked branch (v1.20.1) has **no functional check and none is available** — hardware state, and forcing it needs a decision-changing hook, which is barred; reachable, not theoretical. (3) The map above ~78 °C is exercised by arithmetic only — the test machine peaks there. Don't cover any of these with a re-ported copy, and don't make the map adaptive. |
 | Thermal pause rendering | No way to force a thermal state. The battery reasons share the code path and are covered by `tests/qa.sh` §3a; only the thermal *trigger* is untested. |
+| Reduce Motion trigger (R17) | **No functional check.** The pref is the machine's, not the test's; forcing it needs a decision-changing hook, which is barred (`FORCE_BATTERY` got in only because a desktop has *no* battery to read — every Mac has a real, readable Reduce Motion setting). Everything downstream of the observer (freeze rendering, label handoff, persistence) is covered by `qa.sh` §3g via the manual toggle; only the notification→reading wiring is eyes-only (RUNBOOK §3.2). |
 | Label slot order is "creation order", assumed not guaranteed | Confirmed on a roomy bar 2026-08-01 (§3c passed all six cases). The notched built-in display inverts the order **deterministically** (3/3, modified and unmodified binary) — environmental, not a code change, and contiguous-but-wrong, so §3c **FAILs** there: read an adjacency FAIL against which screen the bar was on before believing it. Deliberately not softened into a NOTE, or a real ordering regression hides behind it. Lead if it recurs: `NSStatusItem.autosaveName` is never set, and ⌘-drag positions persist against it — probe that first. |
 
 ## Release hygiene

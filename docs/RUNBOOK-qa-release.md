@@ -38,9 +38,7 @@ pmset -g assertions | grep -i display     # the culprit is usually a browser pla
 | every reader's live readout: shape, range, reserved width | §5 |
 | launcher compile-on-run, arg forwarding, singleton | §6 |
 
-**Not gates:** `tests/install-smoke.sh` (install/uninstall round-trip in a `tmp/` sandbox) and
-`tests/clamshell-sleep-check.sh` (a *diagnostic* — host power behavior varies per machine, so there is
-nothing to assert; needs a quiet machine and a physical lid).
+**Not a gate:** `tests/install-smoke.sh` (install/uninstall round-trip in a `tmp/` sandbox).
 
 Known gaps live in `ROADMAP.md` § Verification debt — check it rather than assuming this table is total.
 `ThroughputScaler`'s hysteresis/headroom is the notable one: §5 only proves its output stays in range.
@@ -201,8 +199,14 @@ name** (a stale instance holds the *previous* build's menu), and the status item
       **19 numbered rows, 6 of them separators** — don't read the dump's 19 as the expanded 19.
       `Width` is read-only, **About** shows the version, **Exit** works.
 - [ ] **Update check + restart** (needs a real newer tag, so check it on the *previous* version's
-      binary): `Check for Updates…` becomes `Update available: vX.Y.Z`; the success alert's **Restart**
-      quits and comes back on the new version within seconds, with exactly one instance afterwards. Switch
+      binary): `Check for Updates…` becomes `Update available: vX.Y.Z`. After confirming, the app
+      **keeps running** while it pulls and compiles — reopen the menu and that row reads
+      `Building vX.Y.Z…`. Only then does the success alert appear, and its **Restart** comes back
+      within a second or two, with exactly one instance afterwards. **Both halves matter:** the build
+      belongs in the visible phase, and a restart that instead sits on a blank menu bar for a minute
+      means the precompile didn't happen (v1.20.1 and earlier shipped exactly that). To exercise the
+      slow path deliberately, `rm -rf "$(getconf DARWIN_USER_CACHE_DIR)/clang/ModuleCache"` first — the
+      *build* should then take ~30s, and the restart still shouldn't. Switch
       the preset and source first — a **detached** run carries them over on the re-exec, a **LaunchAgent**
       correctly resets to the plist's baked args. Under `--foreground` there must be **no** Restart button.
       `--no-update-check` removes the check entirely.

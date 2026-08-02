@@ -29,10 +29,13 @@ LAUNCHER="$REPO_DIR/menubar-load-runner"
 
 [ -x "$LAUNCHER" ] || { echo "error: launcher not found or not executable: $LAUNCHER" >&2; exit 1; }
 
-# Best-effort pre-build so login start doesn't depend on swiftc being on launchd's PATH.
+# Best-effort pre-build so login start doesn't depend on swiftc being on launchd's PATH. Through the
+# launcher's --precompile, which owns the build command — and which renames the new binary into place
+# rather than writing over it, so a reinstall while an instance is running can't corrupt the process
+# that is paging out of it.
 if command -v swiftc >/dev/null 2>&1; then
   echo "Pre-building binary…"
-  swiftc -O -strict-concurrency=complete "$REPO_DIR/MenuBarLoadRunner.swift" -o "$REPO_DIR/MenuBarLoadRunner" \
+  "$LAUNCHER" --precompile \
     || echo "warn: pre-build failed; login start will fall back to on-demand compile" >&2
 fi
 

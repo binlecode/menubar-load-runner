@@ -1,4 +1,7 @@
 MenuBarLoadRunner
+# The launcher's build temp, renamed over the binary on success. Listed explicitly — a
+# `MenuBarLoadRunner*` glob would swallow MenuBarLoadRunner.swift, the only source of truth.
+MenuBarLoadRunner.new
 tmp/
 .wrangler/
 .claude/settings.local.json

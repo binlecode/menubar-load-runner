@@ -30,6 +30,26 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-08-01
+
+### Fixed
+
+- **The temperature source could claim it had no reading while it was visibly driving the
+  animation.** Caught by hand in the release's own menu walk: the dashboard showed
+  `Temperature: warming up...` on one row and `Speed Multiplier (auto: Temperature): 1.74x` two rows
+  below it, after minutes of correct readings. The cause is a distinction 1.20.0 failed to make. A
+  powered-down core cluster answers the sensor read with `0` rather than declining it, and those get
+  filtered out so the menu doesn't print `-4 °C`; but on a tick where *every* cluster happens to be
+  parked, the filter emptied the whole set and the reader reported that as **missing data**. It
+  isn't — it is a reading of *idle*. Only a total read failure (the SMC going away mid-run) is
+  missing data, and the two are now separate: an all-parked tick reports an idle load and the menu
+  says `Temperature: ≤30 °C · every core cluster parked` rather than inventing a measurement.
+
+  Rare — it did not recur in 45 sampled ticks or three targeted attempts to reproduce it — and
+  cosmetic when it fired, since the animation simply held its last speed. Recorded in
+  `docs/ROADMAP.md` § Verification debt, because the parked branch cannot be reached on demand: the
+  only hook that would force it is one that changes a decision, which this repo's testing rules bar.
+
 ## [1.20.0] - 2026-08-01
 
 The eighth load source, and the first one that reads how hot the machine is rather than how busy.

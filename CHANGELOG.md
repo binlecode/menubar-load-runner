@@ -30,6 +30,10 @@ of the public API and may change in any release.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-08-01
+
+The eighth load source, and the first one that reads how hot the machine is rather than how busy.
+
 ### Added
 
 - **An eighth load source: die temperature** (`--load-source temperature`, or pick **Temperature**

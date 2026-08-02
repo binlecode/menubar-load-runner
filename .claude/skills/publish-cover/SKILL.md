@@ -61,12 +61,32 @@ project name to avoid collisions.
 ```bash
 URL=https://menubar-load-runner.pages.dev
 curl -sSI "$URL" | head -1                                   # expect: HTTP/2 200
+# Badge, retried: the edge can serve the PREVIOUS deploy for a few seconds after a successful
+# upload, so one fetch showing the old version is not a failed deploy (see below).
+for i in 1 2 3; do curl -sS "$URL" | grep -oE 'class="badge">v[0-9.]+'; sleep 3; done
 grep -oE 'gifs/[A-Za-z0-9._-]+\.gif' tmp/cover-dist/index.html | sort -u \
   | while read -r g; do printf '%s ' "$g"; curl -sSo /dev/null -w '%{http_code}\n' "$URL/$g"; done
 open "$URL"                                                  # eyeball layout + GIF smoothness
 ```
 
 All `200`s and a page matching the local bundle = done.
+
+**A single stale fetch is not a failed deploy — don't redeploy on it.** Observed 2026-08-01 on the
+v1.20.1 publish: wrangler reported `Deployment complete`, and the very next `curl` of the production
+URL returned the *previous* release's badge. It was an edge cache; a cache-busted request served the
+new one immediately and plain requests caught up within seconds. This matters because it is the
+**mirror** of the failure §3 exists to catch — the check is here to stop a stale page passing as
+current, so a false alarm in the other direction is exactly what tempts someone to disable it. Settle
+which one you have before touching anything:
+
+```bash
+curl -sS "https://<deployment-hash>.menubar-load-runner.pages.dev" | grep -oE 'class="badge">v[0-9.]+'
+curl -sS -H 'Cache-Control: no-cache' "$URL?cb=$RANDOM"        | grep -oE 'class="badge">v[0-9.]+'
+```
+
+The deployment-specific URL wrangler prints is served straight from that upload, so it proves what
+was actually shipped. New badge there + old badge on production = cache, wait it out. **Old badge on
+the deployment URL = a genuinely bad bundle** — rebuild (§1), don't just redeploy.
 
 ## Notes
 

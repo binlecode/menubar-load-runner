@@ -38,7 +38,7 @@ Assembles `tmp/cover-dist/` and self-scores: path rewrite (`../gifs/`→`gifs/`)
 paths, self-contained assets (no broken `src`), outbound links (expect only the repo URL), and prints
 the version badge. Exits non-zero on any failure. Optionally eyeball it: `open tmp/cover-dist/index.html`.
 
-**Version badge:** `docs/cover.html` carries a footer badge (e.g. `v1.7.1`) that is **not** covered by
+**Version badge:** `docs/cover.html` carries a footer badge (`vX.Y.Z`) that is **not** covered by
 the QA version-parity check, so it drifts silently (it has lagged a release before). Bump it in
 `docs/cover.html` when you cut a release, rebuild, and redeploy so the public page matches the shipped
 version. The script prints the badge it bundled — confirm it matches.
@@ -71,13 +71,11 @@ open "$URL"                                                  # eyeball layout + 
 
 All `200`s and a page matching the local bundle = done.
 
-**A single stale fetch is not a failed deploy — don't redeploy on it.** Observed 2026-08-01 on the
-v1.20.1 publish: wrangler reported `Deployment complete`, and the very next `curl` of the production
-URL returned the *previous* release's badge. It was an edge cache; a cache-busted request served the
-new one immediately and plain requests caught up within seconds. This matters because it is the
-**mirror** of the failure §3 exists to catch — the check is here to stop a stale page passing as
-current, so a false alarm in the other direction is exactly what tempts someone to disable it. Settle
-which one you have before touching anything:
+**A single stale fetch is not a failed deploy — don't redeploy on it.** The edge can keep serving the
+previous deploy for a few seconds after wrangler reports `Deployment complete`, so one fetch showing
+the old badge proves nothing. This is the **mirror** of the failure §3 exists to catch: the check is
+here to stop a stale page passing as current, so a false alarm the other way is what tempts someone
+to stop trusting it. Settle which case you have before touching anything:
 
 ```bash
 curl -sS "https://<deployment-hash>.menubar-load-runner.pages.dev" | grep -oE 'class="badge">v[0-9.]+'

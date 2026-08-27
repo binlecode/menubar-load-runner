@@ -159,8 +159,10 @@ for changing the baked-in args:
 ## Built-in presets
 
 > The bundled art is **third-party sample content, not licensed with this project** — the Totoro and
-> Chihiro presets are © Studio Ghibli. See [Assets & attribution](#assets--attribution) before
-> forking, packaging, or redistributing; [any GIF of your own](#use-a-custom-gif) works just as well.
+> Chihiro presets are © Studio Ghibli, sourced from public internet pages and carried for **research
+> and educational** demonstration in an open-source, non-commercial app. See
+> [Assets & attribution](#assets--attribution) before forking, packaging, or redistributing;
+> [any GIF of your own](#use-a-custom-gif) works just as well.
 
 ```bash
 # Default
@@ -559,18 +561,23 @@ window over CLI flags, **zoomies** offers one.
 
 ## License
 
-Source code: [MIT](LICENSE.md) © 2026 Bin Le. The bundled preset GIFs in `gifs/` are **not** covered
-by the MIT license — see Assets & attribution below.
+Source code: **open source under the [MIT license](LICENSE.md)** © 2026 Bin Le — free to use, modify,
+and redistribute. The bundled preset GIFs in `gifs/` are **not** ours and **not** covered by that
+license; they are public-internet artwork carried for research and educational demonstration only —
+see Assets & attribution below.
 
 ## Assets & attribution
 
-> **The bundled preset GIFs are not this project's to license, and the MIT license does not cover
-> them.** They are third-party artwork collected from publicly available internet sources (e.g. Giphy,
-> Pinterest), included **only** as sample art so the app has something to animate out of the box. No
-> ownership is claimed, no rights are granted to you over them, and **no permission to redistribute
-> them is given or implied** — if you fork, package, or mirror this project, the artwork is yours to
-> clear or to remove. The app takes any GIF you point it at (see [Custom GIF](#custom-gif)), so it
-> works fully without a single bundled file.
+> **This project is open source under the MIT license — and that license covers the code only, never
+> the bundled preset GIFs.** The art is third-party, gathered **entirely from publicly accessible
+> pages on the open internet** (e.g. Giphy, Pinterest — nothing paywalled, private, or extracted from
+> a licensed release), and it is included **for research and educational purposes only**: sample
+> frames that let a non-commercial, open-source demo have something to animate while its rendering,
+> speed-mapping, and menu-bar behavior are studied. No ownership is claimed, no rights are granted to
+> you over them, and **no permission to redistribute them is given or implied** — if you fork,
+> package, or mirror this project, the artwork is yours to clear or to remove. Nothing is sold, no
+> advertising runs against it, and the app takes any GIF you point it at (see
+> [Use a custom GIF](#use-a-custom-gif)), so it works fully without a single bundled file.
 
 All rights remain with their respective owners:
 
@@ -587,8 +594,9 @@ sources (network, disk, swap, battery draw) — is a Swift port of the auto-scal
 licensed under **Apache-2.0** © Jakob P. Liljenberg. No btop source is vendored; the algorithm is
 reimplemented and credited here and at the call site.
 
-This project is **not affiliated with, endorsed by, or sponsored by** any of these rights holders, and
-is a free, non-commercial hobby utility. If you are a rights holder and would like a file removed,
+This project is **not affiliated with, endorsed by, or sponsored by** any of these rights holders. It
+is a free, non-commercial, open-source hobby utility, and the artwork is here to demonstrate and study
+the software, not to trade on anyone's characters. If you are a rights holder and would like a file removed,
 please open an issue and it will be taken down
 promptly.
 

@@ -30,4 +30,11 @@ auto-scale logic in `btop`'s `Net::collect` (`src/osx/btop_collect.cpp`),
 No btop source is vendored or redistributed.
 
 **Preset GIFs** — the artwork in `gifs/` is third-party content and is **not** covered by the MIT
-license above; see "Assets & attribution" in `README.md`.
+license above. It was gathered entirely from publicly accessible pages on the open internet (Giphy,
+Pinterest and similar), and is bundled **for research and educational purposes only**: sample frames
+so this non-commercial, open-source project has something to animate while its behavior is studied.
+"Totoro" and "Chihiro" (Spirited Away) and related characters are © Studio Ghibli; all rights remain
+with their respective owners. No ownership is claimed, no rights are granted, and no permission to
+redistribute the artwork is given or implied — a fork, package, or mirror must clear or remove it. The
+software itself is fully functional with any GIF the user supplies. Rights holders: open an issue and
+the file will be removed promptly. See "Assets & attribution" in `README.md`.

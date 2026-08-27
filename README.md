@@ -158,6 +158,10 @@ for changing the baked-in args:
 
 ## Built-in presets
 
+> The bundled art is **third-party sample content, not licensed with this project** — the Totoro and
+> Chihiro presets are © Studio Ghibli. See [Assets & attribution](#assets--attribution) before
+> forking, packaging, or redistributing; [any GIF of your own](#use-a-custom-gif) works just as well.
+
 ```bash
 # Default
 ./menubar-load-runner horse-white
@@ -488,8 +492,8 @@ Disable the check entirely with `--no-update-check` or `MENUBAR_LOAD_RUNNER_UPDA
 ## Testing & CI
 
 There's no unit-test framework — the release gate is a single tiered QA harness, `tests/qa.sh`.
-[`docs/RUNBOOK-qa-release.md`](docs/RUNBOOK-qa-release.md) maps what it covers and what only a person
-can. Run it from the repo root:
+What it can't reach — the clicks, the eyes-only checks, the release-cut walk — is listed in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) § Verification debt and § Release hygiene. Run it from the repo root:
 
 ```bash
 tests/qa.sh            # core + gui (local default)
@@ -560,9 +564,15 @@ by the MIT license — see Assets & attribution below.
 
 ## Assets & attribution
 
-The preset GIFs in `gifs/` are third-party content collected from publicly available internet sources
-(e.g. Giphy, Pinterest) and are included only as reference/sample artwork to demonstrate the app. No
-ownership is claimed over any of it; all rights remain with their respective owners:
+> **The bundled preset GIFs are not this project's to license, and the MIT license does not cover
+> them.** They are third-party artwork collected from publicly available internet sources (e.g. Giphy,
+> Pinterest), included **only** as sample art so the app has something to animate out of the box. No
+> ownership is claimed, no rights are granted to you over them, and **no permission to redistribute
+> them is given or implied** — if you fork, package, or mirror this project, the artwork is yours to
+> clear or to remove. The app takes any GIF you point it at (see [Custom GIF](#custom-gif)), so it
+> works fully without a single bundled file.
+
+All rights remain with their respective owners:
 
 - `totoro.gif`, `totoro-white.gif`, `totoro-black.gif`, `totoro-group-white.gif`,
   `totoro-group-black.gif` — "Totoro" and related characters © Studio Ghibli.
@@ -571,8 +581,15 @@ ownership is claimed over any of it; all rights remain with their respective own
 - `running-horse-black.gif`, `running-horse-white.gif`, `running-dog-white.gif`,
   `running-dog-black.gif` — animal silhouettes from public sources (original authorship unverified).
 
-This project is **not affiliated with, endorsed by, or sponsored by** any of these rights holders. If
-you are a rights holder and would like a file removed, please open an issue and it will be taken down
+**Third-party code.** `ThroughputScaler` — the adaptive ceiling that normalizes unbounded rate
+sources (network, disk, swap, battery draw) — is a Swift port of the auto-scale logic in
+[`btop`](https://github.com/aristocratos/btop)'s `Net::collect` (`src/osx/btop_collect.cpp`), which is
+licensed under **Apache-2.0** © Jakob P. Liljenberg. No btop source is vendored; the algorithm is
+reimplemented and credited here and at the call site.
+
+This project is **not affiliated with, endorsed by, or sponsored by** any of these rights holders, and
+is a free, non-commercial hobby utility. If you are a rights holder and would like a file removed,
+please open an issue and it will be taken down
 promptly.
 
 You don't need the bundled GIFs — point the app at any GIF you have the rights to use:

@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## Third-party notices
+
+**btop** — `ThroughputScaler` in `MenuBarLoadRunner.swift` is a Swift reimplementation of the
+auto-scale logic in `btop`'s `Net::collect` (`src/osx/btop_collect.cpp`),
+<https://github.com/aristocratos/btop>, licensed under the Apache License 2.0 © Jakob P. Liljenberg.
+No btop source is vendored or redistributed.
+
+**Preset GIFs** — the artwork in `gifs/` is third-party content and is **not** covered by the MIT
+license above; see "Assets & attribution" in `README.md`.

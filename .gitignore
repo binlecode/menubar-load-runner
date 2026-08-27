@@ -6,5 +6,4 @@ tmp/
 .wrangler/
 .claude/settings.local.json
 
-# Symlink into the private vault (strategy / research / deep design). Never committed.
-docs/design-docs
+

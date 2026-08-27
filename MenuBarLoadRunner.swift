@@ -642,8 +642,9 @@ private enum Tuning {
     // whether the paused tone reads as distinct from both holding and Off — a contrast ratio is a *proxy*
     // for that, and one calibrated for text legibility rather than a 2pt decorative line. When the proxy
     // and a direct look at the real bar disagree, the look wins; 0.22 is what was preferred there.
-    // So: use the measurement to compare candidates cheaply (RUNBOOK §3.1 has the method — it works
-    // without waiting for a machine quiet enough to render the paused state at all), then decide by
+    // So: use the measurement to compare candidates cheaply (docs/ROADMAP.md § Verification debt has
+    // the method — it works without waiting for a machine quiet enough to render the paused state at
+    // all), then decide by
     // looking, in a light *and* a dark bar. Never re-tune on the ratio alone, and never on one appearance.
     static let keepAwakeBarPausedAlpha: CGFloat = 0.22
 

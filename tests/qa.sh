@@ -1,5 +1,5 @@
 #!/bin/bash
-# QA harness for MenuBar Load Runner — the release gate. docs/RUNBOOK-qa-release.md §1 maps each
+# QA harness for MenuBar Load Runner — the release gate. docs/ROADMAP.md § Verification debt maps each
 # Run from the repo root:  tests/qa.sh
 #
 # Coverage tiers (the boundary CI is built around — see README "Testing & CI"):
@@ -16,7 +16,7 @@
 #   launcher  §6 launcher wrapper: singleton guard, `--precompile`, and the build's safety against a
 #             live instance. Disruptive: calls `pkill MenuBarLoadRunner`, so it STOPS any running
 #             instance (incl. a login-item one). Opt-in only.
-#   manual    the menu walk + the eyes-only checks — RUNBOOK §3, never scripted.
+#   manual    the menu walk + the eyes-only checks — docs/ROADMAP.md § Verification debt, never scripted.
 #
 # Usage:
 #   tests/qa.sh                 core + gui              (local default — unchanged behavior)
@@ -233,7 +233,7 @@ echo "  slot geometry: passes=$pass fails=$fail"; total_fail=$((total_fail+fail)
 # the power-source read, so this needs no real battery and works on a desktop or on AC.
 #
 # Two things this deliberately does NOT test: the override (only a menu click sets it, and menus are
-# not scriptable here — see RUNBOOK §3.2), and thermal (no way to force a thermal state). `--keep-awake`
+# not scriptable here — see ROADMAP § Verification debt), and thermal (no way to force a thermal state). `--keep-awake`
 # is used precisely BECAUSE it is not an override gesture, so these assert the raw conditions.
 #
 # What these do NOT cover is how the pause LOOKS: the tone the track line and the label wear is asserted
@@ -298,7 +298,7 @@ echo "  keep-awake conditions: passes=$pass fails=$fail"; total_fail=$((total_fa
 
 # --- §3f Keep Awake launch arming + persistence [gui] ----------------------
 # --keep-awake arms without a click, so the whole window contract is scriptable: what -t the child gets,
-# which saved states come back, and which must not. Ported out of RUNBOOK §3a 2026-07-31, where these
+# which saved states come back, and which must not. Ported out of the manual walk 2026-07-31, where these
 # lived as copy-paste prose and so were only ever run when someone remembered to paste them.
 # FORCE_BATTERY pins a healthy charge on AC: without it a tester below 20% sees every case fail, because
 # the battery condition is correctly releasing the child (that is §3a's subject, not this one).
@@ -360,7 +360,7 @@ echo "  keep-awake arming: passes=$pass fails=$fail"; total_fail=$((total_fail+f
 # a mode survives a relaunch, an explicit flag still wins, and a bad block degrades to defaults instead
 # of breaking startup. Each case asserts the mode the app REWRITES on termination — a failed restore
 # shows up as "off" being written back, which is observable, whereas the absence of the menu-bar slot is
-# not (menus aren't scriptable here — RUNBOOK §3.2).
+# not (menus aren't scriptable here — ROADMAP § Verification debt).
 section "§3b settings persistence [gui — needs WindowServer]"
 pass=0; fail=0
 SF="$PWD/tmp/qa-settings-state.json"
@@ -457,7 +457,7 @@ echo "  settings persistence: passes=$pass fails=$fail"; total_fail=$((total_fai
 # MENUBAR_LOAD_RUNNER_LOG_ASSERTIONS=1, which prints the FILTERED, post-hysteresis list each tick — the
 # LOG_SLOTS trick, and for the same reason: it needs no TCC grant, while the rows themselves are only
 # reachable via menu-dump (Accessibility) or a screenshot (Screen Recording). What the rows LOOK like
-# stays a RUNBOOK §3.2 click-step; what the app decided is asserted here.
+# stays a click-step (ROADMAP § Verification debt); what the app decided is asserted here.
 #
 # tests/hold-assertion.swift is the fixture: it holds a real assertion under a unique process name, so
 # detection and the retention window don't depend on whether this machine happens to have a stray
@@ -650,7 +650,7 @@ echo "  machine sleep-hold state: passes=$pass fails=$fail"; total_fail=$((total
 # --- §3g Freeze animation [gui] ---------------------------------------------
 # R17: the frozen icon (game loop stopped, current frame held) and the label handoff, asserted through
 # MENUBAR_LOAD_RUNNER_LOG_ANIMATION=1 and driven via the state file — the Settings toggle itself is a
-# menu click no agent can perform (RUNBOOK §3.2, the §3b precedent). The Reduce Motion TRIGGER is
+# menu click no agent can perform (ROADMAP § Verification debt, the §3b precedent). The Reduce Motion TRIGGER is
 # deliberately untested: the pref is the machine's, not the test's, and a FORCE hook would change a
 # decision (mocking with extra steps). Everything downstream of the observer is exactly what these
 # cases cover via the manual freeze; the notification→reading wiring is eyes-only, recorded as
@@ -834,5 +834,5 @@ fi
 # --- Cleanup + verdict -----------------------------------------------------
 rm -f "$BIN" ./tmp/qa-lifecycle-state.json ./tmp/qa-ka-state.json ./tmp/qa-settings-state.json
 printf '\n'
-if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (RUNBOOK §3 manual checks still to do)"; exit 0
+if [ "$total_fail" = 0 ]; then echo "QA: ALL PASS (ROADMAP click-only checks still to do)"; exit 0
 else echo "QA: $total_fail FAILING section(s)"; exit 1; fi

@@ -39,30 +39,39 @@ is no unit-test tier and adding one is a regression, not an improvement.
 ## Documentation
 
 `docs/` holds SDLC documents. This `CLAUDE.md` stays focused on build/run commands and the architecture
-map; **rationale does not live here** — when a section starts arguing, move the argument to the internal
-`DESIGN-system.md` and leave behind only what an implementer must not break. The layout:
+map; **rationale does not live here** — keep it focused and leave behind only what an implementer must not break.
+
+**Documents move through four lifecycle stages, and the prefix says which one a file is in:**
+
+| Stage | Prefix / Path | What it holds | What ends it |
+|---|---|---|---|
+| research | `docs/RESEARCH-<topic>.md` | surveying the world **outside** this repo — what comparable tools do, measured benchmarks, external API findings. It may set this app *beside* that peer set, but only as facts already true in `ARCHITECTURE.md`/`README.md`; it never argues for work not yet decided, and every claim about a peer carries the depth it was checked at | **distil the DECISION into a `ROADMAP.md` entry**; the survey itself stays as evidence, dated, and is re-run or pruned when measurements go stale |
+| roadmap | `docs/ROADMAP.md` | the decided and the sequenced: positioning, non-goals, candidates (`R<n>`), declined proposals, and verification debt | nothing — it is the one standing tracker that outlives rewrites |
+| plan / todo | `docs/TODO-<YYYYMMDD-HHMM>-<slug>.md` | one item being actively worked: options and trade-offs explored during authoring, then field names, CLI flags, verification matrix. **Tracks delivery life** | **its durable outcome is absorbed into `docs/ARCHITECTURE.md` / `AGENTS.md` (and ROADMAP row retired) as it lands, then the file is deleted** — gone, not archived |
+| as-built | `docs/ARCHITECTURE.md` + `AGENTS.md` architecture map | what the code actually is and why — a description that chases the code, never a promise the code chases | never; **resynced at land, after the code stops moving** — never edited ahead of the build |
+
+The full layout:
 
 | Path | What | Naming |
 |---|---|---|
+| `docs/ARCHITECTURE.md` | canonical as-built architecture, subsystem specifications, and parameter reference | no timestamp |
+| `docs/RESEARCH-<topic>.md` | external peer surveys and ecosystem research (public, facts-only) | no timestamp |
 | `docs/ROADMAP.md` | the standing tracker (see below) | — |
-| `docs/RUNBOOK-<topic>.md` | operational procedures a **person** walks — clicks, eyes, judgment (today: QA/release, 125 of whose 278 lines are exactly that) | no timestamp |
 | `docs/TODO-<YYYYMMDD-HHMM>-<slug>.md` | one item being actively worked | timestamped |
-| `docs/design-docs/` | **symlink into the private vault.** `DESIGN-system.md` is the canonical design record — invariants, rejected alternatives, probe facts, per-release verification. Also strategy + competitor research. Gitignored, **never committed**: no design rationale reaches the public repo, which carries only README / RUNBOOK / skills / this file | — |
 | `docs/cover.html`, `docs/media/` | the landing page and its assets | — |
 | `.claude/skills/<name>/` | the sibling category, outside `docs/`: operational flows an **agent** runs end to end (`build-visuals`, `publish-cover`), each owning its private tooling in `scripts/` alongside. Tracked and public like everything above | — |
 
-**Runbook or skill? Ask who executes the steps.** Agent runs it and the human confirms the result →
-skill. Human runs it and the agent can only prep and report → runbook. Shared, standalone tooling
-(`tests/qa.sh`) is a further sign it is not a skill's to own — it stays in `tests/`, reachable without
-any doc wrapper. Publishing the cover moved to a skill on this rule; QA/release stays a runbook on it.
+**A procedure belongs to whoever executes it.** Agent runs it end to end and the human confirms the
+result → a skill in `.claude/skills/`. Shared, standalone tooling (`tests/qa.sh`) isn't a skill's to
+own — it stays in `tests/`, reachable without any doc wrapper. What only a *person* can do (clicks,
+eyes, judgment) is not a document either: it is coverage, so it lives as a row in `docs/ROADMAP.md`
+§ Verification debt, next to the gap it answers — that is where the QA click-walk and the release-cut
+sequence went when `RUNBOOK-qa-release.md` was retired.
 
 `tmp/` is **scratch only, and gitignored** — treat everything in it as deletable at any moment. Nothing
 durable may live there: not the source of a tracked asset, not a test whose coverage exists nowhere else,
-not writing you'd mind losing. This has bitten twice: a `build_cover.py` + template pair sat in `tmp/`
-looking like the cover's source long after `docs/cover.html` outgrew it (running it would have reverted the
-cover ten versions), and launch copy accumulated there instead of the vault. If a scratch file turns out to
-matter, promote it — tracked `tests/`/`scripts/` for tooling, `docs/` for SDLC, the vault for strategy
-and marketing — and delete the scratch copy so there is one source of truth.
+not writing you'd mind losing. If a scratch file turns out to matter, promote it — tracked `tests/`/`scripts/`
+for tooling, `docs/` for SDLC — and delete the scratch copy so there is one source of truth.
 
 `docs/ROADMAP.md` is the **standing** tracker: every open item, declined proposal, known limit, and
 verification gap, each with a stable `R<n>` ID. Check it before proposing work — an idea may already be
@@ -71,9 +80,28 @@ tracking altitude (what, priority, blocker, status); it is deliberately not a de
 document, and a `TODO-*.md` is for actively working one item, not for holding the backlog.
 
 A TODO's timestamp is when the file was created, so filenames sort chronologically without a separate
-changelog. When a TODO closes, its durable outcome moves into the internal `DESIGN-system.md` (and its ROADMAP
-row is retired) and **the file is deleted** — see the git history for the pattern. That design doc is where
+changelog. When a TODO closes, its durable outcome moves into the architecture map in `AGENTS.md` (and its ROADMAP
+row is retired) and **the file is deleted** — see the git history for the pattern. That architecture map is where
 an implementer looks *before* changing a subsystem; a TODO is scaffolding and should not outlive the work.
+
+**One fact, one place:** The architecture map in this file is the canonical record. Do not duplicate contracts
+across README, help text, and docs — state each fact once and cross-reference.
+
+## How a Unit of Work Moves
+
+```
+ (roadmap) ──► todo/plan ──► pre-mortem ──► build ──► verify ──► land
+   entry:      authored      hardened     (swiftc   (real      (checklist;
+   decided,                               warning-   binary     as-built resynced,
+   sequenced                              clean)     qa.sh)     todo deleted)
+```
+
+- **An idea is interrogated before it is designed.** Questions in dependency order, decisions settled into the worksheet before the conversation ends.
+- **A plan is pre-mortemed before it is built.** Critique assumptions and failure modes; accept preventive fixes into the worksheet before writing code.
+- **A build is incremental, or it is staged.** Small edits in place for ordinary work; prove the new path before removing the old for structural changes.
+- **A bug gets a red loop before a theory.** No hypothesis until a fast, deterministic command reproduces the symptom (e.g. via `EXIT_AFTER`, `FORCE_BATTERY`, `LOG_*` hooks).
+- **A landing is a checklist, not a feeling.** Every item verified, real tests pass (`tests/qa.sh`), durable outcomes absorbed into the architecture map, the TODO deleted, version evaluated.
+- **A session ends by sorting its residue.** Settled state captured in the active doc; throwaways kept in `tmp/` and promoted or pruned.
 
 ## Commands
 
@@ -255,7 +283,7 @@ sequence, or `.app` bundle. Use the scripts:
 
 ## Architecture
 
-Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bottom as:
+Everything lives in `MenuBarLoadRunner.swift` (~6600 lines), organized top to bottom as:
 
 - **`Tuning`** — every magic number (icon-aspect clamp, label char cap, alpha trim threshold,
   hysteresis, etc.) lives here. When adjusting behavior, change constants here rather than inlining new
@@ -524,13 +552,13 @@ Everything lives in `MenuBarLoadRunner.swift` (~5600 lines), organized top to bo
     stays dark because the termination handler clears `isEnabled`; and the tick's redraw guard is
     `"\(awakeHold.tintSignature)|\(keepAwakeArmedNotHolding)"`, composed at the call site because
     `AwakeHold`'s subject is the machine. `LOG_AWAKE` prints `tint=` off `keepAwakeTint` itself, so qa.sh §3e
-    asserts the rendered tone; perceptibility stays eyes-only (RUNBOOK §3.1).
+    asserts the rendered tone; perceptibility stays eyes-only (`docs/ROADMAP.md` § Verification debt has the method).
     It must NEVER be composited into `renderedFrames` (that would re-rasterize every frame on toggle). Enabled-state and tint are **one merged radio group** under the **Keep Awake**
     submenu (there is no separate toggle or Keep Awake Color submenu): an **Off** row plus one row per
     `KeepAwakeColor` case — Dusty Teal (default), Sand, Graphite, Mauve, Sage — each a dark/light tone
     chosen per menu-bar appearance. The enum drives the rows, so adding a case needs no menu edit; it does
-    need the user-facing lists updated in lockstep (`README.md`, `docs/cover.html`,
-    `docs/RUNBOOK-qa-release.md` §3.2), which name the tints deliberately.
+    need the user-facing lists updated in lockstep (`README.md`, `docs/cover.html`), which name the tints
+    deliberately.
     Off disengages caffeinate; a color row engages it *and* sets that tint (`selectKeepAwakeOption`,
     `refreshKeepAwakeSelectionState`, Off tagged `keepAwakeOffTag`). The tint is menu-only (no CLI/env)
     but persisted. A **second, independent radio group** in the same submenu is the **timed release** (`Duration`):
